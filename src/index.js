@@ -48,6 +48,10 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "SimpleReserva API" });
 });
 
+// Public alias for user-front
+app.use("/api/public/restaurants", reservationRouter);
+app.use("/api/public/reservations", reservationRouter);
+
 app.use("/api/auth", authRouter);
 app.use("/api/restaurants", reservationRouter);
 app.use("/api/reservations", reservationRouter);
