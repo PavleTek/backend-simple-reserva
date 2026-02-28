@@ -66,7 +66,7 @@ router.get('/restaurants/:id', async (req, res, next) => {
       },
     });
 
-    if (!restaurant) throw new NotFoundError('Restaurant not found');
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
     res.json(restaurant);
   } catch (error) {

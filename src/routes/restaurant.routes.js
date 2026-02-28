@@ -62,7 +62,7 @@ router.patch('/reservations/:id', async (req, res, next) => {
     const { status } = req.body;
 
     if (!status) {
-      throw new ValidationError('Status is required');
+      throw new ValidationError('El estado es obligatorio');
     }
 
     const reservation = await prisma.reservation.findUnique({
@@ -70,11 +70,11 @@ router.patch('/reservations/:id', async (req, res, next) => {
     });
 
     if (!reservation) {
-      throw new NotFoundError('Reservation not found');
+      throw new NotFoundError('Reserva no encontrada');
     }
 
     if (reservation.restaurantId !== req.user.restaurantId) {
-      throw new NotFoundError('Reservation not found');
+      throw new NotFoundError('Reserva no encontrada');
     }
 
     const updated = await prisma.reservation.update({
@@ -108,7 +108,7 @@ router.post('/blocked-slots', async (req, res, next) => {
     const { startDatetime, endDatetime, reason } = req.body;
 
     if (!startDatetime || !endDatetime) {
-      throw new ValidationError('startDatetime and endDatetime are required');
+      throw new ValidationError('Se requiere startDatetime y endDatetime');
     }
 
     const slot = await prisma.blockedSlot.create({
@@ -133,16 +133,16 @@ router.delete('/blocked-slots/:id', async (req, res, next) => {
     });
 
     if (!slot) {
-      throw new NotFoundError('Blocked slot not found');
+      throw new NotFoundError('Franja bloqueada no encontrada');
     }
 
     if (slot.restaurantId !== req.user.restaurantId) {
-      throw new NotFoundError('Blocked slot not found');
+      throw new NotFoundError('Franja bloqueada no encontrada');
     }
 
     await prisma.blockedSlot.delete({ where: { id: req.params.id } });
 
-    res.json({ message: 'Blocked slot deleted' });
+    res.json({ message: 'Franja bloqueada eliminada' });
   } catch (error) {
     next(error);
   }

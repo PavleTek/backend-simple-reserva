@@ -41,7 +41,7 @@ const login = async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      res.status(400).json({ error: 'Email and password are required' });
+      res.status(400).json({ error: 'Se requiere email y contraseña' });
       return;
     }
 
@@ -55,13 +55,13 @@ const login = async (req, res) => {
     });
 
     if (!user) {
-      res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: 'Credenciales inválidas' });
       return;
     }
 
     const isPasswordValid = await comparePassword(password, user.hashedPassword);
     if (!isPasswordValid) {
-      res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: 'Credenciales inválidas' });
       return;
     }
 
@@ -83,7 +83,7 @@ const login = async (req, res) => {
       if (userHas2FA) {
         const tempToken = generateTempToken(userWithoutPassword);
         res.status(200).json({
-          message: '2FA verification required',
+          message: 'Se requiere verificación 2FA',
           requiresTwoFactor: true,
           tempToken
         });
@@ -91,7 +91,7 @@ const login = async (req, res) => {
       } else {
         const tempToken = generateTempToken(userWithoutPassword);
         res.status(200).json({
-          message: '2FA setup required',
+          message: 'Se requiere configuración de 2FA',
           requiresTwoFactorSetup: true,
           tempToken
         });
@@ -102,13 +102,13 @@ const login = async (req, res) => {
     const token = generateToken(userWithoutPassword);
 
     res.status(200).json({
-      message: 'Login successful',
+      message: 'Inicio de sesión exitoso',
       user: userWithoutPassword,
       token
     });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -117,7 +117,7 @@ const register = async (req, res) => {
     const { email, password, name, lastName, restaurantName, restaurantSlug } = req.body;
 
     if (!email || !password || !restaurantName) {
-      res.status(400).json({ error: 'Email, password, and restaurant name are required' });
+      res.status(400).json({ error: 'Se requiere email, contraseña y nombre del restaurante' });
       return;
     }
 
@@ -131,7 +131,7 @@ const register = async (req, res) => {
     });
 
     if (existingUser) {
-      res.status(409).json({ error: 'Email already in use' });
+      res.status(409).json({ error: 'El email ya está en uso' });
       return;
     }
 
@@ -142,7 +142,7 @@ const register = async (req, res) => {
     });
 
     if (existingSlug) {
-      res.status(409).json({ error: 'Restaurant slug already taken. Please choose a different name or slug.' });
+      res.status(409).json({ error: 'El slug del restaurante ya está en uso. Por favor elige otro nombre o slug.' });
       return;
     }
 
@@ -182,7 +182,7 @@ const register = async (req, res) => {
     const token = generateToken(userWithoutPassword);
 
     res.status(201).json({
-      message: 'Registration successful',
+      message: 'Registro exitoso',
       user: userWithoutPassword,
       restaurant: {
         id: result.restaurant.id,
@@ -193,19 +193,19 @@ const register = async (req, res) => {
     });
   } catch (error) {
     console.error('Register error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
 const getProfile = async (req, res) => {
   try {
     res.status(200).json({
-      message: 'Profile retrieved successfully',
+      message: 'Perfil obtenido correctamente',
       user: req.user
     });
   } catch (error) {
     console.error('Get profile error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -231,7 +231,7 @@ const updateProfile = async (req, res) => {
       });
 
       if (duplicateUser) {
-        res.status(409).json({ error: 'Email already in use' });
+        res.status(409).json({ error: 'El email ya está en uso' });
         return;
       }
     }
@@ -247,12 +247,12 @@ const updateProfile = async (req, res) => {
     });
 
     res.status(200).json({
-      message: 'Profile updated successfully',
+      message: 'Perfil actualizado correctamente',
       user: stripUser(updatedUser)
     });
   } catch (error) {
     console.error('Update profile error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -262,7 +262,7 @@ const updatePassword = async (req, res) => {
     const { password } = req.body;
 
     if (!password) {
-      res.status(400).json({ error: 'Password is required' });
+      res.status(400).json({ error: 'La contraseña es obligatoria' });
       return;
     }
 
@@ -274,11 +274,11 @@ const updatePassword = async (req, res) => {
     });
 
     res.status(200).json({
-      message: 'Password updated successfully'
+      message: 'Contraseña actualizada correctamente'
     });
   } catch (error) {
     console.error('Update password error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -287,7 +287,7 @@ const verifyTwoFactor = async (req, res) => {
     const { tempToken, code } = req.body;
 
     if (!tempToken || !code) {
-      res.status(400).json({ error: 'Temporary token and 2FA code are required' });
+      res.status(400).json({ error: 'Se requiere token temporal y código 2FA' });
       return;
     }
 
@@ -295,12 +295,12 @@ const verifyTwoFactor = async (req, res) => {
     try {
       decoded = verifyToken(tempToken);
     } catch {
-      res.status(401).json({ error: 'Invalid or expired temporary token' });
+      res.status(401).json({ error: 'Token temporal inválido o expirado' });
       return;
     }
 
     if (!decoded.isTempToken) {
-      res.status(400).json({ error: 'Invalid token type' });
+      res.status(400).json({ error: 'Tipo de token inválido' });
       return;
     }
 
@@ -309,14 +309,14 @@ const verifyTwoFactor = async (req, res) => {
     });
 
     if (!user || !user.twoFactorSecret || !user.twoFactorEnabled) {
-      res.status(400).json({ error: '2FA is not enabled for this user' });
+      res.status(400).json({ error: '2FA no está activado para este usuario' });
       return;
     }
 
     const isValid = verifyTwoFactorToken(user.twoFactorSecret, code);
 
     if (!isValid) {
-      res.status(401).json({ error: 'Invalid 2FA code' });
+      res.status(401).json({ error: 'Código 2FA inválido' });
       return;
     }
 
@@ -330,13 +330,13 @@ const verifyTwoFactor = async (req, res) => {
     const token = generateToken(userWithoutPassword);
 
     res.status(200).json({
-      message: 'Login successful',
+      message: 'Inicio de sesión exitoso',
       user: userWithoutPassword,
       token
     });
   } catch (error) {
     console.error('Verify 2FA error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -372,7 +372,7 @@ const setupTwoFactor = async (req, res) => {
     });
   } catch (error) {
     console.error('Setup 2FA error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -381,7 +381,7 @@ const setupTwoFactorMandatory = async (req, res) => {
     const { tempToken } = req.body;
 
     if (!tempToken) {
-      res.status(400).json({ error: 'Temporary token is required' });
+      res.status(400).json({ error: 'Se requiere token temporal' });
       return;
     }
 
@@ -389,12 +389,12 @@ const setupTwoFactorMandatory = async (req, res) => {
     try {
       decoded = verifyToken(tempToken);
     } catch {
-      res.status(401).json({ error: 'Invalid or expired temporary token' });
+      res.status(401).json({ error: 'Token temporal inválido o expirado' });
       return;
     }
 
     if (!decoded.isTempToken) {
-      res.status(400).json({ error: 'Invalid token type' });
+      res.status(400).json({ error: 'Tipo de token inválido' });
       return;
     }
 
@@ -403,12 +403,12 @@ const setupTwoFactorMandatory = async (req, res) => {
     });
 
     if (!user) {
-      res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'Usuario no encontrado' });
       return;
     }
 
     if (user.twoFactorEnabled && user.twoFactorSecret) {
-      res.status(400).json({ error: '2FA is already enabled for this user' });
+      res.status(400).json({ error: '2FA ya está activado para este usuario' });
       return;
     }
 
@@ -420,13 +420,13 @@ const setupTwoFactorMandatory = async (req, res) => {
     const qrCodeDataUrl = await generateQRCode(secret, user.email, appName);
 
     res.status(200).json({
-      message: '2FA setup initiated',
+      message: 'Configuración de 2FA iniciada',
       secret,
       qrCode: qrCodeDataUrl
     });
   } catch (error) {
     console.error('Setup 2FA mandatory error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -436,14 +436,14 @@ const verifyTwoFactorSetup = async (req, res) => {
     const { secret, code } = req.body;
 
     if (!secret || !code) {
-      res.status(400).json({ error: 'Secret and verification code are required' });
+      res.status(400).json({ error: 'Se requiere secreto y código de verificación' });
       return;
     }
 
     const isValid = verifyTwoFactorToken(secret, code);
 
     if (!isValid) {
-      res.status(401).json({ error: 'Invalid verification code' });
+      res.status(401).json({ error: 'Código de verificación inválido' });
       return;
     }
 
@@ -457,11 +457,11 @@ const verifyTwoFactorSetup = async (req, res) => {
     });
 
     res.status(200).json({
-      message: '2FA enabled successfully'
+      message: '2FA activado correctamente'
     });
   } catch (error) {
     console.error('Verify 2FA setup error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -470,7 +470,7 @@ const verifyTwoFactorSetupMandatory = async (req, res) => {
     const { tempToken, secret, code } = req.body;
 
     if (!tempToken || !secret || !code) {
-      res.status(400).json({ error: 'Temporary token, secret, and verification code are required' });
+      res.status(400).json({ error: 'Se requiere token temporal, secreto y código de verificación' });
       return;
     }
 
@@ -478,19 +478,19 @@ const verifyTwoFactorSetupMandatory = async (req, res) => {
     try {
       decoded = verifyToken(tempToken);
     } catch {
-      res.status(401).json({ error: 'Invalid or expired temporary token' });
+      res.status(401).json({ error: 'Token temporal inválido o expirado' });
       return;
     }
 
     if (!decoded.isTempToken) {
-      res.status(400).json({ error: 'Invalid token type' });
+      res.status(400).json({ error: 'Tipo de token inválido' });
       return;
     }
 
     const isValid = verifyTwoFactorToken(secret, code);
 
     if (!isValid) {
-      res.status(401).json({ error: 'Invalid verification code' });
+      res.status(401).json({ error: 'Código de verificación inválido' });
       return;
     }
 
@@ -499,7 +499,7 @@ const verifyTwoFactorSetupMandatory = async (req, res) => {
     });
 
     if (!user) {
-      res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'Usuario no encontrado' });
       return;
     }
 
@@ -519,13 +519,13 @@ const verifyTwoFactorSetupMandatory = async (req, res) => {
     const token = generateToken(userWithoutPassword);
 
     res.status(200).json({
-      message: '2FA enabled successfully',
+      message: '2FA activado correctamente',
       token,
       user: userWithoutPassword
     });
   } catch (error) {
     console.error('Verify 2FA setup mandatory error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -538,7 +538,7 @@ const disableTwoFactor = async (req, res) => {
 
     if (system2FAEnabled) {
       res.status(400).json({
-        error: 'Cannot disable 2FA. System-wide 2FA is enabled and required for all users.'
+        error: 'No se puede desactivar 2FA. Está habilitado a nivel del sistema para todos los usuarios.'
       });
       return;
     }
@@ -553,11 +553,11 @@ const disableTwoFactor = async (req, res) => {
     });
 
     res.status(200).json({
-      message: '2FA disabled successfully'
+      message: '2FA desactivado correctamente'
     });
   } catch (error) {
     console.error('Disable 2FA error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -575,7 +575,7 @@ const getTwoFactorStatus = async (req, res) => {
     });
 
     if (!user) {
-      res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'Usuario no encontrado' });
       return;
     }
 
@@ -583,14 +583,14 @@ const getTwoFactorStatus = async (req, res) => {
     const system2FAEnabled = config?.twoFactorEnabled || false;
 
     res.status(200).json({
-      message: '2FA status retrieved successfully',
+      message: 'Estado de 2FA obtenido correctamente',
       enabled: user.twoFactorEnabled && !!user.twoFactorSecret,
       userEnabled: user.userEnabledTwoFactor,
       systemEnabled: system2FAEnabled
     });
   } catch (error) {
     console.error('Get 2FA status error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -599,7 +599,7 @@ const requestRecoveryCode = async (req, res) => {
     const { tempToken } = req.body;
 
     if (!tempToken) {
-      res.status(400).json({ error: 'Temporary token is required' });
+      res.status(400).json({ error: 'Se requiere token temporal' });
       return;
     }
 
@@ -607,12 +607,12 @@ const requestRecoveryCode = async (req, res) => {
     try {
       decoded = verifyToken(tempToken);
     } catch {
-      res.status(401).json({ error: 'Invalid or expired temporary token' });
+      res.status(401).json({ error: 'Token temporal inválido o expirado' });
       return;
     }
 
     if (!decoded.isTempToken) {
-      res.status(400).json({ error: 'Invalid token type' });
+      res.status(400).json({ error: 'Tipo de token inválido' });
       return;
     }
 
@@ -621,12 +621,12 @@ const requestRecoveryCode = async (req, res) => {
     });
 
     if (!user) {
-      res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'Usuario no encontrado' });
       return;
     }
 
     if (!user.twoFactorEnabled || !user.twoFactorSecret) {
-      res.status(400).json({ error: '2FA is not enabled for this user' });
+      res.status(400).json({ error: '2FA no está activado para este usuario' });
       return;
     }
 
@@ -636,14 +636,14 @@ const requestRecoveryCode = async (req, res) => {
         (user.twoFactorRecoveryCodeExpires.getTime() - Date.now()) / (1000 * 60)
       );
       res.status(429).json({
-        error: `Please wait before requesting another recovery code. Try again in ${minutesRemaining} minutes.`
+        error: `Por favor espera antes de solicitar otro código de recuperación. Intenta en ${minutesRemaining} minutos.`
       });
       return;
     }
 
     const config = await prisma.configuration.findFirst();
     if (!config || !config.recoveryEmailSenderId) {
-      res.status(500).json({ error: 'Recovery email is not configured. Please contact an administrator.' });
+      res.status(500).json({ error: 'Email de recuperación no configurado. Contacta a un administrador.' });
       return;
     }
 
@@ -652,7 +652,7 @@ const requestRecoveryCode = async (req, res) => {
     });
 
     if (!recoveryEmailSender) {
-      res.status(500).json({ error: 'Recovery email sender not found. Please contact an administrator.' });
+      res.status(500).json({ error: 'Remitente de email de recuperación no encontrado. Contacta a un administrador.' });
       return;
     }
 
@@ -675,8 +675,8 @@ const requestRecoveryCode = async (req, res) => {
       await sendEmail({
         fromEmail,
         toEmails: [user.email],
-        subject: `${appName} - 2FA Recovery Code`,
-        content: `Your 2FA recovery code is: ${recoveryCode}\n\nThis code will expire in 15 minutes.\n\nIf you did not request this code, please ignore this email.`,
+        subject: `${appName} - Código de recuperación 2FA`,
+        content: `Tu código de recuperación 2FA es: ${recoveryCode}\n\nEste código expirará en 15 minutos.\n\nSi no solicitaste este código, ignora este correo.`,
         isHtml: false
       });
     } catch (emailError) {
@@ -688,16 +688,16 @@ const requestRecoveryCode = async (req, res) => {
           twoFactorRecoveryCodeExpires: null
         }
       });
-      res.status(500).json({ error: 'Failed to send recovery email. Please try again later.' });
+      res.status(500).json({ error: 'Error al enviar el correo de recuperación. Intenta más tarde.' });
       return;
     }
 
     res.status(200).json({
-      message: 'Recovery code sent to your email address'
+      message: 'Código de recuperación enviado a tu correo'
     });
   } catch (error) {
     console.error('Request recovery code error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -706,7 +706,7 @@ const verifyRecoveryCode = async (req, res) => {
     const { tempToken, code } = req.body;
 
     if (!tempToken || !code) {
-      res.status(400).json({ error: 'Temporary token and recovery code are required' });
+      res.status(400).json({ error: 'Se requiere token temporal y código de recuperación' });
       return;
     }
 
@@ -714,12 +714,12 @@ const verifyRecoveryCode = async (req, res) => {
     try {
       decoded = verifyToken(tempToken);
     } catch {
-      res.status(401).json({ error: 'Invalid or expired temporary token' });
+      res.status(401).json({ error: 'Token temporal inválido o expirado' });
       return;
     }
 
     if (!decoded.isTempToken) {
-      res.status(400).json({ error: 'Invalid token type' });
+      res.status(400).json({ error: 'Tipo de token inválido' });
       return;
     }
 
@@ -728,29 +728,29 @@ const verifyRecoveryCode = async (req, res) => {
     });
 
     if (!user) {
-      res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'Usuario no encontrado' });
       return;
     }
 
     if (!user.twoFactorEnabled || !user.twoFactorSecret) {
-      res.status(400).json({ error: '2FA is not enabled for this user' });
+      res.status(400).json({ error: '2FA no está activado para este usuario' });
       return;
     }
 
     if (!user.twoFactorRecoveryCode || !user.twoFactorRecoveryCodeExpires) {
-      res.status(400).json({ error: 'No recovery code found. Please request a new recovery code.' });
+      res.status(400).json({ error: 'No se encontró código de recuperación. Solicita uno nuevo.' });
       return;
     }
 
     if (new Date() > user.twoFactorRecoveryCodeExpires) {
-      res.status(400).json({ error: 'Recovery code has expired. Please request a new one.' });
+      res.status(400).json({ error: 'El código de recuperación ha expirado. Solicita uno nuevo.' });
       return;
     }
 
     const isValid = verifyRecoveryCodeUtil(code, user.twoFactorRecoveryCode);
 
     if (!isValid) {
-      res.status(401).json({ error: 'Invalid recovery code' });
+      res.status(401).json({ error: 'Código de recuperación inválido' });
       return;
     }
 
@@ -772,13 +772,13 @@ const verifyRecoveryCode = async (req, res) => {
     const token = generateToken(userWithoutPassword);
 
     res.status(200).json({
-      message: 'Recovery code verified successfully. 2FA has been disabled. You can set it up again from your profile.',
+      message: 'Código de recuperación verificado. 2FA desactivado. Puedes configurarlo de nuevo desde tu perfil.',
       user: userWithoutPassword,
       token
     });
   } catch (error) {
     console.error('Verify recovery code error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -787,7 +787,7 @@ const requestPasswordReset = async (req, res) => {
     const { email } = req.body;
 
     if (!email) {
-      res.status(400).json({ error: 'Email is required' });
+      res.status(400).json({ error: 'El email es obligatorio' });
       return;
     }
 
@@ -807,14 +807,14 @@ const requestPasswordReset = async (req, res) => {
           (user.passwordResetCodeExpires.getTime() - Date.now()) / (1000 * 60)
         );
         res.status(429).json({
-          error: `Please wait before requesting another password reset code. Try again in ${minutesRemaining} minutes.`
+          error: `Espera antes de solicitar otro código de restablecimiento. Intenta en ${minutesRemaining} minutos.`
         });
         return;
       }
 
       const config = await prisma.configuration.findFirst();
       if (!config || !config.recoveryEmailSenderId) {
-        res.status(500).json({ error: 'Password reset email is not configured. Please contact an administrator.' });
+        res.status(500).json({ error: 'Email de restablecimiento no configurado. Contacta a un administrador.' });
         return;
       }
 
@@ -823,7 +823,7 @@ const requestPasswordReset = async (req, res) => {
       });
 
       if (!recoveryEmailSender) {
-        res.status(500).json({ error: 'Password reset email sender not found. Please contact an administrator.' });
+        res.status(500).json({ error: 'Remitente de email de restablecimiento no encontrado. Contacta a un administrador.' });
         return;
       }
 
@@ -846,8 +846,8 @@ const requestPasswordReset = async (req, res) => {
         await sendEmail({
           fromEmail,
           toEmails: [user.email],
-          subject: `${appName} - Password Reset Code`,
-          content: `Your password reset code is: ${resetCode}\n\nThis code will expire in 15 minutes.\n\nIf you did not request this code, please ignore this email and your password will remain unchanged.`,
+          subject: `${appName} - Código de restablecimiento de contraseña`,
+          content: `Tu código de restablecimiento de contraseña es: ${resetCode}\n\nEste código expirará en 15 minutos.\n\nSi no solicitaste este código, ignora este correo y tu contraseña permanecerá igual.`,
           isHtml: false
         });
       } catch (emailError) {
@@ -859,17 +859,17 @@ const requestPasswordReset = async (req, res) => {
             passwordResetCodeExpires: null
           }
         });
-        res.status(500).json({ error: 'Failed to send password reset email. Please try again later.' });
+        res.status(500).json({ error: 'Error al enviar el correo de restablecimiento. Intenta más tarde.' });
         return;
       }
     }
 
     res.status(200).json({
-      message: 'If an account with that email exists, a password reset code has been sent.'
+      message: 'Si existe una cuenta con ese email, se ha enviado un código de restablecimiento.'
     });
   } catch (error) {
     console.error('Request password reset error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
@@ -878,7 +878,7 @@ const verifyPasswordReset = async (req, res) => {
     const { email, code, newPassword } = req.body;
 
     if (!email || !code || !newPassword) {
-      res.status(400).json({ error: 'Email, code, and new password are required' });
+      res.status(400).json({ error: 'Se requiere email, código y nueva contraseña' });
       return;
     }
 
@@ -892,24 +892,24 @@ const verifyPasswordReset = async (req, res) => {
     });
 
     if (!user) {
-      res.status(404).json({ error: 'User not found' });
+      res.status(404).json({ error: 'Usuario no encontrado' });
       return;
     }
 
     if (!user.passwordResetCode || !user.passwordResetCodeExpires) {
-      res.status(400).json({ error: 'No password reset code found. Please request a new one.' });
+      res.status(400).json({ error: 'No se encontró código de restablecimiento. Solicita uno nuevo.' });
       return;
     }
 
     if (new Date() > user.passwordResetCodeExpires) {
-      res.status(400).json({ error: 'Password reset code has expired. Please request a new one.' });
+      res.status(400).json({ error: 'El código de restablecimiento ha expirado. Solicita uno nuevo.' });
       return;
     }
 
     const isValid = verifyRecoveryCodeUtil(code, user.passwordResetCode);
 
     if (!isValid) {
-      res.status(401).json({ error: 'Invalid password reset code' });
+      res.status(401).json({ error: 'Código de restablecimiento inválido' });
       return;
     }
 
@@ -925,11 +925,11 @@ const verifyPasswordReset = async (req, res) => {
     });
 
     res.status(200).json({
-      message: 'Password has been reset successfully. You can now login with your new password.'
+      message: 'Contraseña restablecida correctamente. Ya puedes iniciar sesión con tu nueva contraseña.'
     });
   } catch (error) {
     console.error('Verify password reset error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 

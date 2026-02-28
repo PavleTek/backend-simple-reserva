@@ -18,7 +18,7 @@ router.get('/token/:secureToken', async (req, res, next) => {
       },
     });
 
-    if (!reservation) throw new NotFoundError('Reservation not found');
+    if (!reservation) throw new NotFoundError('Reserva no encontrada');
 
     res.json(reservation);
   } catch (error) {
@@ -32,7 +32,7 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
       where: { secureToken: req.params.secureToken },
     });
 
-    if (!reservation) throw new NotFoundError('Reservation not found');
+    if (!reservation) throw new NotFoundError('Reserva no encontrada');
 
     const updated = await prisma.reservation.update({
       where: { id: reservation.id },
@@ -62,23 +62,23 @@ router.post('/', async (req, res, next) => {
 
     if (!restaurantSlug || !date || !time || !partySize || !customerName || !customerPhone) {
       throw new ValidationError(
-        'restaurantSlug, date, time, partySize, customerName, and customerPhone are required'
+        'Se requiere restaurantSlug, date, time, partySize, customerName y customerPhone'
       );
     }
 
     const size = parseInt(partySize);
     if (isNaN(size) || size < 1) {
-      throw new ValidationError('partySize must be a positive number');
+      throw new ValidationError('partySize debe ser un número positivo');
     }
 
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug: restaurantSlug, isActive: true },
     });
-    if (!restaurant) throw new NotFoundError('Restaurant not found');
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
     const dateTime = new Date(`${date}T${time}:00`);
     if (isNaN(dateTime.getTime())) {
-      throw new ValidationError('Invalid date or time format');
+      throw new ValidationError('Formato de fecha u hora inválido');
     }
 
     const slotDuration = restaurant.defaultSlotDurationMinutes;
@@ -90,7 +90,7 @@ router.post('/', async (req, res, next) => {
         const schedule = await tx.schedule.findFirst({
           where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
         });
-        if (!schedule) throw new ValidationError('Restaurant is closed on this day');
+        if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
         const [openH, openM] = schedule.openTime.split(':').map(Number);
         const [closeH, closeM] = schedule.closeTime.split(':').map(Number);
@@ -99,7 +99,7 @@ router.post('/', async (req, res, next) => {
         const closeMin = closeH * 60 + closeM;
 
         if (reqMinutes < openMin || reqMinutes + slotDuration > closeMin) {
-          throw new ValidationError('Requested time is outside operating hours');
+          throw new ValidationError('La hora solicitada está fuera del horario de atención');
         }
 
         const blocked = await tx.blockedSlot.findFirst({
@@ -111,7 +111,7 @@ router.post('/', async (req, res, next) => {
         });
         if (blocked) {
           throw new ValidationError(
-            'This time slot is blocked' + (blocked.reason ? ': ' + blocked.reason : '')
+            'Este horario está bloqueado' + (blocked.reason ? ': ' + blocked.reason : '')
           );
         }
 
@@ -125,7 +125,7 @@ router.post('/', async (req, res, next) => {
           orderBy: { maxCapacity: 'asc' },
         });
         if (tables.length === 0) {
-          throw new ValidationError('No tables available for this party size');
+          throw new ValidationError('No hay mesas disponibles para este número de comensales');
         }
 
         const dayStart = new Date(`${date}T00:00:00`);
@@ -153,7 +153,7 @@ router.post('/', async (req, res, next) => {
         }
 
         if (!selectedTable) {
-          throw new ValidationError('No tables available at this time');
+          throw new ValidationError('No hay mesas disponibles en este horario');
         }
 
         return tx.reservation.create({
@@ -193,18 +193,18 @@ router.get('/:slug/availability', async (req, res, next) => {
     console.log(`Checking availability for ${slug} on ${date} with partySize ${partySize}`);
 
     if (!date || !partySize) {
-      throw new ValidationError('date and partySize query params are required');
+      throw new ValidationError('Se requieren los parámetros date y partySize');
     }
 
     const size = parseInt(partySize);
     if (isNaN(size) || size < 1) {
-      throw new ValidationError('partySize must be a positive number');
+      throw new ValidationError('partySize debe ser un número positivo');
     }
 
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug, isActive: true },
     });
-    if (!restaurant) throw new NotFoundError('Restaurant not found');
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
     const requestedDate = new Date(`${date}T00:00:00`);
     const dayOfWeek = requestedDate.getDay();
@@ -335,7 +335,7 @@ router.get('/:slug', async (req, res, next) => {
       },
     });
 
-    if (!restaurant) throw new NotFoundError('Restaurant not found');
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
     res.json(restaurant);
   } catch (error) {

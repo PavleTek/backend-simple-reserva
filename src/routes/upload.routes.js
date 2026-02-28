@@ -24,7 +24,7 @@ const fileFilter = (req, file, cb) => {
   if (file.mimetype === 'application/pdf') {
     cb(null, true);
   } else {
-    cb(new ValidationError('Only PDF files are allowed'), false);
+    cb(new ValidationError('Solo se permiten archivos PDF'), false);
   }
 };
 
@@ -42,7 +42,7 @@ router.post(
   async (req, res, next) => {
     try {
       if (!req.file) {
-        throw new ValidationError('No file uploaded');
+        throw new ValidationError('No se subió ningún archivo');
       }
 
       const menuPdfUrl = `/${req.file.path.replace(/\\/g, '/')}`;
@@ -53,7 +53,7 @@ router.post(
       });
 
       res.json({
-        message: 'Menu uploaded successfully',
+        message: 'Menú subido correctamente',
         menuPdfUrl: restaurant.menuPdfUrl,
       });
     } catch (error) {

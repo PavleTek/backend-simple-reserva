@@ -32,7 +32,7 @@ router.post('/', async (req, res, next) => {
     const { name, description, sortOrder } = req.body;
 
     if (!name) {
-      throw new ValidationError('Name is required');
+      throw new ValidationError('El nombre es obligatorio');
     }
 
     const zone = await prisma.zone.create({
@@ -57,7 +57,7 @@ router.patch('/:id', async (req, res, next) => {
     });
 
     if (!zone || zone.restaurantId !== req.user.restaurantId) {
-      throw new NotFoundError('Zone not found');
+      throw new NotFoundError('Zona no encontrada');
     }
 
     const { name, description, sortOrder } = req.body;
@@ -84,7 +84,7 @@ router.delete('/:id', async (req, res, next) => {
     });
 
     if (!zone || zone.restaurantId !== req.user.restaurantId) {
-      throw new NotFoundError('Zone not found');
+      throw new NotFoundError('Zona no encontrada');
     }
 
     await prisma.zone.update({
@@ -92,7 +92,7 @@ router.delete('/:id', async (req, res, next) => {
       data: { isActive: false },
     });
 
-    res.json({ message: 'Zone deleted' });
+    res.json({ message: 'Zona eliminada' });
   } catch (error) {
     next(error);
   }

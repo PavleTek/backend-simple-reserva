@@ -7,16 +7,16 @@ const errorHandler = (err, req, res, _next) => {
   }
 
   if (err.code === 'P2002') {
-    res.status(409).json({ error: 'A record with this value already exists' });
+    res.status(409).json({ error: 'Ya existe un registro con este valor' });
     return;
   }
 
   if (err.code === 'P2025') {
-    res.status(404).json({ error: 'Record not found' });
+    res.status(404).json({ error: 'Registro no encontrado' });
     return;
   }
 
-  res.status(500).json({ error: 'Internal server error' });
+  res.status(500).json({ error: 'Error interno del servidor' });
 };
 
 module.exports = errorHandler;

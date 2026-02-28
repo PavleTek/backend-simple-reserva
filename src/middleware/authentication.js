@@ -6,7 +6,7 @@ const authenticateToken = async (req, res, next) => {
     const authHeader = req.headers.authorization;
 
     if (!authHeader) {
-      res.status(401).json({ error: 'Access token required' });
+      res.status(401).json({ error: 'Se requiere token de acceso' });
       return;
     }
 
@@ -14,7 +14,7 @@ const authenticateToken = async (req, res, next) => {
     const decoded = verifyToken(token);
 
     if (decoded.isTempToken) {
-      res.status(401).json({ error: 'Temporary tokens are not accepted for this endpoint' });
+      res.status(401).json({ error: 'Los tokens temporales no son válidos para este endpoint' });
       return;
     }
 
@@ -23,7 +23,7 @@ const authenticateToken = async (req, res, next) => {
     });
 
     if (!user) {
-      res.status(401).json({ error: 'User not found' });
+      res.status(401).json({ error: 'Usuario no encontrado' });
       return;
     }
 
@@ -43,7 +43,7 @@ const authenticateToken = async (req, res, next) => {
     if (error instanceof Error) {
       res.status(401).json({ error: error.message });
     } else {
-      res.status(401).json({ error: 'Invalid token' });
+      res.status(401).json({ error: 'Token inválido' });
     }
   }
 };
@@ -91,7 +91,7 @@ const optionalAuth = async (req, res, next) => {
 const authenticateRoles = (allowedRoles) => {
   return (req, res, next) => {
     if (!req.user) {
-      res.status(401).json({ error: 'Authentication required' });
+      res.status(401).json({ error: 'Autenticación requerida' });
       return;
     }
 
@@ -99,7 +99,7 @@ const authenticateRoles = (allowedRoles) => {
 
     if (!hasRequiredRole) {
       res.status(403).json({
-        error: 'Insufficient permissions',
+        error: 'Permisos insuficientes',
         required: allowedRoles,
         userRole: req.user.role
       });

@@ -15,7 +15,7 @@ router.get('/zone/:zoneId', async (req, res, next) => {
     });
 
     if (!zone || zone.restaurantId !== req.user.restaurantId) {
-      throw new NotFoundError('Zone not found');
+      throw new NotFoundError('Zona no encontrada');
     }
 
     const tables = await prisma.restaurantTable.findMany({
@@ -36,13 +36,13 @@ router.post('/zone/:zoneId', async (req, res, next) => {
     });
 
     if (!zone || zone.restaurantId !== req.user.restaurantId) {
-      throw new NotFoundError('Zone not found');
+      throw new NotFoundError('Zona no encontrada');
     }
 
     const { label, minCapacity, maxCapacity } = req.body;
 
     if (!label || maxCapacity === undefined) {
-      throw new ValidationError('Label and maxCapacity are required');
+      throw new ValidationError('Se requiere label y maxCapacity');
     }
 
     const table = await prisma.restaurantTable.create({
@@ -68,7 +68,7 @@ router.patch('/:id', async (req, res, next) => {
     });
 
     if (!table || table.zone.restaurantId !== req.user.restaurantId) {
-      throw new NotFoundError('Table not found');
+      throw new NotFoundError('Mesa no encontrada');
     }
 
     const { label, minCapacity, maxCapacity } = req.body;
@@ -96,7 +96,7 @@ router.delete('/:id', async (req, res, next) => {
     });
 
     if (!table || table.zone.restaurantId !== req.user.restaurantId) {
-      throw new NotFoundError('Table not found');
+      throw new NotFoundError('Mesa no encontrada');
     }
 
     await prisma.restaurantTable.update({
@@ -104,7 +104,7 @@ router.delete('/:id', async (req, res, next) => {
       data: { isActive: false },
     });
 
-    res.json({ message: 'Table deleted' });
+    res.json({ message: 'Mesa eliminada' });
   } catch (error) {
     next(error);
   }

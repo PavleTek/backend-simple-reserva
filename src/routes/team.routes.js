@@ -42,12 +42,12 @@ router.post(
       const { email, name, lastName, temporaryPassword } = req.body;
 
       if (!email || !temporaryPassword) {
-        throw new ValidationError('Email and temporaryPassword are required');
+        throw new ValidationError('Se requiere email y contraseña temporal');
       }
 
       const existing = await prisma.user.findUnique({ where: { email } });
       if (existing) {
-        throw new ValidationError('A user with this email already exists');
+        throw new ValidationError('Ya existe un usuario con este email');
       }
 
       const hashedPassword = await hashPassword(temporaryPassword);
@@ -84,7 +84,7 @@ router.delete(
   async (req, res, next) => {
     try {
       if (req.params.userId === req.user.id) {
-        throw new ForbiddenError('Cannot remove yourself');
+        throw new ForbiddenError('No puedes eliminarte a ti mismo');
       }
 
       const target = await prisma.user.findUnique({
@@ -92,20 +92,20 @@ router.delete(
       });
 
       if (!target || target.restaurantId !== req.user.restaurantId) {
-        throw new NotFoundError('User not found');
+        throw new NotFoundError('Usuario no encontrado');
       }
 
       if (target.role === 'owner') {
-        throw new ForbiddenError('Cannot remove an owner');
+        throw new ForbiddenError('No puedes eliminar al propietario');
       }
 
       if (target.role !== 'admin') {
-        throw new ForbiddenError('Can only remove admin users');
+        throw new ForbiddenError('Solo se pueden eliminar usuarios admin');
       }
 
       await prisma.user.delete({ where: { id: req.params.userId } });
 
-      res.json({ message: 'Team member removed' });
+      res.json({ message: 'Miembro del equipo eliminado' });
     } catch (error) {
       next(error);
     }

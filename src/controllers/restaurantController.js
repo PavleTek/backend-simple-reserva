@@ -20,7 +20,7 @@ const getRestaurant = async (req, res, next) => {
     });
 
     if (!restaurant) {
-      throw new NotFoundError('Restaurant not found');
+      throw new NotFoundError('Restaurante no encontrado');
     }
 
     res.json(restaurant);
@@ -39,7 +39,7 @@ const updateRestaurant = async (req, res, next) => {
       });
 
       if (existing && existing.id !== req.user.restaurantId) {
-        throw new ValidationError('Slug is already in use');
+        throw new ValidationError('El slug ya está en uso');
       }
     }
 

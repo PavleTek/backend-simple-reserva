@@ -26,12 +26,12 @@ router.put('/', async (req, res, next) => {
     const entries = req.body;
 
     if (!Array.isArray(entries) || entries.length === 0) {
-      throw new ValidationError('Request body must be a non-empty array of schedule entries');
+      throw new ValidationError('El cuerpo de la petición debe ser un array no vacío de horarios');
     }
 
     for (const entry of entries) {
       if (entry.dayOfWeek === undefined || !entry.openTime || !entry.closeTime) {
-        throw new ValidationError('Each entry requires dayOfWeek, openTime, and closeTime');
+        throw new ValidationError('Cada entrada requiere dayOfWeek, openTime y closeTime');
       }
     }
 
