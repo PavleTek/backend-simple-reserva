@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                            String    @id @default(cuid())
+  email                         String    @unique
+  name                          String?
+  lastName                      String?
+  hashedPassword                String
+  role                          String    // "super_admin", "owner", "admin"
+  restaurantId                  String?
+  restaurant                    Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+  lastLogin                     DateTime?
+  twoFactorSecret               String?
+  twoFactorEnabled              Boolean   @default(false)
+  userEnabledTwoFactor          Boolean   @default(false)
+  twoFactorRecoveryCode         String?
+  twoFactorRecoveryCodeExpires  DateTime?
+  passwordResetCode             String?
+  passwordResetCodeExpires      DateTime?
+  createdAt                     DateTime  @default(now())
+  updatedAt                     DateTime  @updatedAt
+
+  @@index([role])
+  @@index([restaurantId])
+}
+
+model Restaurant {
+  id                        String    @id @default(cuid())
+  slug                      String    @unique
+  name                      String
+  description               String?
+  logoUrl                   String?
+  address                   String?
+  phone                     String?
+  email                     String?
+  defaultSlotDurationMinutes Int      @default(60)
+  menuPdfUrl                String?
+  isActive                  Boolean   @default(true)
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  users                     User[]
+  zones                     Zone[]
+  schedules                 Schedule[]
+  blockedSlots              BlockedSlot[]
+  reservations              Reservation[]
+  subscriptions             Subscription[]
+
+  @@index([isActive])
+}
+
+model Zone {
+  id            String    @id @default(cuid())
+  restaurantId  String
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  sortOrder     Int       @default(0)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+
+  tables        RestaurantTable[]
+
+  @@index([restaurantId])
+}
+
+model RestaurantTable {
+  id            String    @id @default(cuid())
+  zoneId        String
+  zone          Zone      @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  label         String
+  minCapacity   Int       @default(1)
+  maxCapacity   Int
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+
+  reservations  Reservation[]
+
+  @@index([zoneId])
+}
+
+model Schedule {
+  id            String    @id @default(cuid())
+  restaurantId  String
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dayOfWeek     Int       // 0=Sunday, 1=Monday, ..., 6=Saturday
+  openTime      String    // "09:00"
+  closeTime     String    // "22:00"
+  isActive      Boolean   @default(true)
+
+  @@unique([restaurantId, dayOfWeek])
+}
+
+model BlockedSlot {
+  id            String    @id @default(cuid())
+  restaurantId  String
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  startDatetime DateTime
+  endDatetime   DateTime
+  reason        String?
+
+  @@index([restaurantId, startDatetime, endDatetime])
+}
+
+model Reservation {
+  id              String    @id @default(cuid())
+  restaurantId    String
+  restaurant      Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  tableId         String?
+  table           RestaurantTable? @relation(fields: [tableId], references: [id], onDelete: SetNull)
+  customerName    String
+  customerPhone   String
+  customerEmail   String?
+  partySize       Int
+  dateTime        DateTime
+  durationMinutes Int
+  status          String    @default("confirmed") // "confirmed", "cancelled", "completed", "no_show"
+  notes           String?
+  secureToken     String    @unique @default(cuid())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([restaurantId, dateTime, status])
+  @@index([secureToken])
+}
+
+model Subscription {
+  id            String    @id @default(cuid())
+  restaurantId  String
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  plan          String    @default("free") // "free", "basic", "premium"
+  status        String    @default("active") // "active", "cancelled", "expired"
+  startDate     DateTime  @default(now())
+  endDate       DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([restaurantId])
+}
+
+model EmailSender {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  createdAt DateTime  @default(now())
+}
+
+model Configuration {
+  id                    String    @id @default(cuid())
+  twoFactorEnabled      Boolean   @default(false)
+  appName               String    @default("SimpleReserva")
+  recoveryEmailSenderId String?
+  updatedAt             DateTime  @updatedAt
+}
