@@ -33,7 +33,6 @@ const authenticateToken = async (req, res, next) => {
       name: user.name,
       lastName: user.lastName,
       role: user.role,
-      restaurantId: user.restaurantId,
       lastLogin: user.lastLogin,
       createdAt: user.createdAt,
     };
@@ -76,7 +75,6 @@ const optionalAuth = async (req, res, next) => {
         name: user.name,
         lastName: user.lastName,
         role: user.role,
-        restaurantId: user.restaurantId,
         lastLogin: user.lastLogin,
         createdAt: user.createdAt,
       };
@@ -110,8 +108,67 @@ const authenticateRoles = (allowedRoles) => {
   };
 };
 
+const authorizeRestaurant = async (req, res, next) => {
+  try {
+    const restaurantId = req.params.restaurantId;
+    if (!restaurantId) {
+      res.status(400).json({ error: 'Restaurant ID es requerido' });
+      return;
+    }
+
+    if (!req.user) {
+      res.status(401).json({ error: 'Autenticación requerida' });
+      return;
+    }
+
+    if (req.user.role === 'super_admin') {
+      req.activeRestaurant = { restaurantId, role: 'owner' };
+      next();
+      return;
+    }
+
+    const userRestaurant = await prisma.userRestaurant.findUnique({
+      where: {
+        userId_restaurantId: { userId: req.user.id, restaurantId },
+      },
+      select: { role: true },
+    });
+
+    if (!userRestaurant) {
+      res.status(403).json({ error: 'No tienes acceso a este restaurante' });
+      return;
+    }
+
+    req.activeRestaurant = { restaurantId, role: userRestaurant.role };
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+const authenticateRestaurantRoles = (allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.activeRestaurant) {
+      res.status(403).json({ error: 'Acceso al restaurante no autorizado' });
+      return;
+    }
+    const hasRequiredRole = allowedRoles.includes(req.activeRestaurant.role);
+    if (!hasRequiredRole) {
+      res.status(403).json({
+        error: 'Permisos insuficientes para esta acción',
+        required: allowedRoles,
+        userRole: req.activeRestaurant.role,
+      });
+      return;
+    }
+    next();
+  };
+};
+
 module.exports = {
   authenticateToken,
   optionalAuth,
-  authenticateRoles
+  authenticateRoles,
+  authorizeRestaurant,
+  authenticateRestaurantRoles,
 };

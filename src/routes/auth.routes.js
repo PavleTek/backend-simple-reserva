@@ -4,6 +4,8 @@ const { authenticateToken } = require('../middleware/authentication');
 const {
   login,
   register,
+  addRestaurant,
+  getRestaurantsTodaySummary,
   getProfile,
   updateProfile,
   updatePassword,
@@ -30,6 +32,8 @@ router.post('/2fa/recovery/verify', verifyRecoveryCode);
 router.post('/password-reset/request', requestPasswordReset);
 router.post('/password-reset/verify', verifyPasswordReset);
 
+router.post('/restaurants', authenticateToken, addRestaurant);
+router.get('/restaurants/today-summary', authenticateToken, getRestaurantsTodaySummary);
 router.get('/profile', authenticateToken, getProfile);
 router.put('/profile', authenticateToken, updateProfile);
 router.put('/profile/password', authenticateToken, updatePassword);

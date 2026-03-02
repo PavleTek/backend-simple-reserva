@@ -1,17 +1,18 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
-const { authenticateToken, authenticateRoles } = require('../middleware/authentication');
+const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { ValidationError } = require('../utils/errors');
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
-router.use(authenticateRoles(['owner', 'admin']));
+router.use(authorizeRestaurant);
+router.use(authenticateRestaurantRoles(['owner', 'admin']));
 
 router.get('/', async (req, res, next) => {
   try {
     const schedules = await prisma.schedule.findMany({
-      where: { restaurantId: req.user.restaurantId },
+      where: { restaurantId: req.activeRestaurant.restaurantId },
       orderBy: { dayOfWeek: 'asc' },
     });
 
@@ -37,21 +38,23 @@ router.put('/', async (req, res, next) => {
 
     const schedules = await prisma.$transaction(async (tx) => {
       await tx.schedule.deleteMany({
-        where: { restaurantId: req.user.restaurantId },
+        where: { restaurantId: req.activeRestaurant.restaurantId },
       });
 
       await tx.schedule.createMany({
         data: entries.map((entry) => ({
-          restaurantId: req.user.restaurantId,
+          restaurantId: req.activeRestaurant.restaurantId,
           dayOfWeek: entry.dayOfWeek,
           openTime: entry.openTime,
           closeTime: entry.closeTime,
+          breakStartTime: entry.breakStartTime || null,
+          breakEndTime: entry.breakEndTime || null,
           isActive: entry.isActive ?? true,
         })),
       });
 
       return tx.schedule.findMany({
-        where: { restaurantId: req.user.restaurantId },
+        where: { restaurantId: req.activeRestaurant.restaurantId },
         orderBy: { dayOfWeek: 'asc' },
       });
     });

@@ -13,9 +13,7 @@ model User {
   name                          String?
   lastName                      String?
   hashedPassword                String
-  role                          String    // "super_admin", "owner", "admin"
-  restaurantId                  String?
-  restaurant                    Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+  role                          String    // "super_admin" (system-wide) or "owner"/"admin" (legacy, use UserRestaurant for restaurant access)
   lastLogin                     DateTime?
   twoFactorSecret               String?
   twoFactorEnabled              Boolean   @default(false)
@@ -27,7 +25,22 @@ model User {
   createdAt                     DateTime  @default(now())
   updatedAt                     DateTime  @updatedAt
 
+  userRestaurants               UserRestaurant[]
+
   @@index([role])
+}
+
+model UserRestaurant {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  role         String   // "owner" | "admin"
+  createdAt    DateTime @default(now())
+
+  @@unique([userId, restaurantId])
+  @@index([userId])
   @@index([restaurantId])
 }
 
@@ -41,12 +54,17 @@ model Restaurant {
   phone                     String?
   email                     String?
   defaultSlotDurationMinutes Int      @default(60)
+  bufferMinutesBetweenReservations Int @default(0)
+  advanceBookingLimitDays   Int      @default(30)
+  minimumNoticeMinutes     Int      @default(60)
+  noShowGracePeriodMinutes Int      @default(15)
   menuPdfUrl                String?
   isActive                  Boolean   @default(true)
+  trialEndsAt               DateTime? // null = legacy/no trial; set = trial ends at this date (14 days from signup or inherited)
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
 
-  users                     User[]
+  userRestaurants           UserRestaurant[]
   zones                     Zone[]
   schedules                 Schedule[]
   blockedSlots              BlockedSlot[]
@@ -93,6 +111,8 @@ model Schedule {
   dayOfWeek     Int       // 0=Sunday, 1=Monday, ..., 6=Saturday
   openTime      String    // "09:00"
   closeTime     String    // "22:00"
+  breakStartTime String?  // "15:00" - start of gap (e.g. between lunch and dinner)
+  breakEndTime   String?  // "19:00" - end of gap
   isActive      Boolean   @default(true)
 
   @@unique([restaurantId, dayOfWeek])
@@ -122,6 +142,7 @@ model Reservation {
   dateTime        DateTime
   durationMinutes Int
   status          String    @default("confirmed") // "confirmed", "cancelled", "completed", "no_show"
+  source          String    @default("web")      // "web" (public booking), "manual" (admin panel), "phone"
   notes           String?
   secureToken     String    @unique @default(cuid())
   createdAt       DateTime  @default(now())
@@ -135,10 +156,11 @@ model Subscription {
   id            String    @id @default(cuid())
   restaurantId  String
   restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  plan          String    @default("free") // "free", "basic", "premium"
-  status        String    @default("active") // "active", "cancelled", "expired"
+  plan          String    @default("profesional") // single plan: "profesional"
+  status        String    @default("trial") // "trial", "active", "cancelled", "expired"
   startDate     DateTime  @default(now())
   endDate       DateTime?
+  mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
   createdAt     DateTime  @default(now())
 
   @@index([restaurantId])

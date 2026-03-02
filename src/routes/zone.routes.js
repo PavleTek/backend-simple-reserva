@@ -1,17 +1,19 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
-const { authenticateToken, authenticateRoles } = require('../middleware/authentication');
+const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
-router.use(authenticateRoles(['owner', 'admin']));
+router.use(authorizeRestaurant);
+router.use(authenticateRestaurantRoles(['owner', 'admin']));
 
 router.get('/', async (req, res, next) => {
   try {
+    const restaurantId = req.activeRestaurant.restaurantId;
     const zones = await prisma.zone.findMany({
-      where: { restaurantId: req.user.restaurantId, isActive: true },
+      where: { restaurantId, isActive: true },
       orderBy: { sortOrder: 'asc' },
       include: {
         tables: {
@@ -37,7 +39,7 @@ router.post('/', async (req, res, next) => {
 
     const zone = await prisma.zone.create({
       data: {
-        restaurantId: req.user.restaurantId,
+        restaurantId: req.activeRestaurant.restaurantId,
         name,
         description: description || null,
         sortOrder: sortOrder ?? 0,
@@ -56,7 +58,7 @@ router.patch('/:id', async (req, res, next) => {
       where: { id: req.params.id },
     });
 
-    if (!zone || zone.restaurantId !== req.user.restaurantId) {
+    if (!zone || zone.restaurantId !== req.activeRestaurant.restaurantId) {
       throw new NotFoundError('Zona no encontrada');
     }
 
@@ -81,10 +83,27 @@ router.delete('/:id', async (req, res, next) => {
   try {
     const zone = await prisma.zone.findUnique({
       where: { id: req.params.id },
+      include: { tables: { select: { id: true } } },
     });
 
-    if (!zone || zone.restaurantId !== req.user.restaurantId) {
+    if (!zone || zone.restaurantId !== req.activeRestaurant.restaurantId) {
       throw new NotFoundError('Zona no encontrada');
+    }
+
+    const tableIds = zone.tables.map((t) => t.id);
+    const futureCount = tableIds.length > 0
+      ? await prisma.reservation.count({
+          where: {
+            tableId: { in: tableIds },
+            status: 'confirmed',
+            dateTime: { gte: new Date() },
+          },
+        })
+      : 0;
+    if (futureCount > 0) {
+      throw new ValidationError(
+        `No se puede eliminar la zona: tiene ${futureCount} reserva(s) futura(s) en sus mesas. Cancela o reasigna primero.`,
+      );
     }
 
     await prisma.zone.update({

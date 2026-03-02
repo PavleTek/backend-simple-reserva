@@ -32,7 +32,7 @@ router.get('/restaurants', async (req, res, next) => {
         take: limit,
         orderBy: { createdAt: 'desc' },
         include: {
-          _count: { select: { reservations: true, users: true } },
+          _count: { select: { reservations: true, userRestaurants: true } },
           subscriptions: true,
         },
       }),
@@ -51,15 +51,18 @@ router.get('/restaurants/:id', async (req, res, next) => {
       where: { id: req.params.id },
       include: {
         zones: { include: { tables: true } },
-        users: {
-          select: {
-            id: true,
-            email: true,
-            name: true,
-            lastName: true,
-            role: true,
-            lastLogin: true,
-            createdAt: true,
+        userRestaurants: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                email: true,
+                name: true,
+                lastName: true,
+                lastLogin: true,
+                createdAt: true,
+              },
+            },
           },
         },
         subscriptions: true,
@@ -117,8 +120,9 @@ router.get('/users', async (req, res, next) => {
           name: true,
           lastName: true,
           role: true,
-          restaurantId: true,
-          restaurant: { select: { name: true } },
+          userRestaurants: {
+            include: { restaurant: { select: { id: true, name: true } } },
+          },
           lastLogin: true,
           createdAt: true,
         },

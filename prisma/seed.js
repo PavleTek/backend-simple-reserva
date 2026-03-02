@@ -11,6 +11,7 @@ async function main() {
     Configuration: { created: 0, skipped: 0 },
     Restaurant: { created: 0, skipped: 0 },
     User: { created: 0, skipped: 0 },
+    UserRestaurant: { created: 0, skipped: 0 },
     Zone: { created: 0, skipped: 0 },
     RestaurantTable: { created: 0, skipped: 0 },
     Schedule: { created: 0, skipped: 0 },
@@ -109,22 +110,47 @@ async function main() {
       { email: 'pavle@simplereserva.com', name: 'Pavle', lastName: 'Admin', hashedPassword: adminHash, role: 'super_admin' },
     ];
 
+    const userRestaurantLinks = [];
+
     // Add Owners and Admins for each restaurant if they were just created
     if (restaurants.length >= 3) {
       userData.push(
-        { email: 'carlos@lacasona.cl', name: 'Carlos', lastName: 'Rodriguez', hashedPassword: ownerHash, role: 'owner', restaurantId: restaurants[0].id },
-        { email: 'maria@elporton.cl', name: 'Maria', lastName: 'Gomez', hashedPassword: ownerHash, role: 'owner', restaurantId: restaurants[1].id },
-        { email: 'diego@sushiwave.cl', name: 'Diego', lastName: 'Perez', hashedPassword: ownerHash, role: 'owner', restaurantId: restaurants[2].id },
-        { email: 'ana@lacasona.cl', name: 'Ana', lastName: 'Soto', hashedPassword: adminHash, role: 'admin', restaurantId: restaurants[0].id },
-        { email: 'jose@elporton.cl', name: 'Jose', lastName: 'Muñoz', hashedPassword: adminHash, role: 'admin', restaurantId: restaurants[1].id }
+        { email: 'carlos@lacasona.cl', name: 'Carlos', lastName: 'Rodriguez', hashedPassword: ownerHash, role: 'owner' },
+        { email: 'maria@elporton.cl', name: 'Maria', lastName: 'Gomez', hashedPassword: ownerHash, role: 'owner' },
+        { email: 'diego@sushiwave.cl', name: 'Diego', lastName: 'Perez', hashedPassword: ownerHash, role: 'owner' },
+        { email: 'ana@lacasona.cl', name: 'Ana', lastName: 'Soto', hashedPassword: adminHash, role: 'admin' },
+        { email: 'jose@elporton.cl', name: 'Jose', lastName: 'Muñoz', hashedPassword: adminHash, role: 'admin' }
+      );
+      userRestaurantLinks.push(
+        { userIndex: 2, restaurantIndex: 0, role: 'owner' },
+        { userIndex: 3, restaurantIndex: 1, role: 'owner' },
+        { userIndex: 4, restaurantIndex: 2, role: 'owner' },
+        { userIndex: 5, restaurantIndex: 0, role: 'admin' },
+        { userIndex: 6, restaurantIndex: 1, role: 'admin' }
       );
     }
 
+    const createdUsers = [];
     for (const data of userData) {
-      await prisma.user.create({ data });
+      const user = await prisma.user.create({ data });
+      createdUsers.push(user);
     }
     summary.User.created = userData.length;
     console.log(`✅ Created ${userData.length} users.`);
+
+    for (const link of userRestaurantLinks) {
+      await prisma.userRestaurant.create({
+        data: {
+          userId: createdUsers[link.userIndex].id,
+          restaurantId: restaurants[link.restaurantIndex].id,
+          role: link.role,
+        },
+      });
+    }
+    if (userRestaurantLinks.length > 0) {
+      summary.UserRestaurant.created = userRestaurantLinks.length;
+      console.log(`✅ Created ${userRestaurantLinks.length} UserRestaurant links.`);
+    }
   } else {
     summary.User.skipped = existingUserCount;
     console.log('ℹ️  Users already exist, skipping.');
@@ -368,36 +394,57 @@ async function main() {
     console.log('ℹ️  Reservations already exist, skipping.');
   }
 
-  // 10. Seed Subscriptions
+  // 10. Seed Subscriptions (MVP: single plan, trial or active)
   const existingSubCount = await prisma.subscription.count();
   if (existingSubCount === 0 && restaurants.length >= 3) {
     const now = new Date();
-    const subData = [
-      {
+    const trialEndsAt = new Date(now);
+    trialEndsAt.setDate(trialEndsAt.getDate() + 14);
+
+    // Restaurant 0: paid (active subscription)
+    await prisma.restaurant.update({
+      where: { id: restaurants[0].id },
+      data: { trialEndsAt: null },
+    });
+    await prisma.subscription.create({
+      data: {
         restaurantId: restaurants[0].id,
-        plan: 'premium',
+        plan: 'profesional',
         status: 'active',
         startDate: new Date(new Date().setMonth(now.getMonth() - 6)),
       },
-      {
+    });
+
+    // Restaurant 1: paid (active subscription)
+    await prisma.restaurant.update({
+      where: { id: restaurants[1].id },
+      data: { trialEndsAt: null },
+    });
+    await prisma.subscription.create({
+      data: {
         restaurantId: restaurants[1].id,
-        plan: 'basic',
+        plan: 'profesional',
         status: 'active',
         startDate: new Date(new Date().setMonth(now.getMonth() - 3)),
       },
-      {
-        restaurantId: restaurants[2].id,
-        plan: 'free',
-        status: 'active',
-        startDate: new Date(new Date().setMonth(now.getMonth() - 1)),
-      }
-    ];
+    });
 
-    for (const data of subData) {
-      await prisma.subscription.create({ data });
-    }
-    summary.Subscription.created = subData.length;
-    console.log(`✅ Created ${subData.length} subscriptions.`);
+    // Restaurant 2: trial (14 days)
+    await prisma.restaurant.update({
+      where: { id: restaurants[2].id },
+      data: { trialEndsAt },
+    });
+    await prisma.subscription.create({
+      data: {
+        restaurantId: restaurants[2].id,
+        plan: 'profesional',
+        status: 'trial',
+        startDate: now,
+      },
+    });
+
+    summary.Subscription.created = 3;
+    console.log(`✅ Created 3 subscriptions.`);
   } else {
     summary.Subscription.skipped = existingSubCount;
     console.log('ℹ️  Subscriptions already exist, skipping.');

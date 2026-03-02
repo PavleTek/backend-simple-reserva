@@ -8,7 +8,6 @@ const generateToken = (user) => {
     userId: user.id.toString(),
     email: user.email,
     role: user.role,
-    restaurantId: user.restaurantId || null,
     iat: Math.floor(Date.now() / 1000),
   };
 
@@ -44,7 +43,6 @@ const generateTempToken = (user) => {
     userId: user.id.toString(),
     email: user.email,
     role: user.role,
-    restaurantId: user.restaurantId || null,
     isTempToken: true,
     iat: Math.floor(Date.now() / 1000),
   };

@@ -1,12 +1,13 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
-const { authenticateToken, authenticateRoles } = require('../middleware/authentication');
+const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
-router.use(authenticateRoles(['owner', 'admin']));
+router.use(authorizeRestaurant);
+router.use(authenticateRestaurantRoles(['owner', 'admin']));
 
 router.get('/zone/:zoneId', async (req, res, next) => {
   try {
@@ -14,7 +15,7 @@ router.get('/zone/:zoneId', async (req, res, next) => {
       where: { id: req.params.zoneId },
     });
 
-    if (!zone || zone.restaurantId !== req.user.restaurantId) {
+    if (!zone || zone.restaurantId !== req.activeRestaurant.restaurantId) {
       throw new NotFoundError('Zona no encontrada');
     }
 
@@ -35,7 +36,7 @@ router.post('/zone/:zoneId', async (req, res, next) => {
       where: { id: req.params.zoneId },
     });
 
-    if (!zone || zone.restaurantId !== req.user.restaurantId) {
+    if (!zone || zone.restaurantId !== req.activeRestaurant.restaurantId) {
       throw new NotFoundError('Zona no encontrada');
     }
 
@@ -67,7 +68,7 @@ router.patch('/:id', async (req, res, next) => {
       include: { zone: true },
     });
 
-    if (!table || table.zone.restaurantId !== req.user.restaurantId) {
+    if (!table || table.zone.restaurantId !== req.activeRestaurant.restaurantId) {
       throw new NotFoundError('Mesa no encontrada');
     }
 
@@ -95,8 +96,21 @@ router.delete('/:id', async (req, res, next) => {
       include: { zone: true },
     });
 
-    if (!table || table.zone.restaurantId !== req.user.restaurantId) {
+    if (!table || table.zone.restaurantId !== req.activeRestaurant.restaurantId) {
       throw new NotFoundError('Mesa no encontrada');
+    }
+
+    const futureCount = await prisma.reservation.count({
+      where: {
+        tableId: req.params.id,
+        status: 'confirmed',
+        dateTime: { gte: new Date() },
+      },
+    });
+    if (futureCount > 0) {
+      throw new ValidationError(
+        `No se puede eliminar la mesa: tiene ${futureCount} reserva(s) futura(s). Cancela o reasigna primero.`,
+      );
     }
 
     await prisma.restaurantTable.update({

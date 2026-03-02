@@ -18,10 +18,24 @@ function stripUser(user, lastLoginOverride) {
     name: user.name,
     lastName: user.lastName,
     role: user.role,
-    restaurantId: user.restaurantId,
     lastLogin: lastLoginOverride || user.lastLogin,
     createdAt: user.createdAt
   };
+}
+
+async function getRestaurantsForUser(userId) {
+  const userRestaurants = await prisma.userRestaurant.findMany({
+    where: { userId },
+    include: {
+      restaurant: { select: { id: true, name: true, slug: true } },
+    },
+  });
+  return userRestaurants.map((ur) => ({
+    id: ur.restaurant.id,
+    name: ur.restaurant.name,
+    slug: ur.restaurant.slug,
+    role: ur.role,
+  }));
 }
 
 function generateSlug(restaurantName) {
@@ -100,10 +114,12 @@ const login = async (req, res) => {
     }
 
     const token = generateToken(userWithoutPassword);
+    const restaurants = await getRestaurantsForUser(user.id);
 
     res.status(200).json({
       message: 'Inicio de sesión exitoso',
       user: userWithoutPassword,
+      restaurants,
       token
     });
   } catch (error) {
@@ -148,11 +164,15 @@ const register = async (req, res) => {
 
     const hashedPassword = await hashPassword(password);
 
+    const trialEndsAt = new Date();
+    trialEndsAt.setDate(trialEndsAt.getDate() + 14);
+
     const result = await prisma.$transaction(async (tx) => {
       const restaurant = await tx.restaurant.create({
         data: {
           name: restaurantName,
-          slug
+          slug,
+          trialEndsAt,
         }
       });
 
@@ -163,15 +183,22 @@ const register = async (req, res) => {
           lastName: lastName || null,
           hashedPassword,
           role: 'owner',
-          restaurantId: restaurant.id
+        }
+      });
+
+      await tx.userRestaurant.create({
+        data: {
+          userId: user.id,
+          restaurantId: restaurant.id,
+          role: 'owner',
         }
       });
 
       await tx.subscription.create({
         data: {
           restaurantId: restaurant.id,
-          plan: 'free',
-          status: 'active'
+          plan: 'profesional',
+          status: 'trial'
         }
       });
 
@@ -180,6 +207,7 @@ const register = async (req, res) => {
 
     const userWithoutPassword = stripUser(result.user);
     const token = generateToken(userWithoutPassword);
+    const restaurants = await getRestaurantsForUser(result.user.id);
 
     res.status(201).json({
       message: 'Registro exitoso',
@@ -189,6 +217,7 @@ const register = async (req, res) => {
         name: result.restaurant.name,
         slug: result.restaurant.slug
       },
+      restaurants,
       token
     });
   } catch (error) {
@@ -197,11 +226,119 @@ const register = async (req, res) => {
   }
 };
 
+const addRestaurant = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    if (req.user.role === 'super_admin') {
+      res.status(403).json({ error: 'Los super administradores no pueden crear restaurantes' });
+      return;
+    }
+
+    const ownerEntry = await prisma.userRestaurant.findFirst({
+      where: { userId, role: 'owner' },
+    });
+    if (!ownerEntry) {
+      res.status(403).json({ error: 'Solo los propietarios pueden agregar nuevas ubicaciones' });
+      return;
+    }
+
+    const { name, slug: providedSlug, address, phone, email } = req.body;
+    if (!name || !name.trim()) {
+      res.status(400).json({ error: 'El nombre del restaurante es obligatorio' });
+      return;
+    }
+
+    const base = (providedSlug && providedSlug.trim()) ? providedSlug.trim() : name.trim();
+    const slug = generateSlug(base);
+
+    const existing = await prisma.restaurant.findUnique({ where: { slug } });
+    if (existing) {
+      res.status(400).json({ error: 'Ya existe un restaurante con ese identificador. Intenta con otro nombre.' });
+      return;
+    }
+
+    // Inherit trial: new location gets earliest trialEndsAt among owner's restaurants
+    const ownerRestaurants = await prisma.restaurant.findMany({
+      where: {
+        userRestaurants: {
+          some: { userId, role: 'owner' },
+        },
+      },
+      select: { trialEndsAt: true },
+    });
+    let trialEndsAt = null;
+    const now = new Date();
+    const futureTrials = ownerRestaurants
+      .map((r) => r.trialEndsAt)
+      .filter((d) => d && d > now);
+    if (futureTrials.length > 0) {
+      trialEndsAt = new Date(Math.min(...futureTrials.map((d) => d.getTime())));
+    } else {
+      // Owner has no active trial; new location gets fresh 14-day trial
+      trialEndsAt = new Date();
+      trialEndsAt.setDate(trialEndsAt.getDate() + 14);
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const restaurant = await tx.restaurant.create({
+        data: {
+          name: name.trim(),
+          slug,
+          address: address?.trim() || null,
+          phone: phone?.trim() || null,
+          email: email?.trim() || null,
+          trialEndsAt,
+        },
+      });
+
+      await tx.userRestaurant.create({
+        data: {
+          userId,
+          restaurantId: restaurant.id,
+          role: 'owner',
+        },
+      });
+
+      await tx.subscription.create({
+        data: {
+          restaurantId: restaurant.id,
+          plan: 'profesional',
+          status: 'trial',
+        },
+      });
+
+      return restaurant;
+    });
+
+    const restaurants = await getRestaurantsForUser(userId);
+
+    res.status(201).json({
+      message: 'Ubicación agregada',
+      restaurant: {
+        id: result.id,
+        name: result.name,
+        slug: result.slug,
+        address: result.address,
+        phone: result.phone,
+        email: result.email,
+      },
+      restaurants,
+    });
+  } catch (error) {
+    console.error('Add restaurant error:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
 const getProfile = async (req, res) => {
   try {
+    const restaurants = req.user.role === 'super_admin'
+      ? []
+      : await getRestaurantsForUser(req.user.id);
     res.status(200).json({
       message: 'Perfil obtenido correctamente',
-      user: req.user
+      user: req.user,
+      restaurants
     });
   } catch (error) {
     console.error('Get profile error:', error);
@@ -328,10 +465,12 @@ const verifyTwoFactor = async (req, res) => {
 
     const userWithoutPassword = stripUser(user, now.toISOString());
     const token = generateToken(userWithoutPassword);
+    const restaurants = await getRestaurantsForUser(user.id);
 
     res.status(200).json({
       message: 'Inicio de sesión exitoso',
       user: userWithoutPassword,
+      restaurants,
       token
     });
   } catch (error) {
@@ -518,10 +657,13 @@ const verifyTwoFactorSetupMandatory = async (req, res) => {
     const userWithoutPassword = stripUser(user, now.toISOString());
     const token = generateToken(userWithoutPassword);
 
+    const restaurants = await getRestaurantsForUser(user.id);
+
     res.status(200).json({
       message: '2FA activado correctamente',
       token,
-      user: userWithoutPassword
+      user: userWithoutPassword,
+      restaurants
     });
   } catch (error) {
     console.error('Verify 2FA setup mandatory error:', error);
@@ -770,10 +912,12 @@ const verifyRecoveryCode = async (req, res) => {
 
     const userWithoutPassword = stripUser(user, now.toISOString());
     const token = generateToken(userWithoutPassword);
+    const restaurants = await getRestaurantsForUser(user.id);
 
     res.status(200).json({
       message: 'Código de recuperación verificado. 2FA desactivado. Puedes configurarlo de nuevo desde tu perfil.',
       user: userWithoutPassword,
+      restaurants,
       token
     });
   } catch (error) {
@@ -933,9 +1077,60 @@ const verifyPasswordReset = async (req, res) => {
   }
 };
 
+const getRestaurantsTodaySummary = async (req, res) => {
+  try {
+    if (req.user.role === 'super_admin') {
+      return res.json({ locations: [] });
+    }
+    const userRestaurants = await prisma.userRestaurant.findMany({
+      where: { userId: req.user.id },
+      include: { restaurant: { select: { id: true, name: true, slug: true } } },
+    });
+    const today = new Date();
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const todayEnd = new Date(todayStart);
+    todayEnd.setDate(todayEnd.getDate() + 1);
+
+    const locationIds = userRestaurants.map((ur) => ur.restaurant.id);
+    const reservations = await prisma.reservation.findMany({
+      where: {
+        restaurantId: { in: locationIds },
+        dateTime: { gte: todayStart, lt: todayEnd },
+        status: 'confirmed',
+      },
+      select: { restaurantId: true, partySize: true },
+    });
+
+    const byRestaurant = {};
+    for (const r of reservations) {
+      if (!byRestaurant[r.restaurantId]) {
+        byRestaurant[r.restaurantId] = { count: 0, covers: 0 };
+      }
+      byRestaurant[r.restaurantId].count++;
+      byRestaurant[r.restaurantId].covers += r.partySize || 0;
+    }
+
+    const locations = userRestaurants.map((ur) => ({
+      id: ur.restaurant.id,
+      name: ur.restaurant.name,
+      slug: ur.restaurant.slug,
+      role: ur.role,
+      todayReservations: byRestaurant[ur.restaurant.id]?.count ?? 0,
+      todayCovers: byRestaurant[ur.restaurant.id]?.covers ?? 0,
+    }));
+
+    res.json({ date: today.toISOString().split('T')[0], locations });
+  } catch (error) {
+    console.error('Get restaurants today summary error:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
 module.exports = {
   login,
   register,
+  addRestaurant,
+  getRestaurantsTodaySummary,
   getProfile,
   updateProfile,
   updatePassword,

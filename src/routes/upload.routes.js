@@ -3,14 +3,15 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const prisma = require('../lib/prisma');
-const { authenticateToken, authenticateRoles } = require('../middleware/authentication');
+const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { ValidationError } = require('../utils/errors');
 
-const router = express.Router();
+const router = express.Router({ mergeParams: true });
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = path.join('uploads', 'menus', req.user.restaurantId);
+    const restaurantId = req.activeRestaurant?.restaurantId ?? req.params?.restaurantId;
+    const dir = path.join('uploads', 'menus', restaurantId);
     fs.mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },
@@ -34,10 +35,39 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
+const logoStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const restaurantId = req.activeRestaurant?.restaurantId ?? req.params?.restaurantId;
+    const dir = path.join('uploads', 'logos', restaurantId);
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = (file.originalname.match(/\.(jpg|jpeg|png|webp)$/i) || ['', 'png'])[1]?.toLowerCase() || 'png';
+    cb(null, `logo-${Date.now()}.${ext}`);
+  },
+});
+
+const logoFileFilter = (req, file, cb) => {
+  const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+  if (allowed.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new ValidationError('Solo se permiten imágenes JPG, PNG o WebP'), false);
+  }
+};
+
+const uploadLogo = multer({
+  storage: logoStorage,
+  fileFilter: logoFileFilter,
+  limits: { fileSize: 2 * 1024 * 1024 },
+});
+
 router.post(
   '/menu',
   authenticateToken,
-  authenticateRoles(['owner', 'admin']),
+  authorizeRestaurant,
+  authenticateRestaurantRoles(['owner', 'admin']),
   upload.single('menu'),
   async (req, res, next) => {
     try {
@@ -48,13 +78,42 @@ router.post(
       const menuPdfUrl = `/${req.file.path.replace(/\\/g, '/')}`;
 
       const restaurant = await prisma.restaurant.update({
-        where: { id: req.user.restaurantId },
+        where: { id: req.activeRestaurant.restaurantId },
         data: { menuPdfUrl },
       });
 
       res.json({
         message: 'Menú subido correctamente',
         menuPdfUrl: restaurant.menuPdfUrl,
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  '/logo',
+  authenticateToken,
+  authorizeRestaurant,
+  authenticateRestaurantRoles(['owner', 'admin']),
+  uploadLogo.single('logo'),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        throw new ValidationError('No se subió ninguna imagen');
+      }
+
+      const logoUrl = `/${req.file.path.replace(/\\/g, '/')}`;
+
+      const restaurant = await prisma.restaurant.update({
+        where: { id: req.activeRestaurant.restaurantId },
+        data: { logoUrl },
+      });
+
+      res.json({
+        message: 'Logo subido correctamente',
+        logoUrl: restaurant.logoUrl,
       });
     } catch (error) {
       next(error);

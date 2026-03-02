@@ -1,4 +1,5 @@
 const express = require("express");
+const path = require("path");
 const cors = require("cors");
 const dotenv = require("dotenv");
 
@@ -13,7 +14,12 @@ const reservationRouter = require("./routes/reservation.routes");
 const teamRouter = require("./routes/team.routes");
 const adminRouter = require("./routes/admin.routes");
 const uploadRouter = require("./routes/upload.routes");
+const webhooksRouter = require("./routes/webhooks.routes");
 const errorHandler = require("./middleware/errorHandler");
+const { startReminderJob } = require("./jobs/reminderJob");
+const { startDailySummaryJob } = require("./jobs/dailySummaryJob");
+const { startNoShowJob } = require("./jobs/noShowJob");
+const { startTrialReminderJob } = require("./jobs/trialReminderJob");
 
 const app = express();
 
@@ -25,12 +31,10 @@ const allowedOrigins = envOrigins
 
 const corsOptions = {
   origin: (origin, callback) => {
-    if (
-      allowedOrigins.length === 0 ||
-      !origin ||
-      allowedOrigins.includes(origin)
-    ) {
+    if (allowedOrigins.length === 0 || !origin || allowedOrigins.includes(origin)) {
       callback(null, true);
+    } else if (process.env.NODE_ENV !== "production" && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
+      callback(null, true); // allow any localhost port in dev
     } else {
       callback(new Error("Not allowed by CORS"));
     }
@@ -43,6 +47,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "SimpleReserva API" });
@@ -55,15 +60,26 @@ app.use("/api/public/reservations", reservationRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/restaurants", reservationRouter);
 app.use("/api/reservations", reservationRouter);
-app.use("/api/restaurant", restaurantRouter);
-app.use("/api/restaurant/zones", zoneRouter);
-app.use("/api/restaurant/tables", tableRouter);
-app.use("/api/restaurant/schedules", scheduleRouter);
-app.use("/api/restaurant/team", teamRouter);
-app.use("/api/restaurant/upload", uploadRouter);
+app.use("/api/restaurant/:restaurantId", restaurantRouter);
+app.use("/api/restaurant/:restaurantId/zones", zoneRouter);
+app.use("/api/restaurant/:restaurantId/tables", tableRouter);
+app.use("/api/restaurant/:restaurantId/schedules", scheduleRouter);
+app.use("/api/restaurant/:restaurantId/team", teamRouter);
+app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/webhooks", webhooksRouter);
+
+app.use((req, res) => {
+  res.status(404).json({ error: 'Recurso no encontrado', path: req.path });
+});
 
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => console.log(`SimpleReserva API running on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`SimpleReserva API running on port ${PORT}`);
+  startReminderJob();
+  startDailySummaryJob();
+  startNoShowJob();
+  startTrialReminderJob();
+});
