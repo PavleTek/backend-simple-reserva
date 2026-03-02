@@ -1,3 +1,5 @@
+-- SimpleReserva v1 — single migration for fresh deploy (prisma migrate deploy)
+
 -- CreateTable
 CREATE TABLE "User" (
     "id" TEXT NOT NULL,
@@ -6,7 +8,6 @@ CREATE TABLE "User" (
     "lastName" TEXT,
     "hashedPassword" TEXT NOT NULL,
     "role" TEXT NOT NULL,
-    "restaurantId" TEXT,
     "lastLogin" TIMESTAMP(3),
     "twoFactorSecret" TEXT,
     "twoFactorEnabled" BOOLEAN NOT NULL DEFAULT false,
@@ -32,12 +33,28 @@ CREATE TABLE "Restaurant" (
     "phone" TEXT,
     "email" TEXT,
     "defaultSlotDurationMinutes" INTEGER NOT NULL DEFAULT 60,
+    "bufferMinutesBetweenReservations" INTEGER NOT NULL DEFAULT 0,
+    "advanceBookingLimitDays" INTEGER NOT NULL DEFAULT 30,
+    "minimumNoticeMinutes" INTEGER NOT NULL DEFAULT 60,
+    "noShowGracePeriodMinutes" INTEGER NOT NULL DEFAULT 15,
     "menuPdfUrl" TEXT,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "trialEndsAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Restaurant_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "UserRestaurant" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "restaurantId" TEXT NOT NULL,
+    "role" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "UserRestaurant_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -73,6 +90,8 @@ CREATE TABLE "Schedule" (
     "dayOfWeek" INTEGER NOT NULL,
     "openTime" TEXT NOT NULL,
     "closeTime" TEXT NOT NULL,
+    "breakStartTime" TEXT,
+    "breakEndTime" TEXT,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
 
     CONSTRAINT "Schedule_pkey" PRIMARY KEY ("id")
@@ -101,6 +120,7 @@ CREATE TABLE "Reservation" (
     "dateTime" TIMESTAMP(3) NOT NULL,
     "durationMinutes" INTEGER NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'confirmed',
+    "source" TEXT NOT NULL DEFAULT 'web',
     "notes" TEXT,
     "secureToken" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -113,10 +133,11 @@ CREATE TABLE "Reservation" (
 CREATE TABLE "Subscription" (
     "id" TEXT NOT NULL,
     "restaurantId" TEXT NOT NULL,
-    "plan" TEXT NOT NULL DEFAULT 'free',
-    "status" TEXT NOT NULL DEFAULT 'active',
+    "plan" TEXT NOT NULL DEFAULT 'profesional',
+    "status" TEXT NOT NULL DEFAULT 'trial',
     "startDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "endDate" TIMESTAMP(3),
+    "mercadopagoPreapprovalId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Subscription_pkey" PRIMARY KEY ("id")
@@ -144,66 +165,44 @@ CREATE TABLE "Configuration" (
 
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
-
--- CreateIndex
 CREATE INDEX "User_role_idx" ON "User"("role");
 
--- CreateIndex
-CREATE INDEX "User_restaurantId_idx" ON "User"("restaurantId");
-
--- CreateIndex
 CREATE UNIQUE INDEX "Restaurant_slug_key" ON "Restaurant"("slug");
-
--- CreateIndex
 CREATE INDEX "Restaurant_isActive_idx" ON "Restaurant"("isActive");
 
--- CreateIndex
+CREATE UNIQUE INDEX "UserRestaurant_userId_restaurantId_key" ON "UserRestaurant"("userId", "restaurantId");
+CREATE INDEX "UserRestaurant_userId_idx" ON "UserRestaurant"("userId");
+CREATE INDEX "UserRestaurant_restaurantId_idx" ON "UserRestaurant"("restaurantId");
+
 CREATE INDEX "Zone_restaurantId_idx" ON "Zone"("restaurantId");
 
--- CreateIndex
 CREATE INDEX "RestaurantTable_zoneId_idx" ON "RestaurantTable"("zoneId");
 
--- CreateIndex
 CREATE UNIQUE INDEX "Schedule_restaurantId_dayOfWeek_key" ON "Schedule"("restaurantId", "dayOfWeek");
 
--- CreateIndex
 CREATE INDEX "BlockedSlot_restaurantId_startDatetime_endDatetime_idx" ON "BlockedSlot"("restaurantId", "startDatetime", "endDatetime");
 
--- CreateIndex
 CREATE UNIQUE INDEX "Reservation_secureToken_key" ON "Reservation"("secureToken");
-
--- CreateIndex
 CREATE INDEX "Reservation_restaurantId_dateTime_status_idx" ON "Reservation"("restaurantId", "dateTime", "status");
-
--- CreateIndex
 CREATE INDEX "Reservation_secureToken_idx" ON "Reservation"("secureToken");
 
--- CreateIndex
 CREATE INDEX "Subscription_restaurantId_idx" ON "Subscription"("restaurantId");
 
--- CreateIndex
 CREATE UNIQUE INDEX "EmailSender_email_key" ON "EmailSender"("email");
 
 -- AddForeignKey
-ALTER TABLE "User" ADD CONSTRAINT "User_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "UserRestaurant" ADD CONSTRAINT "UserRestaurant_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "UserRestaurant" ADD CONSTRAINT "UserRestaurant_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
 ALTER TABLE "Zone" ADD CONSTRAINT "Zone_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
 ALTER TABLE "RestaurantTable" ADD CONSTRAINT "RestaurantTable_zoneId_fkey" FOREIGN KEY ("zoneId") REFERENCES "Zone"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
 ALTER TABLE "Schedule" ADD CONSTRAINT "Schedule_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
 ALTER TABLE "BlockedSlot" ADD CONSTRAINT "BlockedSlot_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
 ALTER TABLE "Reservation" ADD CONSTRAINT "Reservation_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
 ALTER TABLE "Reservation" ADD CONSTRAINT "Reservation_tableId_fkey" FOREIGN KEY ("tableId") REFERENCES "RestaurantTable"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
--- AddForeignKey
 ALTER TABLE "Subscription" ADD CONSTRAINT "Subscription_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
