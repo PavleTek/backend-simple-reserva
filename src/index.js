@@ -109,10 +109,18 @@ app.get("/api/public/plans", async (req, res, next) => {
         maxZones: true,
         maxTables: true,
         maxTeamMembers: true,
+        smsConfirmations: true,
+        smsReminders: true,
+        whatsappConfirmations: true,
+        whatsappReminders: true,
+        whatsappModificationAlerts: true,
         menuPdf: true,
+        advancedBookingSettings: true,
         brandingRemoval: true,
         analyticsWeekly: true,
         analyticsMonthly: true,
+        crossLocationDashboard: true,
+        prioritySupport: true,
       },
     });
     res.json(configs);
