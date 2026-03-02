@@ -52,24 +52,34 @@ function generateSlug(restaurantName) {
 
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email: identifier, password } = req.body;
 
-    if (!email || !password) {
-      res.status(400).json({ error: 'Se requiere email y contraseña' });
+    if (!identifier || !password) {
+      res.status(400).json({ error: 'Se requiere usuario/email y contraseña' });
       return;
     }
 
     const user = await prisma.user.findFirst({
       where: {
-        email: {
-          equals: email,
-          mode: 'insensitive'
-        }
+        OR: [
+          {
+            email: {
+              equals: identifier,
+              mode: 'insensitive'
+            }
+          },
+          {
+            username: {
+              equals: identifier,
+              mode: 'insensitive'
+            }
+          }
+        ]
       }
     });
 
     if (user) {
-      console.log(`[AUTH] Login attempt for email: ${email}`);
+      console.log(`[AUTH] Login attempt for identifier: ${identifier}`);
       console.log(`[AUTH] Hashed password in DB: ${user.hashedPassword}`);
     }
 
@@ -933,19 +943,29 @@ const verifyRecoveryCode = async (req, res) => {
 
 const requestPasswordReset = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email: identifier } = req.body;
 
-    if (!email) {
-      res.status(400).json({ error: 'El email es obligatorio' });
+    if (!identifier) {
+      res.status(400).json({ error: 'El usuario/email es obligatorio' });
       return;
     }
 
     const user = await prisma.user.findFirst({
       where: {
-        email: {
-          equals: email,
-          mode: 'insensitive'
-        }
+        OR: [
+          {
+            email: {
+              equals: identifier,
+              mode: 'insensitive'
+            }
+          },
+          {
+            username: {
+              equals: identifier,
+              mode: 'insensitive'
+            }
+          }
+        ]
       }
     });
 
@@ -1024,19 +1044,29 @@ const requestPasswordReset = async (req, res) => {
 
 const verifyPasswordReset = async (req, res) => {
   try {
-    const { email, code, newPassword } = req.body;
+    const { email: identifier, code, newPassword } = req.body;
 
-    if (!email || !code || !newPassword) {
-      res.status(400).json({ error: 'Se requiere email, código y nueva contraseña' });
+    if (!identifier || !code || !newPassword) {
+      res.status(400).json({ error: 'Se requiere usuario/email, código y nueva contraseña' });
       return;
     }
 
     const user = await prisma.user.findFirst({
       where: {
-        email: {
-          equals: email,
-          mode: 'insensitive'
-        }
+        OR: [
+          {
+            email: {
+              equals: identifier,
+              mode: 'insensitive'
+            }
+          },
+          {
+            username: {
+              equals: identifier,
+              mode: 'insensitive'
+            }
+          }
+        ]
       }
     });
 

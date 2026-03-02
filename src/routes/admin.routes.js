@@ -284,6 +284,53 @@ router.delete('/users/:id', async (req, res, next) => {
   }
 });
 
+router.post('/users', async (req, res, next) => {
+  try {
+    const { email, password, name, lastName, role } = req.body;
+    const { hashPassword } = require('../utils/password');
+
+    if (!email || !password || !role) {
+      return res.status(400).json({ error: 'Email, contraseña y rol son obligatorios' });
+    }
+
+    if (!['super_admin', 'owner', 'admin'].includes(role)) {
+      return res.status(400).json({ error: 'Rol inválido' });
+    }
+
+    const existingUser = await prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+    });
+
+    if (existingUser) {
+      return res.status(409).json({ error: 'El email ya está en uso' });
+    }
+
+    const hashedPassword = await hashPassword(password);
+
+    const newUser = await prisma.user.create({
+      data: {
+        email: email.toLowerCase().trim(),
+        hashedPassword,
+        name,
+        lastName,
+        role,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        lastName: true,
+        role: true,
+        createdAt: true,
+      },
+    });
+
+    res.status(201).json(newUser);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/users/:id/reset-2fa', async (req, res, next) => {
   try {
     await prisma.user.update({
