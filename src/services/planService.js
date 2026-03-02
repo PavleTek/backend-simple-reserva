@@ -150,6 +150,9 @@ async function getOwnerPlan(ownerId) {
 
 /**
  * Get owner's plan when in trial (trial = básico, sin tarjeta).
+ * 1) Restaurant con trialEndsAt en el futuro → basico
+ * 2) Subscription con status 'trial' → plan de esa sub
+ * 3) Subscription activa/cancelada → plan de esa sub
  */
 async function getOwnerPlanIncludingTrial(ownerId) {
   const ownerRestaurants = await prisma.userRestaurant.findMany({
@@ -168,6 +171,18 @@ async function getOwnerPlanIncludingTrial(ownerId) {
     if (r?.trialEndsAt && new Date() < r.trialEndsAt) {
       return 'basico';
     }
+  }
+
+  // También buscar subscription 'trial' (por si trialEndsAt es null en datos legacy)
+  const trialSub = await prisma.subscription.findFirst({
+    where: {
+      restaurantId: { in: restaurantIds },
+      status: 'trial',
+    },
+    select: { plan: true },
+  });
+  if (trialSub?.plan && VALID_PLANS.includes(trialSub.plan)) {
+    return trialSub.plan;
   }
 
   return getOwnerPlan(ownerId);
@@ -217,6 +232,7 @@ function mergeConfigWithOverride(config, override) {
 
 /**
  * Resolve effective plan config for an owner. Uses cache.
+ * Nuevos usuarios tienen plan básico por defecto (trial). Si no se resuelve, propietarios con restaurantes = básico.
  * @param {string} ownerId - User id of the owner
  * @param {boolean} includeTrial - If true, trial gives básico access
  */
@@ -227,12 +243,20 @@ async function resolvePlanConfig(ownerId, includeTrial = true) {
     return cached.config;
   }
 
-  const planKey = includeTrial
+  let planKey = includeTrial
     ? await getOwnerPlanIncludingTrial(ownerId)
     : await getOwnerPlan(ownerId);
+
+  // Propietario con restaurantes siempre tiene plan (básico por defecto). Evita "Sin plan activo" en trial/legacy.
+  if (!planKey) {
+    const hasRestaurants = await prisma.userRestaurant.count({
+      where: { userId: ownerId, role: 'owner' },
+    });
+    if (hasRestaurants > 0) planKey = 'basico';
+  }
   if (!planKey) return null;
 
-  const config = await getPlanConfig(planKey);
+  const config = await getPlanConfig(planKey) || FALLBACK_CONFIG[planKey];
   if (!config) return null;
 
   const override = await getPlanOverride(ownerId);
