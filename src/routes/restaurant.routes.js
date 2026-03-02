@@ -1,7 +1,7 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
-const { sendReservationConfirmation } = require('../services/notificationService');
+const { sendReservationConfirmation, sendModificationAlertToCustomer } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations } = require('../services/subscriptionService');
 const planService = require('../services/planService');
 const { getRestaurant, updateRestaurant } = require('../controllers/restaurantController');
@@ -638,6 +638,16 @@ router.patch('/reservations/:id', async (req, res, next) => {
         { isolationLevel: 'Serializable' }
       );
 
+      if (date !== undefined || time !== undefined || partySize !== undefined) {
+        sendModificationAlertToCustomer({
+          customerPhone: updated.customerPhone,
+          restaurantName: updated.restaurant.name,
+          type: 'modified',
+          dateTime: updated.dateTime,
+          partySize: updated.partySize,
+          restaurantId: reservation.restaurantId,
+        }).catch((err) => console.error('[Notification] Admin edit alert failed:', err));
+      }
       return res.json(updated);
     }
 

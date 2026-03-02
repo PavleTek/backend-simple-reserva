@@ -212,6 +212,33 @@ async function enterGracePeriod(restaurantId) {
     where: { restaurantId, status: 'active' },
     data: { status: 'grace', gracePeriodEndsAt: graceEnd },
   });
+
+  // Notify owners by email
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: {
+        name: true,
+        userRestaurants: {
+          where: { role: 'owner' },
+          select: { user: { select: { email: true } } },
+        },
+      },
+    });
+    if (restaurant) {
+      const emails = [...new Set(restaurant.userRestaurants.map((ur) => ur.user?.email).filter(Boolean))];
+      const panelBase = (process.env.APP_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
+      const panelUrl = `${panelBase}/billing?restaurantId=${restaurantId}`;
+      const { sendPaymentFailureNotification } = require('./notificationService');
+      await sendPaymentFailureNotification({
+        emails,
+        restaurantName: restaurant.name,
+        panelUrl,
+      });
+    }
+  } catch (err) {
+    console.error('[MercadoPago] enterGracePeriod: failed to send payment failure email:', err?.message ?? err);
+  }
 }
 
 /**

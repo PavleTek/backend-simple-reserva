@@ -22,6 +22,8 @@ const { startReminderJob } = require("./jobs/reminderJob");
 const { startDailySummaryJob } = require("./jobs/dailySummaryJob");
 const { startNoShowJob } = require("./jobs/noShowJob");
 const { startTrialReminderJob } = require("./jobs/trialReminderJob");
+const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
+const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
 
 const app = express();
 
@@ -159,4 +161,6 @@ app.listen(PORT, "0.0.0.0", () => {
   startDailySummaryJob();
   // startNoShowJob(); // Deactivated: no-show marking is manual-only
   startTrialReminderJob();
+  startTrialExpiryJob();
+  startGracePeriodExpiryJob();
 });

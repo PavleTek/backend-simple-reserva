@@ -222,6 +222,19 @@ const register = async (req, res) => {
     const token = generateToken(userWithoutPassword);
     const restaurants = await getRestaurantsForUser(result.user.id);
 
+    // Send welcome email (fire-and-forget, don't block response)
+    try {
+      const panelUrl = (process.env.APP_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
+      const { sendWelcomeEmail } = require('../services/notificationService');
+      await sendWelcomeEmail({
+        email: result.user.email,
+        restaurantName: result.restaurant.name,
+        panelUrl,
+      });
+    } catch (err) {
+      console.error('[Auth] Welcome email failed:', err?.message ?? err);
+    }
+
     res.status(201).json({
       message: 'Registro exitoso',
       user: userWithoutPassword,

@@ -7,8 +7,14 @@ const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const { sendEmail } = require('../services/emailService');
 const { isTrialing } = require('../services/subscriptionService');
+const planService = require('../services/planService');
 
 const PANEL_BASE_URL = process.env.APP_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175';
+
+function formatPriceCLP(amount) {
+  if (amount == null) return '$4,990 CLP';
+  return `$${Number(amount).toLocaleString('es-CL')} CLP`;
+}
 
 function msToDays(ms) {
   return Math.floor(ms / (1000 * 60 * 60 * 24));
@@ -42,6 +48,10 @@ async function runTrialReminders() {
     const daysLeft = msToDays(trialEndsAt.getTime() - now.getTime());
     if (daysLeft !== 7 && daysLeft !== 12) continue;
 
+    const ownerId = rest.userRestaurants.find((ur) => ur.role === 'owner')?.userId;
+    const planConfig = ownerId ? await planService.resolvePlanConfig(ownerId, true) : null;
+    const priceStr = formatPriceCLP(planConfig?.biweeklyPriceCLP);
+
     const config = await prisma.configuration.findFirst();
     const fromSender = config?.recoveryEmailSenderId
       ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
@@ -57,8 +67,8 @@ async function runTrialReminders() {
     const reservationCount = rest._count.reservations;
     const body =
       daysLeft === 7
-        ? `Hola,\n\nTe quedan 7 días de prueba gratuita en SimpleReserva para ${rest.name}.\n\n${reservationCount > 0 ? `Hasta ahora has recibido ${reservationCount} reservas. ` : ''}Activa tu suscripción antes de que termine la prueba para seguir recibiendo reservas sin interrupciones.\n\nPrecio: $4,990 CLP cada 2 semanas. Sin contrato.\n\nActivar suscripción: ${panelUrl}\n\nSaludos,\nEl equipo de SimpleReserva`
-        : `Hola,\n\nTu prueba gratuita de SimpleReserva para ${rest.name} termina en 2 días.\n\nActiva tu suscripción para no perder acceso a tu página de reservas:\n\n${panelUrl}\n\nPrecio: $4,990 CLP cada 2 semanas. IVA incluido. Cancela cuando quieras.\n\nSaludos,\nEl equipo de SimpleReserva`;
+        ? `Hola,\n\nTe quedan 7 días de prueba gratuita en SimpleReserva para ${rest.name}.\n\n${reservationCount > 0 ? `Hasta ahora has recibido ${reservationCount} reservas. ` : ''}Activa tu suscripción antes de que termine la prueba para seguir recibiendo reservas sin interrupciones.\n\nPrecio: ${priceStr} cada 2 semanas. Sin contrato.\n\nActivar suscripción: ${panelUrl}\n\nSaludos,\nEl equipo de SimpleReserva`
+        : `Hola,\n\nTu prueba gratuita de SimpleReserva para ${rest.name} termina en 2 días.\n\nActiva tu suscripción para no perder acceso a tu página de reservas:\n\n${panelUrl}\n\nPrecio: ${priceStr} cada 2 semanas. IVA incluido. Cancela cuando quieras.\n\nSaludos,\nEl equipo de SimpleReserva`;
 
     const emails = [...new Set(rest.userRestaurants.map((ur) => ur.user.email).filter(Boolean))];
     for (const email of emails) {
