@@ -17,6 +17,7 @@ function getTodayRange() {
 }
 
 async function runDailySummary() {
+  try {
   const { start, end } = getTodayRange();
   const restaurants = await prisma.restaurant.findMany({
     where: { isActive: true },
@@ -62,6 +63,9 @@ async function runDailySummary() {
   }
 
   console.log(`[DailySummaryJob] Sent ${sent} daily summaries`);
+  } catch (err) {
+    console.error('[DailySummaryJob] Error running daily summaries:', err);
+  }
 }
 
 function startDailySummaryJob() {

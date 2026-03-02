@@ -19,6 +19,7 @@ function getTomorrowDateRange() {
 }
 
 async function runReminders() {
+  try {
   const { start, end } = getTomorrowDateRange();
   const reservations = await prisma.reservation.findMany({
     where: {
@@ -48,6 +49,9 @@ async function runReminders() {
 
   if (reservations.length > 0) {
     console.log(`[ReminderJob] Sent ${sent}/${reservations.length} reminders for tomorrow`);
+  }
+  } catch (err) {
+    console.error('[ReminderJob] Error running reminders:', err);
   }
 }
 

@@ -30,9 +30,28 @@ router.put('/', async (req, res, next) => {
       throw new ValidationError('El cuerpo de la petición debe ser un array no vacío de horarios');
     }
 
+    const timeRegex = /^\d{1,2}:\d{2}$/;
     for (const entry of entries) {
       if (entry.dayOfWeek === undefined || !entry.openTime || !entry.closeTime) {
         throw new ValidationError('Cada entrada requiere dayOfWeek, openTime y closeTime');
+      }
+      if (entry.dayOfWeek < 0 || entry.dayOfWeek > 6) {
+        throw new ValidationError('dayOfWeek debe estar entre 0 (domingo) y 6 (sábado)');
+      }
+      if (!timeRegex.test(entry.openTime) || !timeRegex.test(entry.closeTime)) {
+        throw new ValidationError('openTime y closeTime deben tener formato HH:MM');
+      }
+      if (entry.openTime >= entry.closeTime) {
+        throw new ValidationError(`El horario de apertura (${entry.openTime}) debe ser anterior al de cierre (${entry.closeTime})`);
+      }
+      if (entry.breakStartTime && !timeRegex.test(entry.breakStartTime)) {
+        throw new ValidationError('breakStartTime debe tener formato HH:MM');
+      }
+      if (entry.breakEndTime && !timeRegex.test(entry.breakEndTime)) {
+        throw new ValidationError('breakEndTime debe tener formato HH:MM');
+      }
+      if (entry.breakStartTime && entry.breakEndTime && entry.breakStartTime >= entry.breakEndTime) {
+        throw new ValidationError('El fin del primer servicio debe ser antes del inicio del segundo');
       }
     }
 

@@ -77,6 +77,15 @@ router.post(
 
       const menuPdfUrl = `/${req.file.path.replace(/\\/g, '/')}`;
 
+      const current = await prisma.restaurant.findUnique({
+        where: { id: req.activeRestaurant.restaurantId },
+        select: { menuPdfUrl: true },
+      });
+      if (current?.menuPdfUrl) {
+        const oldPath = path.join(__dirname, '..', '..', current.menuPdfUrl);
+        fs.unlink(oldPath, () => {});
+      }
+
       const restaurant = await prisma.restaurant.update({
         where: { id: req.activeRestaurant.restaurantId },
         data: { menuPdfUrl },
@@ -105,6 +114,15 @@ router.post(
       }
 
       const logoUrl = `/${req.file.path.replace(/\\/g, '/')}`;
+
+      const current = await prisma.restaurant.findUnique({
+        where: { id: req.activeRestaurant.restaurantId },
+        select: { logoUrl: true },
+      });
+      if (current?.logoUrl) {
+        const oldPath = path.join(__dirname, '..', '..', current.logoUrl);
+        fs.unlink(oldPath, () => {});
+      }
 
       const restaurant = await prisma.restaurant.update({
         where: { id: req.activeRestaurant.restaurantId },

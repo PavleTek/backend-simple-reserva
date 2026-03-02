@@ -1,0 +1,182 @@
+const express = require('express');
+const prisma = require('../lib/prisma');
+const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
+const { getActiveSubscription, hasActiveAccess, isTrialing, getRestaurantWithTrial } = require('../services/subscriptionService');
+const planService = require('../services/planService');
+
+const router = express.Router({ mergeParams: true });
+
+router.use(authenticateToken);
+router.use(authorizeRestaurant);
+router.use(authenticateRestaurantRoles(['owner', 'admin']));
+
+router.get('/subscription', async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await getRestaurantWithTrial(restaurantId);
+    const sub = await getActiveSubscription(restaurantId);
+    const trialing = await isTrialing(restaurantId);
+    const hasAccess = await hasActiveAccess(restaurantId);
+
+    const inGrace = sub?.status === 'grace' && sub?.gracePeriodEndsAt && new Date() < sub.gracePeriodEndsAt;
+    const status = trialing ? 'trial' : inGrace ? 'grace' : (sub ? 'active' : 'expired');
+    const cancelAtEndDate = sub?.status === 'cancelled' && sub?.endDate ? sub.endDate.toISOString() : null;
+
+    let plan = (sub?.plan && planService.VALID_PLANS.includes(sub.plan)) ? sub.plan : null;
+    if (!plan && trialing) {
+      const trialSub = await prisma.subscription.findFirst({
+        where: { restaurantId, status: 'trial' },
+        select: { plan: true },
+      });
+      plan = (trialSub?.plan && planService.VALID_PLANS.includes(trialSub.plan)) ? trialSub.plan : 'basico';
+    }
+    if (!plan) plan = 'basico';
+
+    const planConfig = hasAccess ? await planService.resolvePlanConfigForRestaurant(restaurantId, true) : null;
+
+    res.json({
+      plan,
+      status,
+      trialEndsAt: restaurant?.trialEndsAt?.toISOString() ?? null,
+      cancelAtEndDate,
+      paymentGracePeriod: inGrace,
+      gracePeriodEndsAt: sub?.gracePeriodEndsAt?.toISOString() ?? null,
+      hasAccess,
+      canActivate: !hasAccess || inGrace || trialing,
+      planConfig: planConfig ? {
+        biweeklyPriceCLP: planConfig.biweeklyPriceCLP,
+        maxLocations: planConfig.maxLocations,
+        maxZones: planConfig.maxZones,
+        maxTables: planConfig.maxTables,
+        maxTeamMembers: planConfig.maxTeamMembers,
+        analyticsWeekly: planConfig.analyticsWeekly,
+        analyticsMonthly: planConfig.analyticsMonthly,
+        menuPdf: planConfig.menuPdf,
+        brandingRemoval: planConfig.brandingRemoval,
+      } : null,
+      allPlans: await Promise.all(
+        planService.VALID_PLANS.map(async (p) => {
+          const cfg = await planService.getPlanConfig(p);
+          return cfg ? {
+            plan: p,
+            biweeklyPriceCLP: cfg.biweeklyPriceCLP,
+            maxLocations: cfg.maxLocations,
+            maxZones: cfg.maxZones,
+            maxTables: cfg.maxTables,
+            maxTeamMembers: cfg.maxTeamMembers,
+            smsConfirmations: cfg.smsConfirmations,
+            smsReminders: cfg.smsReminders,
+            whatsappConfirmations: cfg.whatsappConfirmations,
+            whatsappReminders: cfg.whatsappReminders,
+            whatsappModificationAlerts: cfg.whatsappModificationAlerts,
+            analyticsWeekly: cfg.analyticsWeekly,
+            analyticsMonthly: cfg.analyticsMonthly,
+            menuPdf: cfg.menuPdf,
+            advancedBookingSettings: cfg.advancedBookingSettings,
+            brandingRemoval: cfg.brandingRemoval,
+            crossLocationDashboard: cfg.crossLocationDashboard,
+            prioritySupport: cfg.prioritySupport,
+          } : null;
+        })
+      ).then((arr) => arr.filter(Boolean)),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/billing/checkout', authenticateRestaurantRoles(['owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const plan = req.body?.plan && planService.VALID_PLANS.includes(req.body.plan) ? req.body.plan : 'profesional';
+    const mercadopagoService = require('../services/mercadopagoService');
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { email: true },
+    });
+
+    const appUrl = (process.env.APP_URL || (process.env.CORS_ORIGINS || '').split(',')[0]?.trim() || 'http://localhost:5174').trim();
+    const backendPublicUrl = (process.env.BACKEND_PUBLIC_URL || '').trim();
+    const backUrl = appUrl.includes('localhost') && backendPublicUrl
+      ? `${backendPublicUrl.replace(/\/$/, '')}/api/redirect-to-billing/${restaurantId}`
+      : `${appUrl.replace(/\/$/, '')}/billing?restaurantId=${restaurantId}`;
+
+    const result = await mercadopagoService.createSubscription(
+      restaurantId,
+      req.user.id,
+      backUrl,
+      user?.email,
+      plan
+    );
+
+    res.json({ checkoutUrl: result?.init_point ?? result?.initPoint ?? null });
+  } catch (error) {
+    if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
+      res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
+      return;
+    }
+    if (error.message?.includes('BACKEND_PUBLIC_URL') || error.message?.includes('MP_TEST_PAYER')) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    if (error.message?.includes('MercadoPago') || error.message?.includes('temporalmente no disponible')) {
+      res.status(502).json({ error: error.message });
+      return;
+    }
+    next(error);
+  }
+});
+
+router.post('/billing/confirm', authenticateRestaurantRoles(['owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const preapprovalId = req.body?.preapprovalId?.trim();
+    if (!preapprovalId) {
+      return res.status(400).json({ error: 'preapprovalId requerido' });
+    }
+    const mercadopagoService = require('../services/mercadopagoService');
+    const result = await mercadopagoService.confirmSubscriptionFromPreapproval(restaurantId, preapprovalId);
+    if (result.activated) {
+      return res.json({ ok: true, message: 'Suscripción activada' });
+    }
+    return res.json({ ok: false, message: result.reason || 'Pago aún no autorizado' });
+  } catch (error) {
+    if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
+      return res.status(503).json({ error: 'Configuración de pagos no disponible.' });
+    }
+    next(error);
+  }
+});
+
+router.post('/billing/cancel', authenticateRestaurantRoles(['owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const sub = await prisma.subscription.findFirst({
+      where: { restaurantId, status: 'active' },
+      orderBy: { startDate: 'desc' },
+    });
+    if (!sub?.mercadopagoPreapprovalId) {
+      res.status(400).json({ error: 'No hay suscripción activa para cancelar.' });
+      return;
+    }
+    const mercadopagoService = require('../services/mercadopagoService');
+    await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
+    const config = await planService.getPlanConfig(sub.plan);
+    const billingDays = config?.billingFrequencyDays ?? 14;
+    const periodEnd = new Date(Date.now() + billingDays * 24 * 60 * 60 * 1000);
+    await prisma.subscription.update({
+      where: { id: sub.id },
+      data: { status: 'cancelled', endDate: periodEnd },
+    });
+    res.json({ message: 'Suscripción cancelada. Seguirás con acceso hasta el final del periodo actual.' });
+  } catch (error) {
+    if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
+      res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
+      return;
+    }
+    next(error);
+  }
+});
+
+module.exports = router;

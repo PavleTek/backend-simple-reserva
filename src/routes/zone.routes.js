@@ -71,6 +71,10 @@ router.patch('/:id', async (req, res, next) => {
 
     const { name, description, sortOrder } = req.body;
 
+    if (name !== undefined && (!name || !String(name).trim())) {
+      throw new ValidationError('El nombre no puede estar vacío');
+    }
+
     const updated = await prisma.zone.update({
       where: { id: req.params.id },
       data: {

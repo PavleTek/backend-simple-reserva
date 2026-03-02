@@ -411,8 +411,6 @@ router.get('/:slug/availability', async (req, res, next) => {
     const { slug } = req.params;
     const { date, partySize, zoneId } = req.query;
 
-    console.log(`Checking availability for ${slug} on ${date} with partySize ${partySize}${zoneId ? ` zoneId ${zoneId}` : ''}`);
-
     if (!date || !partySize) {
       throw new ValidationError('Se requieren los parámetros date y partySize');
     }
@@ -435,17 +433,12 @@ router.get('/:slug/availability', async (req, res, next) => {
     const requestedDate = new Date(`${date}T00:00:00`);
     const dayOfWeek = requestedDate.getDay();
 
-    console.log(`Day of week: ${dayOfWeek}`);
-
     const schedule = await prisma.schedule.findFirst({
       where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
     });
     if (!schedule) {
-      console.log('No active schedule found for this day');
       return res.json({ slots: [], reason: 'no_schedule' });
     }
-
-    console.log(`Schedule found: ${schedule.openTime} - ${schedule.closeTime}`);
 
     const tablesWhere = {
       isActive: true,
@@ -459,8 +452,6 @@ router.get('/:slug/availability', async (req, res, next) => {
       where: tablesWhere,
       orderBy: { maxCapacity: 'asc' },
     });
-
-    console.log(`Found ${tables.length} suitable tables`);
 
     if (tables.length === 0) return res.json({ slots: [], reason: 'no_tables' });
 
