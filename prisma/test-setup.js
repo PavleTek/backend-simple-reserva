@@ -13,16 +13,16 @@ async function main() {
   const testPasswordHash = await bcrypt.hash('asdf', 12);
 
   // 2. Create Super Admin
-  const superAdmin = await prisma.user.create({
+  await prisma.user.create({
     data: {
-      email: 'admin@test.com',
+      email: 'adminP',
       name: 'Admin',
-      lastName: 'Test',
+      lastName: 'Platform',
       hashedPassword: testPasswordHash,
       role: 'super_admin',
     }
   });
-  console.log('✅ Created Super Admin: admin@test.com / asdf');
+  console.log('✅ Created Super Admin: adminP / asdf');
 
   // 3. Find or Create "La Casona de Pedro"
   let restaurant = await prisma.restaurant.findUnique({
@@ -47,26 +47,40 @@ async function main() {
   }
 
   // 4. Create Restaurant Owner and Admin for La Casona
-  await prisma.user.create({
+  const owner = await prisma.user.create({
     data: {
-      email: 'owner@test.com',
+      email: 'ownerP',
       name: 'Owner',
-      lastName: 'LaCasona',
+      lastName: 'Platform',
       hashedPassword: testPasswordHash,
       role: 'owner',
-      restaurantId: restaurant.id
     }
   });
-  console.log('✅ Created Restaurant Owner: owner@test.com / asdf');
 
-  await prisma.user.create({
+  await prisma.userRestaurant.create({
+    data: {
+      userId: owner.id,
+      restaurantId: restaurant.id,
+      role: 'owner'
+    }
+  });
+  console.log('✅ Created Restaurant Owner: ownerP / asdf');
+
+  const staff = await prisma.user.create({
     data: {
       email: 'staff@test.com',
       name: 'Staff',
       lastName: 'LaCasona',
       hashedPassword: testPasswordHash,
       role: 'admin',
-      restaurantId: restaurant.id
+    }
+  });
+
+  await prisma.userRestaurant.create({
+    data: {
+      userId: staff.id,
+      restaurantId: restaurant.id,
+      role: 'admin'
     }
   });
   console.log('✅ Created Restaurant Admin: staff@test.com / asdf');
@@ -144,8 +158,8 @@ async function main() {
   console.log('\n✨ Test setup completed successfully!');
   console.log('--------------------------------------------------');
   console.log('Credentials Summary:');
-  console.log('Super Admin:      admin@test.com / asdf');
-  console.log('Restaurant Owner: owner@test.com / asdf');
+  console.log('Super Admin:      adminP / asdf');
+  console.log('Restaurant Owner: ownerP / asdf');
   console.log('Restaurant Admin: staff@test.com / asdf');
   console.log('--------------------------------------------------');
 }
