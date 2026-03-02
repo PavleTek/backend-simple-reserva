@@ -7,6 +7,7 @@ async function main() {
   console.log('🌱 Starting comprehensive database seeding...');
 
   const summary = {
+    PlanConfig: { created: 0, skipped: 0 },
     EmailSender: { created: 0, skipped: 0 },
     Configuration: { created: 0, skipped: 0 },
     Restaurant: { created: 0, skipped: 0 },
@@ -19,6 +20,90 @@ async function main() {
     Reservation: { created: 0, skipped: 0 },
     Subscription: { created: 0, skipped: 0 },
   };
+
+  // 0. Seed PlanConfig (basico, profesional, premium)
+  const planConfigs = [
+    {
+      plan: 'basico',
+      smsConfirmations: true,
+      smsReminders: true,
+      whatsappConfirmations: true,
+      whatsappReminders: true,
+      whatsappModificationAlerts: true,
+      menuPdf: false,
+      advancedBookingSettings: false,
+      brandingRemoval: false,
+      analyticsWeekly: false,
+      analyticsMonthly: false,
+      crossLocationDashboard: false,
+      prioritySupport: false,
+      maxLocations: 1,
+      maxZones: 3,
+      maxTables: 15,
+      maxTeamMembers: 2,
+      biweeklyPriceCLP: 2990,
+      currency: 'CLP',
+      billingFrequencyDays: 15,
+    },
+    {
+      plan: 'profesional',
+      smsConfirmations: true,
+      smsReminders: true,
+      whatsappConfirmations: true,
+      whatsappReminders: true,
+      whatsappModificationAlerts: true,
+      menuPdf: true,
+      advancedBookingSettings: true,
+      brandingRemoval: true,
+      analyticsWeekly: true,
+      analyticsMonthly: true,
+      crossLocationDashboard: true,
+      prioritySupport: false,
+      maxLocations: 3,
+      maxZones: null,
+      maxTables: null,
+      maxTeamMembers: 5,
+      biweeklyPriceCLP: 4990,
+      currency: 'CLP',
+      billingFrequencyDays: 15,
+    },
+    {
+      plan: 'premium',
+      smsConfirmations: true,
+      smsReminders: true,
+      whatsappConfirmations: true,
+      whatsappReminders: true,
+      whatsappModificationAlerts: true,
+      menuPdf: true,
+      advancedBookingSettings: true,
+      brandingRemoval: true,
+      analyticsWeekly: true,
+      analyticsMonthly: true,
+      crossLocationDashboard: true,
+      prioritySupport: true,
+      maxLocations: 20,
+      maxZones: null,
+      maxTables: null,
+      maxTeamMembers: null,
+      biweeklyPriceCLP: 9990,
+      currency: 'CLP',
+      billingFrequencyDays: 15,
+    },
+  ];
+  for (const data of planConfigs) {
+    const existing = await prisma.planConfig.findUnique({ where: { plan: data.plan } });
+    if (!existing) {
+      await prisma.planConfig.create({ data });
+      summary.PlanConfig.created += 1;
+    } else {
+      summary.PlanConfig.skipped += 1;
+    }
+  }
+  if (summary.PlanConfig.created > 0) {
+    console.log(`✅ Created ${summary.PlanConfig.created} plan configs (basico, profesional, premium).`);
+  } else if (summary.PlanConfig.skipped > 0) {
+    console.log('ℹ️  PlanConfig already exists, skipping.');
+  }
 
   // 1. Seed EmailSender
   const existingSenderCount = await prisma.emailSender.count();

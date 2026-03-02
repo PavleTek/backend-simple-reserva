@@ -41,6 +41,7 @@ async function runReminders() {
       dateTime: r.dateTime,
       partySize: r.partySize,
       secureToken: r.secureToken,
+      restaurantId: r.restaurantId,
     });
     if (ok) sent++;
   }

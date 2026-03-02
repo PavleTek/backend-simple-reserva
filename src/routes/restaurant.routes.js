@@ -3,6 +3,7 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { sendReservationConfirmation } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, getActiveSubscription, hasActiveAccess, isTrialing, getRestaurantWithTrial } = require('../services/subscriptionService');
+const planService = require('../services/planService');
 const { getRestaurant, updateRestaurant } = require('../controllers/restaurantController');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { isSlotInSchedule } = require('../utils/scheduleUtils');
@@ -21,6 +22,9 @@ router.patch('/', authenticateRestaurantRoles(['owner']), updateRestaurant);
 router.get('/analytics', async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
+    const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
+    const hasWeeklyMonthly = config?.analyticsWeekly && config?.analyticsMonthly;
+
     const now = new Date();
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - now.getDay());
@@ -71,15 +75,18 @@ router.get('/analytics', async (req, res, next) => {
     const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 
     res.json({
-      reservationsThisWeek: reservationsWeek,
-      reservationsThisMonth: reservationsMonth,
+      reservationsThisWeek: hasWeeklyMonthly ? reservationsWeek : null,
+      reservationsThisMonth: hasWeeklyMonthly ? reservationsMonth : null,
       noShowRate,
       totalReservations: total,
-      busiestDay: busiestDay ? { day: dayNames[parseInt(busiestDay[0], 10)], count: busiestDay[1] } : null,
-      busiestHour: busiestHour ? { hour: busiestHour[0], count: busiestHour[1] } : null,
-      partySizeDistribution: Object.entries(byPartySize)
-        .sort((a, b) => parseInt(a[0], 10) - parseInt(b[0], 10))
-        .map(([size, count]) => ({ partySize: parseInt(size, 10), count })),
+      busiestDay: hasWeeklyMonthly && busiestDay ? { day: dayNames[parseInt(busiestDay[0], 10)], count: busiestDay[1] } : null,
+      busiestHour: hasWeeklyMonthly && busiestHour ? { hour: busiestHour[0], count: busiestHour[1] } : null,
+      partySizeDistribution: hasWeeklyMonthly
+        ? Object.entries(byPartySize)
+            .sort((a, b) => parseInt(a[0], 10) - parseInt(b[0], 10))
+            .map(([size, count]) => ({ partySize: parseInt(size, 10), count }))
+        : null,
+      planLimitsAnalytics: !hasWeeklyMonthly,
     });
   } catch (error) {
     next(error);
@@ -188,16 +195,52 @@ router.get('/subscription', async (req, res, next) => {
     const trialing = await isTrialing(restaurantId);
     const hasAccess = await hasActiveAccess(restaurantId);
 
-    const status = trialing ? 'trial' : (sub ? 'active' : 'expired');
+    const inGrace = sub?.status === 'grace' && sub?.gracePeriodEndsAt && new Date() < sub.gracePeriodEndsAt;
+    const status = trialing ? 'trial' : inGrace ? 'grace' : (sub ? 'active' : 'expired');
     const cancelAtEndDate = sub?.status === 'cancelled' && sub?.endDate ? sub.endDate.toISOString() : null;
 
+    const plan = (sub?.plan && planService.VALID_PLANS.includes(sub.plan)) ? sub.plan : 'profesional';
+    const planConfig = hasAccess ? await planService.resolvePlanConfigForRestaurant(restaurantId, true) : null;
+
     res.json({
-      plan: 'profesional',
+      plan,
       status,
       trialEndsAt: restaurant?.trialEndsAt?.toISOString() ?? null,
       cancelAtEndDate,
+      paymentGracePeriod: inGrace,
+      gracePeriodEndsAt: sub?.gracePeriodEndsAt?.toISOString() ?? null,
       hasAccess,
-      canActivate: !hasAccess,
+      canActivate: !hasAccess || inGrace,
+      planConfig: planConfig ? {
+        biweeklyPriceCLP: planConfig.biweeklyPriceCLP,
+        maxLocations: planConfig.maxLocations,
+        maxZones: planConfig.maxZones,
+        maxTables: planConfig.maxTables,
+        maxTeamMembers: planConfig.maxTeamMembers,
+        analyticsWeekly: planConfig.analyticsWeekly,
+        analyticsMonthly: planConfig.analyticsMonthly,
+        menuPdf: planConfig.menuPdf,
+        brandingRemoval: planConfig.brandingRemoval,
+      } : null,
+      allPlans: await Promise.all(
+        planService.VALID_PLANS.map(async (p) => {
+          const cfg = await planService.getPlanConfig(p);
+          return cfg ? {
+            plan: p,
+            biweeklyPriceCLP: cfg.biweeklyPriceCLP,
+            maxLocations: cfg.maxLocations,
+            maxZones: cfg.maxZones,
+            maxTables: cfg.maxTables,
+            maxTeamMembers: cfg.maxTeamMembers,
+            analyticsWeekly: cfg.analyticsWeekly,
+            analyticsMonthly: cfg.analyticsMonthly,
+            menuPdf: cfg.menuPdf,
+            brandingRemoval: cfg.brandingRemoval,
+            crossLocationDashboard: cfg.crossLocationDashboard,
+            prioritySupport: cfg.prioritySupport,
+          } : null;
+        })
+      ).then((arr) => arr.filter(Boolean)),
     });
   } catch (error) {
     next(error);
@@ -208,6 +251,7 @@ router.get('/subscription', async (req, res, next) => {
 router.post('/billing/checkout', authenticateRestaurantRoles(['owner']), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
+    const plan = req.body?.plan && planService.VALID_PLANS.includes(req.body.plan) ? req.body.plan : 'profesional';
     const mercadopagoService = require('../services/mercadopagoService');
 
     const user = await prisma.user.findUnique({
@@ -216,14 +260,18 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['owner']), async (
     });
     const name = [user?.name, user?.lastName].filter(Boolean).join(' ') || user?.email;
 
-    const appUrl = process.env.APP_URL || (process.env.CORS_ORIGINS || '').split(',')[0] || 'http://localhost:5174';
-    const backUrl = `${appUrl.replace(/\/$/, '')}/billing?restaurantId=${restaurantId}`;
+    const appUrl = (process.env.APP_URL || (process.env.CORS_ORIGINS || '').split(',')[0]?.trim() || 'http://localhost:5174').trim();
+    const backendPublicUrl = (process.env.BACKEND_PUBLIC_URL || '').trim();
+    const backUrl = appUrl.includes('localhost') && backendPublicUrl
+      ? `${backendPublicUrl.replace(/\/$/, '')}/api/redirect-to-billing?restaurantId=${restaurantId}`
+      : `${appUrl.replace(/\/$/, '')}/billing?restaurantId=${restaurantId}`;
 
     const result = await mercadopagoService.createSubscription(
       restaurantId,
       backUrl,
       user?.email,
-      name
+      name,
+      plan
     );
 
     res.json({ checkoutUrl: result?.init_point ?? result?.initPoint ?? null });
@@ -563,6 +611,7 @@ router.post('/reservations', async (req, res, next) => {
           dateTime: reservation.dateTime,
           partySize: size,
           secureToken: reservation.secureToken,
+          restaurantId,
         }).catch((err) => console.error('[Notification] Confirmation failed:', err));
       }
     });

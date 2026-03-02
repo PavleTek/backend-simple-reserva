@@ -2,7 +2,7 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const { isSlotInSchedule, generateTimeSlots } = require('../utils/scheduleUtils');
 const { NotFoundError, ValidationError } = require('../utils/errors');
-const { sendReservationConfirmation, sendCancellationNotification } = require('../services/notificationService');
+const { sendReservationConfirmation, sendCancellationNotification, sendModificationAlertToCustomer } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
 
 const router = express.Router();
@@ -152,6 +152,15 @@ router.patch('/token/:secureToken', async (req, res, next) => {
       },
     });
 
+    sendModificationAlertToCustomer({
+      customerPhone: reservation.customerPhone,
+      restaurantName: reservation.restaurant.name,
+      type: 'modified',
+      dateTime,
+      partySize: size,
+      restaurantId: restaurant.id,
+    }).catch((err) => console.error('[Notification] Modification alert failed:', err));
+
     res.json(updated);
   } catch (error) {
     next(error);
@@ -201,6 +210,13 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
       partySize: reservation.partySize,
       panelUrl,
     }).catch((err) => console.error('[Reservation] Cancellation notification failed:', err.message));
+
+    sendModificationAlertToCustomer({
+      customerPhone: reservation.customerPhone,
+      restaurantName: reservation.restaurant?.name || 'Restaurante',
+      type: 'cancelled',
+      restaurantId: reservation.restaurantId,
+    }).catch((err) => console.error('[Notification] Cancellation alert failed:', err));
 
     res.json(updated);
   } catch (error) {
@@ -377,6 +393,7 @@ router.post('/', async (req, res, next) => {
           dateTime: reservation.dateTime,
           partySize: size,
           secureToken: reservation.secureToken,
+          restaurantId: restaurant.id,
         }).catch((err) => console.error('[Notification] Confirmation failed:', err));
       }
     });

@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { NotFoundError, ValidationError } = require('../utils/errors');
+const planService = require('../services/planService');
 
 const router = express.Router({ mergeParams: true });
 
@@ -32,14 +33,20 @@ router.get('/', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
   try {
     const { name, description, sortOrder } = req.body;
+    const restaurantId = req.activeRestaurant.restaurantId;
 
     if (!name) {
       throw new ValidationError('El nombre es obligatorio');
     }
 
+    const canAdd = await planService.canAddZone(restaurantId, true);
+    if (!canAdd.allowed) {
+      throw new ValidationError(canAdd.reason || 'Límite de zonas alcanzado');
+    }
+
     const zone = await prisma.zone.create({
       data: {
-        restaurantId: req.activeRestaurant.restaurantId,
+        restaurantId,
         name,
         description: description || null,
         sortOrder: sortOrder ?? 0,
