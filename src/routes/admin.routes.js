@@ -2,7 +2,8 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authenticateRoles } = require('../middleware/authentication');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
-const { NotFoundError } = require('../utils/errors');
+const { NotFoundError, ValidationError } = require('../utils/errors');
+const planService = require('../services/planService');
 
 const router = express.Router();
 
@@ -132,6 +133,117 @@ router.get('/users', async (req, res, next) => {
 
     res.json(paginatedResponse(users, total, page, limit));
   } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Plan Config (super admin) ───────────────────────────────────
+
+router.get('/plans', async (req, res, next) => {
+  try {
+    const configs = await prisma.planConfig.findMany({
+      orderBy: { plan: 'asc' },
+    });
+    res.json(configs);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/plans/:plan', async (req, res, next) => {
+  try {
+    const config = await prisma.planConfig.findUnique({
+      where: { plan: req.params.plan },
+    });
+    if (!config) throw new NotFoundError('Plan no encontrado');
+    res.json(config);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/plans/:plan', async (req, res, next) => {
+  try {
+    const { plan } = req.params;
+    if (!planService.VALID_PLANS.includes(plan)) {
+      throw new ValidationError('Plan inválido');
+    }
+    const existing = await prisma.planConfig.findUnique({ where: { plan } });
+    if (!existing) throw new NotFoundError('Plan no encontrado');
+
+    const allowed = [
+      'smsConfirmations', 'smsReminders', 'whatsappConfirmations', 'whatsappReminders',
+      'whatsappModificationAlerts', 'menuPdf', 'advancedBookingSettings', 'brandingRemoval',
+      'analyticsWeekly', 'analyticsMonthly', 'crossLocationDashboard', 'prioritySupport',
+      'maxLocations', 'maxZones', 'maxTables', 'maxTeamMembers',
+      'biweeklyPriceCLP', 'currency', 'billingFrequencyDays',
+    ];
+    const data = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) data[key] = req.body[key];
+    }
+    const config = await prisma.planConfig.update({
+      where: { plan },
+      data,
+    });
+    planService.invalidateCache();
+    res.json(config);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Plan Overrides (super admin) ─────────────────────────────────
+
+router.get('/plan-overrides', async (req, res, next) => {
+  try {
+    const overrides = await prisma.planOverride.findMany({
+      include: { user: { select: { id: true, email: true, name: true, lastName: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(overrides);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/plan-overrides', async (req, res, next) => {
+  try {
+    const { userId, biweeklyPriceCLP, expiresAt, reason, ...featureLimits } = req.body;
+    if (!userId) throw new ValidationError('userId es requerido');
+
+    const override = await prisma.planOverride.upsert({
+      where: { userId },
+      update: {
+        ...(biweeklyPriceCLP !== undefined && { biweeklyPriceCLP }),
+        ...(expiresAt !== undefined && { expiresAt: expiresAt ? new Date(expiresAt) : null }),
+        ...(reason !== undefined && { reason }),
+        ...featureLimits,
+      },
+      create: {
+        userId,
+        biweeklyPriceCLP: biweeklyPriceCLP ?? null,
+        expiresAt: expiresAt ? new Date(expiresAt) : null,
+        reason: reason || null,
+        ...featureLimits,
+      },
+    });
+    planService.invalidateCache(userId);
+    res.status(201).json(override);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/plan-overrides/:userId', async (req, res, next) => {
+  try {
+    await prisma.planOverride.delete({
+      where: { userId: req.params.userId },
+    });
+    planService.invalidateCache(req.params.userId);
+    res.json({ message: 'Override eliminado' });
+  } catch (error) {
+    if (error.code === 'P2025') throw new NotFoundError('Override no encontrado');
     next(error);
   }
 });

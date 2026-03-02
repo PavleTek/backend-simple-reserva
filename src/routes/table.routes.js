@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { NotFoundError, ValidationError } = require('../utils/errors');
+const planService = require('../services/planService');
 
 const router = express.Router({ mergeParams: true });
 
@@ -38,6 +39,11 @@ router.post('/zone/:zoneId', async (req, res, next) => {
 
     if (!zone || zone.restaurantId !== req.activeRestaurant.restaurantId) {
       throw new NotFoundError('Zona no encontrada');
+    }
+
+    const canAdd = await planService.canAddTable(zone.restaurantId, true);
+    if (!canAdd.allowed) {
+      throw new ValidationError(canAdd.reason || 'Límite de mesas alcanzado');
     }
 
     const { label, minCapacity, maxCapacity } = req.body;

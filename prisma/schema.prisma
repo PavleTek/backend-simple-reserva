@@ -26,6 +26,7 @@ model User {
   updatedAt                     DateTime  @updatedAt
 
   userRestaurants               UserRestaurant[]
+  planOverride                  PlanOverride?
 
   @@index([role])
 }
@@ -156,10 +157,11 @@ model Subscription {
   id            String    @id @default(cuid())
   restaurantId  String
   restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  plan          String    @default("profesional") // single plan: "profesional"
-  status        String    @default("trial") // "trial", "active", "cancelled", "expired"
+  plan          String    @default("profesional") // "basico" | "profesional" | "premium"
+  status        String    @default("trial") // "trial", "active", "grace", "cancelled", "expired"
   startDate     DateTime  @default(now())
   endDate       DateTime?
+  gracePeriodEndsAt DateTime? // 7-day grace after payment failure; access until this date
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
   createdAt     DateTime  @default(now())
 
@@ -178,4 +180,71 @@ model Configuration {
   appName               String    @default("SimpleReserva")
   recoveryEmailSenderId String?
   updatedAt             DateTime  @updatedAt
+}
+
+// Plan configuration - super admin editable, single source of truth for plan features/limits/pricing
+model PlanConfig {
+  id     String @id @default(cuid())
+  plan   String @unique // "basico" | "profesional" | "premium"
+
+  // Feature flags (boolean)
+  smsConfirmations         Boolean @default(true)
+  smsReminders             Boolean @default(true)
+  whatsappConfirmations     Boolean @default(true)
+  whatsappReminders         Boolean @default(true)
+  whatsappModificationAlerts Boolean @default(true)
+  menuPdf                   Boolean @default(false)
+  advancedBookingSettings   Boolean @default(false)
+  brandingRemoval           Boolean @default(false)
+  analyticsWeekly           Boolean @default(false)
+  analyticsMonthly          Boolean @default(false)
+  crossLocationDashboard    Boolean @default(false)
+  prioritySupport           Boolean @default(false)
+
+  // Numeric limits (null = unlimited)
+  maxLocations    Int
+  maxZones        Int?    // null = unlimited
+  maxTables       Int?    // null = unlimited
+  maxTeamMembers  Int?    // null = unlimited
+
+  // Pricing (flat per plan, not per location)
+  biweeklyPriceCLP     Int    @default(0)
+  currency             String @default("CLP")
+  billingFrequencyDays Int    @default(15)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Per-owner overrides for price, features, and limits (super admin editable)
+model PlanOverride {
+  id        String   @id @default(cuid())
+  userId    String   @unique // owner's User id
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Price override (null = use plan default)
+  biweeklyPriceCLP Int?
+
+  // Feature overrides (null = use plan default)
+  menuPdf                 Boolean?
+  advancedBookingSettings Boolean?
+  brandingRemoval         Boolean?
+  analyticsWeekly         Boolean?
+  analyticsMonthly        Boolean?
+  crossLocationDashboard  Boolean?
+  prioritySupport         Boolean?
+
+  // Limit overrides (null = use plan default)
+  maxLocations   Int?
+  maxZones       Int?
+  maxTables      Int?
+  maxTeamMembers Int?
+
+  expiresAt  DateTime? // when null, override never expires
+  reason     String?   // audit: why this override was applied
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([expiresAt])
 }

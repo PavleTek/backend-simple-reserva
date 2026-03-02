@@ -17,12 +17,17 @@ async function getActiveSubscription(restaurantId) {
   const sub = await prisma.subscription.findFirst({
     where: {
       restaurantId,
-      status: { in: ['active', 'cancelled'] },
+      status: { in: ['active', 'cancelled', 'grace'] },
     },
     orderBy: { startDate: 'desc' },
   });
   if (!sub) return null;
   if (sub.endDate && new Date() > sub.endDate) return null;
+  // Grace period: access until gracePeriodEndsAt
+  if (sub.status === 'grace') {
+    if (sub.gracePeriodEndsAt && new Date() > sub.gracePeriodEndsAt) return null;
+    return sub;
+  }
   if (sub.status === 'cancelled' && (!sub.endDate || new Date() <= sub.endDate)) return sub;
   if (sub.status === 'active') return sub;
   return null;

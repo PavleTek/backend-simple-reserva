@@ -3,6 +3,7 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { hashPassword } = require('../utils/password');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../utils/errors');
+const planService = require('../services/planService');
 
 const router = express.Router({ mergeParams: true });
 
@@ -50,9 +51,19 @@ router.post(
   async (req, res, next) => {
     try {
       const { email, name, lastName, temporaryPassword, restaurantIds } = req.body;
+      const restaurantIdsToAdd = Array.isArray(restaurantIds) && restaurantIds.length > 0
+        ? restaurantIds
+        : [req.activeRestaurant.restaurantId];
 
       if (!email || !temporaryPassword) {
         throw new ValidationError('Se requiere email y contraseña temporal');
+      }
+
+      for (const rid of restaurantIdsToAdd) {
+        const canAdd = await planService.canAddTeamMember(req.user.id, rid, true);
+        if (!canAdd.allowed) {
+          throw new ValidationError(canAdd.reason || 'Límite de miembros alcanzado');
+        }
       }
 
       const existing = await prisma.user.findUnique({ where: { email } });
@@ -61,9 +72,6 @@ router.post(
       }
 
       const hashedPassword = await hashPassword(temporaryPassword);
-      const restaurantIdsToAdd = Array.isArray(restaurantIds) && restaurantIds.length > 0
-        ? restaurantIds
-        : [req.activeRestaurant.restaurantId];
 
       const user = await prisma.$transaction(async (tx) => {
         const newUser = await tx.user.create({

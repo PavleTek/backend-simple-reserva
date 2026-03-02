@@ -5,6 +5,7 @@ const dotenv = require("dotenv");
 
 dotenv.config();
 
+const prisma = require("./lib/prisma");
 const authRouter = require("./routes/auth.routes");
 const restaurantRouter = require("./routes/restaurant.routes");
 const zoneRouter = require("./routes/zone.routes");
@@ -59,6 +60,39 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "SimpleReserva API" });
 });
 
+// Redirect after MercadoPago checkout (back_url) - redirects to frontend billing page
+app.get("/api/redirect-to-billing", (req, res) => {
+  const restaurantId = req.query.restaurantId;
+  const appUrl = (process.env.APP_URL || "http://localhost:5174").replace(/\/$/, "");
+  const target = restaurantId ? `${appUrl}/billing?restaurantId=${restaurantId}` : `${appUrl}/billing`;
+  res.redirect(302, target);
+});
+
+// Public plans for landing page (no auth)
+app.get("/api/public/plans", async (req, res, next) => {
+  try {
+    const configs = await prisma.planConfig.findMany({
+      where: { plan: { in: ["basico", "profesional", "premium"] } },
+      orderBy: { plan: "asc" },
+      select: {
+        plan: true,
+        biweeklyPriceCLP: true,
+        maxLocations: true,
+        maxZones: true,
+        maxTables: true,
+        maxTeamMembers: true,
+        menuPdf: true,
+        brandingRemoval: true,
+        analyticsWeekly: true,
+        analyticsMonthly: true,
+      },
+    });
+    res.json(configs);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Public alias for user-front
 app.use("/api/public/restaurants", reservationRouter);
 app.use("/api/public/reservations", reservationRouter);
@@ -86,6 +120,6 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`SimpleReserva API running on port ${PORT}`);
   startReminderJob();
   startDailySummaryJob();
-  startNoShowJob();
+  // startNoShowJob(); // Deactivated: no-show marking is manual-only
   startTrialReminderJob();
 });

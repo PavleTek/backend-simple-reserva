@@ -1,7 +1,7 @@
 /**
- * Reservation confirmation via SMS (Twilio).
+ * Reservation confirmations and reminders via SMS and WhatsApp (Twilio).
  * Optional: if TWILIO_* env vars are not set, no message is sent.
- * WhatsApp can be added later via Twilio WhatsApp API.
+ * WhatsApp uses Twilio WhatsApp API (TWILIO_WHATSAPP_FROM for sender).
  */
 
 function normalizePhone(phone) {
@@ -48,15 +48,43 @@ async function sendSmsTwilio(to, body) {
   }
 }
 
+async function sendWhatsAppTwilio(to, body) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const fromWa = process.env.TWILIO_WHATSAPP_FROM;
+
+  if (!accountSid || !authToken || !fromWa) {
+    return false;
+  }
+
+  const toWa = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
+  const from = fromWa.startsWith('whatsapp:') ? fromWa : `whatsapp:${fromWa}`;
+
+  try {
+    const twilio = require('twilio');
+    const client = twilio(accountSid, authToken);
+    await client.messages.create({
+      body,
+      from,
+      to: toWa,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Notification] Twilio WhatsApp error:', err.message);
+    return false;
+  }
+}
+
 /**
- * Send reservation confirmation SMS to the customer.
+ * Send reservation confirmation SMS and WhatsApp to the customer.
  * @param {Object} options
  * @param {string} options.customerPhone - Customer phone (Chilean format)
  * @param {string} options.restaurantName - Restaurant name
  * @param {Date|string} options.dateTime - Reservation date/time
  * @param {number} options.partySize - Party size
  * @param {string} options.secureToken - Self-service token
- * @returns {Promise<boolean>} - true if sent, false otherwise
+ * @param {string} [options.restaurantId] - For plan check (WhatsApp gated by whatsappConfirmations)
+ * @returns {Promise<boolean>} - true if at least one channel sent, false otherwise
  */
 async function sendReservationConfirmation(options) {
   const {
@@ -65,6 +93,7 @@ async function sendReservationConfirmation(options) {
     dateTime,
     partySize,
     secureToken,
+    restaurantId,
   } = options;
 
   const to = normalizePhone(customerPhone);
@@ -94,11 +123,24 @@ async function sendReservationConfirmation(options) {
     `Ver o cancelar: ${link}`,
   ].join('\n');
 
-  return sendSmsTwilio(to, body);
+  const smsOk = await sendSmsTwilio(to, body);
+  let waOk = false;
+  if (restaurantId) {
+    const planService = require('./planService');
+    const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
+    if (config?.whatsappConfirmations) {
+      waOk = await sendWhatsAppTwilio(to, body);
+    }
+  } else {
+    waOk = await sendWhatsAppTwilio(to, body);
+  }
+  return smsOk || waOk;
 }
 
 /**
- * Send day-before reminder SMS.
+ * Send day-before reminder SMS and WhatsApp.
+ * @param {Object} options
+ * @param {string} [options.restaurantId] - For plan check (WhatsApp gated by whatsappReminders)
  */
 async function sendReservationReminder(options) {
   const {
@@ -107,6 +149,7 @@ async function sendReservationReminder(options) {
     dateTime,
     partySize,
     secureToken,
+    restaurantId,
   } = options;
 
   const to = normalizePhone(customerPhone);
@@ -126,7 +169,62 @@ async function sendReservationReminder(options) {
     `Confirmar o cancelar: ${link}`,
   ].join('\n');
 
-  return sendSmsTwilio(to, body);
+  const smsOk = await sendSmsTwilio(to, body);
+  let waOk = false;
+  if (restaurantId) {
+    const planService = require('./planService');
+    const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
+    if (config?.whatsappReminders) {
+      waOk = await sendWhatsAppTwilio(to, body);
+    }
+  } else {
+    waOk = await sendWhatsAppTwilio(to, body);
+  }
+  return smsOk || waOk;
+}
+
+/**
+ * Send modification/cancellation alert to customer via WhatsApp.
+ * Used when customer modifies or cancels their reservation.
+ * @param {Object} options
+ * @param {string} options.customerPhone - Customer phone
+ * @param {string} options.restaurantName - Restaurant name
+ * @param {string} options.type - 'cancelled' | 'modified'
+ * @param {Date|string} [options.dateTime] - For modified: new date/time
+ * @param {number} [options.partySize] - For modified: new party size
+ * @param {string} [options.restaurantId] - For plan check (whatsappModificationAlerts)
+ */
+async function sendModificationAlertToCustomer(options) {
+  const { customerPhone, restaurantName, type, dateTime, partySize, restaurantId } = options;
+  const to = normalizePhone(customerPhone);
+  if (!to) return false;
+
+  let body;
+  if (type === 'cancelled') {
+    body = `SimpleReserva: Tu reserva en ${restaurantName} ha sido cancelada correctamente.`;
+  } else if (type === 'modified' && dateTime && partySize) {
+    const dt = new Date(dateTime);
+    const dateStr = dt.toLocaleDateString('es-CL', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+    const timeStr = dt.toLocaleTimeString('es-CL', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    body = `SimpleReserva: Tu reserva en ${restaurantName} ha sido actualizada. Nueva fecha: ${dateStr} a las ${timeStr} para ${partySize} persona(s).`;
+  } else {
+    return false;
+  }
+
+  if (restaurantId) {
+    const planService = require('./planService');
+    const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
+    if (!config?.whatsappModificationAlerts) return false;
+  }
+  return sendWhatsAppTwilio(to, body);
 }
 
 /**
@@ -248,6 +346,7 @@ async function sendCancellationNotification(options) {
 module.exports = {
   sendReservationConfirmation,
   sendReservationReminder,
+  sendModificationAlertToCustomer,
   sendDailySummary,
   sendCancellationNotification,
   normalizePhone,

@@ -1,4 +1,5 @@
 const prisma = require('../lib/prisma');
+const planService = require('../services/planService');
 const { comparePassword, hashPassword } = require('../utils/password');
 const { generateToken, generateTempToken, verifyToken } = require('../utils/jwt');
 const {
@@ -145,12 +146,16 @@ const login = async (req, res) => {
 
 const register = async (req, res) => {
   try {
-    const { email, password, name, lastName, restaurantName, restaurantSlug } = req.body;
+    const { email, password, name, lastName, restaurantName, restaurantSlug, plan } = req.body;
 
     if (!email || !password || !restaurantName) {
       res.status(400).json({ error: 'Se requiere email, contraseña y nombre del restaurante' });
       return;
     }
+
+    const validPlans = ['basico', 'profesional', 'premium'];
+    const selectedPlan = validPlans.includes(plan) ? plan : 'basico';
+    const hasTrial = selectedPlan === 'basico';
 
     const existingUser = await prisma.user.findFirst({
       where: {
@@ -179,8 +184,11 @@ const register = async (req, res) => {
 
     const hashedPassword = await hashPassword(password);
 
-    const trialEndsAt = new Date();
-    trialEndsAt.setDate(trialEndsAt.getDate() + 14);
+    const trialEndsAt = hasTrial ? (() => {
+      const d = new Date();
+      d.setDate(d.getDate() + 14);
+      return d;
+    })() : null;
 
     const result = await prisma.$transaction(async (tx) => {
       const restaurant = await tx.restaurant.create({
@@ -212,8 +220,8 @@ const register = async (req, res) => {
       await tx.subscription.create({
         data: {
           restaurantId: restaurant.id,
-          plan: 'profesional',
-          status: 'trial'
+          plan: selectedPlan,
+          status: hasTrial ? 'trial' : 'expired'
         }
       });
 
@@ -233,7 +241,9 @@ const register = async (req, res) => {
         slug: result.restaurant.slug
       },
       restaurants,
-      token
+      token,
+      plan: selectedPlan,
+      requiresPayment: !hasTrial,
     });
   } catch (error) {
     console.error('Register error:', error);
@@ -260,6 +270,12 @@ const addRestaurant = async (req, res) => {
     const { name, slug: providedSlug, address, phone, email } = req.body;
     if (!name || !name.trim()) {
       res.status(400).json({ error: 'El nombre del restaurante es obligatorio' });
+      return;
+    }
+
+    const canAdd = await planService.canAddLocation(userId, true);
+    if (!canAdd.allowed) {
+      res.status(403).json({ error: canAdd.reason || 'Límite de locales alcanzado. Actualiza tu plan para agregar más.' });
       return;
     }
 
