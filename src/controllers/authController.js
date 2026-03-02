@@ -68,6 +68,11 @@ const login = async (req, res) => {
       }
     });
 
+    if (user) {
+      console.log(`[AUTH] Login attempt for email: ${email}`);
+      console.log(`[AUTH] Hashed password in DB: ${user.hashedPassword}`);
+    }
+
     if (!user) {
       res.status(401).json({ error: 'Credenciales inválidas' });
       return;
