@@ -29,15 +29,21 @@ const allowedOrigins = envOrigins
   .map((o) => o.trim())
   .filter(Boolean);
 
+// If no CORS_ORIGINS are defined, allow any origin; otherwise use the whitelist
+const allowAnyOrigin = allowedOrigins.length === 0;
+
 const corsOptions = {
   origin: (origin, callback) => {
-    if (allowedOrigins.length === 0 || !origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else if (process.env.NODE_ENV !== "production" && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
-      callback(null, true); // allow any localhost port in dev
-    } else {
-      callback(new Error("Not allowed by CORS"));
+    if (allowAnyOrigin) {
+      return callback(null, true);
     }
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    if (process.env.NODE_ENV !== "production" && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
+      return callback(null, true); // allow any localhost port in dev
+    }
+    callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
