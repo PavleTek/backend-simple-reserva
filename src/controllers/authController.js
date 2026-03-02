@@ -62,20 +62,10 @@ const login = async (req, res) => {
 
     const user = await prisma.user.findFirst({
       where: {
-        OR: [
-          {
-            email: {
-              equals: identifier,
-              mode: 'insensitive'
-            }
-          },
-          {
-            username: {
-              equals: identifier,
-              mode: 'insensitive'
-            }
-          }
-        ]
+        email: {
+          equals: identifier,
+          mode: 'insensitive'
+        }
       }
     });
 
@@ -968,20 +958,10 @@ const requestPasswordReset = async (req, res) => {
 
     const user = await prisma.user.findFirst({
       where: {
-        OR: [
-          {
-            email: {
-              equals: identifier,
-              mode: 'insensitive'
-            }
-          },
-          {
-            username: {
-              equals: identifier,
-              mode: 'insensitive'
-            }
-          }
-        ]
+        email: {
+          equals: identifier,
+          mode: 'insensitive'
+        }
       }
     });
 
@@ -1069,20 +1049,10 @@ const verifyPasswordReset = async (req, res) => {
 
     const user = await prisma.user.findFirst({
       where: {
-        OR: [
-          {
-            email: {
-              equals: identifier,
-              mode: 'insensitive'
-            }
-          },
-          {
-            username: {
-              equals: identifier,
-              mode: 'insensitive'
-            }
-          }
-        ]
+        email: {
+          equals: identifier,
+          mode: 'insensitive'
+        }
       }
     });
 
