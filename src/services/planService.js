@@ -27,7 +27,7 @@ const FALLBACK_CONFIG = {
     maxTeamMembers: 2,
     biweeklyPriceCLP: 2990,
     currency: 'CLP',
-    billingFrequencyDays: 15,
+    billingFrequencyDays: 14,
   },
   profesional: {
     plan: 'profesional',
@@ -49,7 +49,7 @@ const FALLBACK_CONFIG = {
     maxTeamMembers: 5,
     biweeklyPriceCLP: 4990,
     currency: 'CLP',
-    billingFrequencyDays: 15,
+    billingFrequencyDays: 14,
   },
   premium: {
     plan: 'premium',
@@ -71,7 +71,7 @@ const FALLBACK_CONFIG = {
     maxTeamMembers: null,
     biweeklyPriceCLP: 9990,
     currency: 'CLP',
-    billingFrequencyDays: 15,
+    billingFrequencyDays: 14,
   },
 };
 
@@ -82,6 +82,14 @@ const ownerConfigCache = new Map();
 const CACHE_TTL_MS = 60 * 1000;
 
 const VALID_PLANS = ['basico', 'profesional', 'premium'];
+
+const PLAN_LABELS = { basico: 'Básico', profesional: 'Profesional', premium: 'Premium' };
+
+const UPGRADE_HINTS = {
+  basico: 'Actualiza a Profesional (hasta 3 locales) o Premium (hasta 20 locales) en Facturación.',
+  profesional: 'Actualiza a Premium (hasta 20 locales) en Facturación.',
+  premium: null, // no upgrade
+};
 
 /**
  * Get plan config from DB (with cache). Falls back to FALLBACK_CONFIG if PlanConfig not in Prisma client.
@@ -141,7 +149,7 @@ async function getOwnerPlan(ownerId) {
 }
 
 /**
- * Get owner's plan when in trial (trial gives profesional-level access).
+ * Get owner's plan when in trial (trial = básico, sin tarjeta).
  */
 async function getOwnerPlanIncludingTrial(ownerId) {
   const ownerRestaurants = await prisma.userRestaurant.findMany({
@@ -158,7 +166,7 @@ async function getOwnerPlanIncludingTrial(ownerId) {
       select: { trialEndsAt: true },
     });
     if (r?.trialEndsAt && new Date() < r.trialEndsAt) {
-      return 'profesional';
+      return 'basico';
     }
   }
 
@@ -210,7 +218,7 @@ function mergeConfigWithOverride(config, override) {
 /**
  * Resolve effective plan config for an owner. Uses cache.
  * @param {string} ownerId - User id of the owner
- * @param {boolean} includeTrial - If true, trial gives profesional access
+ * @param {boolean} includeTrial - If true, trial gives básico access
  */
 async function resolvePlanConfig(ownerId, includeTrial = true) {
   const cacheKey = `${ownerId}:${includeTrial}`;
@@ -268,17 +276,32 @@ async function getLimit(ownerId, limitKey, includeTrial = true) {
  * Check if owner can add another location.
  */
 async function canAddLocation(ownerId, includeTrial = true) {
-  const config = await resolvePlanConfig(ownerId, includeTrial);
-  if (!config) return { allowed: false, reason: 'Sin plan activo' };
-
+  let config = await resolvePlanConfig(ownerId, includeTrial);
   const count = await prisma.userRestaurant.count({
     where: { userId: ownerId, role: 'owner' },
   });
-  const max = config.maxLocations;
-  if (count >= max) {
+
+  // Usuario con restaurantes: siempre tiene plan (básico como mínimo). Si no se resuelve, usar básico.
+  if (!config && count > 0) {
+    config = await getPlanConfig('basico') || FALLBACK_CONFIG.basico;
+  }
+  if (!config) {
     return {
       allowed: false,
-      reason: `Tu plan permite hasta ${max} ${max === 1 ? 'local' : 'locales'}. Actualiza tu plan para agregar más.`,
+      reason: 'No tienes un plan activo. Ve a Facturación para activar tu suscripción y agregar ubicaciones.',
+    };
+  }
+
+  const max = config.maxLocations;
+  const planName = PLAN_LABELS[config.plan] || config.plan;
+  if (count >= max) {
+    const hint = UPGRADE_HINTS[config.plan];
+    const reason = hint
+      ? `Tu plan ${planName} no permite agregar más locales (máximo ${max} ${max === 1 ? 'local' : 'locales'}). ${hint}`
+      : `Tu plan ${planName} no permite agregar más locales.`;
+    return {
+      allowed: false,
+      reason,
       currentCount: count,
       maxLocations: max,
     };

@@ -143,9 +143,9 @@ const register = async (req, res) => {
       return;
     }
 
-    const validPlans = ['basico', 'profesional', 'premium'];
-    const selectedPlan = validPlans.includes(plan) ? plan : 'basico';
-    const hasTrial = selectedPlan === 'basico';
+    // Primer trial: siempre plan básico, sin tarjeta. Después del trial, pagan el plan que elijan en MercadoPago.
+    const selectedPlan = 'basico';
+    const hasTrial = true;
 
     const existingUser = await prisma.user.findFirst({
       where: {
@@ -210,8 +210,8 @@ const register = async (req, res) => {
       await tx.subscription.create({
         data: {
           restaurantId: restaurant.id,
-          plan: selectedPlan,
-          status: hasTrial ? 'trial' : 'expired'
+          plan: 'basico',
+          status: 'trial'
         }
       });
 
@@ -233,7 +233,7 @@ const register = async (req, res) => {
       restaurants,
       token,
       plan: selectedPlan,
-      requiresPayment: !hasTrial,
+      requiresPayment: false,
     });
   } catch (error) {
     console.error('Register error:', error);
@@ -323,7 +323,7 @@ const addRestaurant = async (req, res) => {
       await tx.subscription.create({
         data: {
           restaurantId: restaurant.id,
-          plan: 'profesional',
+          plan: 'basico',
           status: 'trial',
         },
       });

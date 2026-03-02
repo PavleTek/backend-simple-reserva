@@ -210,7 +210,7 @@ model PlanConfig {
   // Pricing (flat per plan, not per location)
   biweeklyPriceCLP     Int    @default(0)
   currency             String @default("CLP")
-  billingFrequencyDays Int    @default(15)
+  billingFrequencyDays Int    @default(14)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

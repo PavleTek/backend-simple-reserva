@@ -43,7 +43,7 @@ async function main() {
       maxTeamMembers: 2,
       biweeklyPriceCLP: 2990,
       currency: 'CLP',
-      billingFrequencyDays: 15,
+      billingFrequencyDays: 14,
     },
     {
       plan: 'profesional',
@@ -65,7 +65,7 @@ async function main() {
       maxTeamMembers: 5,
       biweeklyPriceCLP: 4990,
       currency: 'CLP',
-      billingFrequencyDays: 15,
+      billingFrequencyDays: 14,
     },
     {
       plan: 'premium',
@@ -87,7 +87,7 @@ async function main() {
       maxTeamMembers: null,
       biweeklyPriceCLP: 9990,
       currency: 'CLP',
-      billingFrequencyDays: 15,
+      billingFrequencyDays: 14,
     },
   ];
   for (const data of planConfigs) {

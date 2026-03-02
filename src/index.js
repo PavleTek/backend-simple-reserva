@@ -60,12 +60,39 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "SimpleReserva API" });
 });
 
-// Redirect after MercadoPago checkout (back_url) - redirects to frontend billing page
-app.get("/api/redirect-to-billing", (req, res) => {
-  const restaurantId = req.query.restaurantId;
+// Redirect after MercadoPago checkout (back_url). MP añade ?preapproval_id=xxx a la URL.
+// Usamos path /:restaurantId para evitar que MP corrompa el query.
+app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
+  const restaurantId = req.params.restaurantId;
+  const preapprovalId = req.query.preapproval_id; // MP añade &preapproval_id=xxx (o ? si es la primera param)
   const appUrl = (process.env.APP_URL || "http://localhost:5174").replace(/\/$/, "");
-  const target = restaurantId ? `${appUrl}/billing?restaurantId=${restaurantId}` : `${appUrl}/billing`;
+  const params = new URLSearchParams();
+  if (restaurantId) params.set("restaurantId", restaurantId);
+  if (preapprovalId) params.set("preapprovalId", String(preapprovalId));
+  params.set("returnFromCheckout", "1");
+  const target = `${appUrl}/billing?${params.toString()}`;
   res.redirect(302, target);
+});
+
+// Fallback: ruta antigua con query (por si hay links guardados)
+app.get("/api/redirect-to-billing", (req, res) => {
+  let restaurantId = req.query.restaurantId;
+  let preapprovalId = req.query.preapproval_id;
+  if (restaurantId && typeof restaurantId === "string") {
+    const match = restaurantId.match(/^([^?&]+)\?preapproval_id=([^&]+)$/);
+    if (match) {
+      restaurantId = match[1].trim();
+      preapprovalId = preapprovalId || match[2].trim();
+    } else {
+      restaurantId = restaurantId.split("?")[0].split("&")[0].trim();
+    }
+  }
+  const appUrl = (process.env.APP_URL || "http://localhost:5174").replace(/\/$/, "");
+  const params = new URLSearchParams();
+  if (restaurantId) params.set("restaurantId", restaurantId);
+  if (preapprovalId) params.set("preapprovalId", String(preapprovalId));
+  params.set("returnFromCheckout", "1");
+  res.redirect(302, `${appUrl}/billing?${params.toString()}`);
 });
 
 // Public plans for landing page (no auth)

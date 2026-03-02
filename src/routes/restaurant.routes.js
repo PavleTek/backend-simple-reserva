@@ -199,7 +199,17 @@ router.get('/subscription', async (req, res, next) => {
     const status = trialing ? 'trial' : inGrace ? 'grace' : (sub ? 'active' : 'expired');
     const cancelAtEndDate = sub?.status === 'cancelled' && sub?.endDate ? sub.endDate.toISOString() : null;
 
-    const plan = (sub?.plan && planService.VALID_PLANS.includes(sub.plan)) ? sub.plan : 'profesional';
+    // Plan: durante trial tomar de la sub trial; si no, de la sub activa
+    let plan = (sub?.plan && planService.VALID_PLANS.includes(sub.plan)) ? sub.plan : null;
+    if (!plan && trialing) {
+      const trialSub = await prisma.subscription.findFirst({
+        where: { restaurantId, status: 'trial' },
+        select: { plan: true },
+      });
+      plan = (trialSub?.plan && planService.VALID_PLANS.includes(trialSub.plan)) ? trialSub.plan : 'basico';
+    }
+    if (!plan) plan = 'basico';
+
     const planConfig = hasAccess ? await planService.resolvePlanConfigForRestaurant(restaurantId, true) : null;
 
     res.json({
@@ -210,7 +220,7 @@ router.get('/subscription', async (req, res, next) => {
       paymentGracePeriod: inGrace,
       gracePeriodEndsAt: sub?.gracePeriodEndsAt?.toISOString() ?? null,
       hasAccess,
-      canActivate: !hasAccess || inGrace,
+      canActivate: !hasAccess || inGrace || trialing,
       planConfig: planConfig ? {
         biweeklyPriceCLP: planConfig.biweeklyPriceCLP,
         maxLocations: planConfig.maxLocations,
@@ -256,21 +266,22 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['owner']), async (
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { email: true, name: true, lastName: true },
+      select: { email: true },
     });
-    const name = [user?.name, user?.lastName].filter(Boolean).join(' ') || user?.email;
 
     const appUrl = (process.env.APP_URL || (process.env.CORS_ORIGINS || '').split(',')[0]?.trim() || 'http://localhost:5174').trim();
     const backendPublicUrl = (process.env.BACKEND_PUBLIC_URL || '').trim();
+    // MP añade ?preapproval_id=xxx al back_url. Si usamos ?restaurantId=X, MP lo corrompe.
+    // Usamos path: /api/redirect-to-billing/{restaurantId} para evitar conflicto.
     const backUrl = appUrl.includes('localhost') && backendPublicUrl
-      ? `${backendPublicUrl.replace(/\/$/, '')}/api/redirect-to-billing?restaurantId=${restaurantId}`
+      ? `${backendPublicUrl.replace(/\/$/, '')}/api/redirect-to-billing/${restaurantId}`
       : `${appUrl.replace(/\/$/, '')}/billing?restaurantId=${restaurantId}`;
 
     const result = await mercadopagoService.createSubscription(
       restaurantId,
+      req.user.id,
       backUrl,
       user?.email,
-      name,
       plan
     );
 
@@ -279,6 +290,36 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['owner']), async (
     if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
       res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
       return;
+    }
+    if (error.message?.includes('BACKEND_PUBLIC_URL') || error.message?.includes('MP_TEST_PAYER')) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    if (error.message?.includes('MercadoPago') || error.message?.includes('temporalmente no disponible')) {
+      res.status(502).json({ error: error.message });
+      return;
+    }
+    next(error);
+  }
+});
+
+// Confirmar suscripción al volver de MP (fallback cuando el webhook no llega a tiempo)
+router.post('/billing/confirm', authenticateRestaurantRoles(['owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const preapprovalId = req.body?.preapprovalId?.trim();
+    if (!preapprovalId) {
+      return res.status(400).json({ error: 'preapprovalId requerido' });
+    }
+    const mercadopagoService = require('../services/mercadopagoService');
+    const result = await mercadopagoService.confirmSubscriptionFromPreapproval(restaurantId, preapprovalId);
+    if (result.activated) {
+      return res.json({ ok: true, message: 'Suscripción activada' });
+    }
+    return res.json({ ok: false, message: result.reason || 'Pago aún no autorizado' });
+  } catch (error) {
+    if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
+      return res.status(503).json({ error: 'Configuración de pagos no disponible.' });
     }
     next(error);
   }
@@ -297,7 +338,9 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['owner']), async (re
     }
     const mercadopagoService = require('../services/mercadopagoService');
     await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
-    const periodEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    const config = await planService.getPlanConfig(sub.plan);
+    const billingDays = config?.billingFrequencyDays ?? 14;
+    const periodEnd = new Date(Date.now() + billingDays * 24 * 60 * 60 * 1000);
     await prisma.subscription.update({
       where: { id: sub.id },
       data: { status: 'cancelled', endDate: periodEnd },
