@@ -141,6 +141,127 @@ router.get('/analytics', async (req, res, next) => {
   }
 });
 
+router.get('/booking-analytics', async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
+    const hasFullAnalytics = config?.analyticsWeekly && config?.analyticsMonthly;
+
+    const now = new Date();
+    const defaultTo = new Date(now);
+    const defaultFrom = new Date(now);
+    defaultFrom.setDate(defaultFrom.getDate() - 30);
+    const dateFrom = req.query.dateFrom ? new Date(req.query.dateFrom) : defaultFrom;
+    const dateTo = req.query.dateTo ? new Date(req.query.dateTo) : defaultTo;
+
+    if (isNaN(dateFrom.getTime()) || isNaN(dateTo.getTime()) || dateFrom >= dateTo) {
+      return res.status(400).json({ error: 'Rango de fechas inválido' });
+    }
+
+    const where = { restaurantId, timestamp: { gte: dateFrom, lte: dateTo } };
+
+    const [pageViewSessions, confirmedSessions, noSlotsEvents] = await Promise.all([
+      prisma.bookingEvent.findMany({
+        where: { ...where, eventName: 'booking.page_view' },
+        select: { sessionId: true },
+        distinct: ['sessionId'],
+      }),
+      prisma.bookingEvent.findMany({
+        where: { ...where, eventName: 'booking.confirmed' },
+        select: { sessionId: true },
+        distinct: ['sessionId'],
+      }),
+      prisma.bookingEvent.findMany({
+        where: { ...where, eventName: 'booking.no_slots_shown' },
+        select: { properties: true },
+      }),
+    ]);
+
+    const pageViews = pageViewSessions.length;
+    const confirmed = confirmedSessions.length;
+    const conversionRate = pageViews > 0 ? (confirmed / pageViews) * 100 : 0;
+
+    let reservationsByHour = null;
+    let busiestDays = null;
+    let popularZones = null;
+    let noShowByHour = null;
+    let demandGapsByDay = null;
+
+    if (hasFullAnalytics) {
+      const reservations = await prisma.reservation.findMany({
+        where: {
+          restaurantId,
+          dateTime: { gte: dateFrom, lte: dateTo },
+          status: { in: ['confirmed', 'completed', 'no_show'] },
+        },
+        include: { table: { include: { zone: true } } },
+      });
+
+      const byHour = {};
+      const byDay = {};
+      const byZone = {};
+      const noShowByHourMap = {};
+      for (let h = 0; h < 24; h++) byHour[h] = 0;
+      for (let d = 0; d < 7; d++) byDay[d] = 0;
+
+      for (const r of reservations) {
+        const d = new Date(r.dateTime);
+        const hour = d.getHours();
+        const day = d.getDay();
+        byHour[hour]++;
+        byDay[day]++;
+        const zoneName = r.table?.zone?.name ?? 'Sin zona';
+        byZone[zoneName] = (byZone[zoneName] || 0) + 1;
+        if (r.status === 'no_show') {
+          noShowByHourMap[hour] = (noShowByHourMap[hour] || 0) + 1;
+        }
+      }
+
+      const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+      reservationsByHour = Object.entries(byHour)
+        .map(([h, c]) => ({ hour: parseInt(h, 10), count: c }))
+        .sort((a, b) => a.hour - b.hour);
+      busiestDays = Object.entries(byDay)
+        .map(([d, c]) => ({ day: dayNames[parseInt(d, 10)], dayOfWeek: parseInt(d, 10), count: c }))
+        .sort((a, b) => b.count - a.count);
+      popularZones = Object.entries(byZone)
+        .map(([name, count]) => ({ zoneName: name, count }))
+        .sort((a, b) => b.count - a.count);
+      noShowByHour = Object.entries(noShowByHourMap)
+        .map(([h, c]) => ({ hour: parseInt(h, 10), noShowCount: c }))
+        .sort((a, b) => a.hour - b.hour);
+
+      const noSlotsByDay = {};
+      for (const e of noSlotsEvents) {
+        const p = e.properties;
+        if (p && typeof p === 'object' && p.date) {
+          const dateStr = String(p.date);
+          const day = new Date(dateStr + 'T12:00:00').getDay();
+          noSlotsByDay[day] = (noSlotsByDay[day] || 0) + 1;
+        }
+      }
+      demandGapsByDay = Object.entries(noSlotsByDay)
+        .map(([d, c]) => ({ day: dayNames[parseInt(d, 10)], dayOfWeek: parseInt(d, 10), noSlotsCount: c }))
+        .sort((a, b) => b.noSlotsCount - a.noSlotsCount);
+    }
+
+    res.json({
+      dateRange: { from: dateFrom.toISOString(), to: dateTo.toISOString() },
+      pageViews,
+      confirmedCount: confirmed,
+      conversionRate,
+      planLimitsAnalytics: !hasFullAnalytics,
+      reservationsByHour: hasFullAnalytics ? reservationsByHour : null,
+      busiestDays: hasFullAnalytics ? busiestDays : null,
+      popularZones: hasFullAnalytics ? popularZones : null,
+      noShowByHour: hasFullAnalytics ? noShowByHour : null,
+      demandGapsByDay: hasFullAnalytics ? demandGapsByDay : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/tables/status', async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;

@@ -149,10 +149,10 @@ async function getOwnerPlan(ownerId) {
 }
 
 /**
- * Get owner's plan when in trial (trial = básico, sin tarjeta).
- * 1) Restaurant con trialEndsAt en el futuro → basico
- * 2) Subscription con status 'trial' → plan de esa sub
- * 3) Subscription activa/cancelada → plan de esa sub
+ * Get owner's plan when in trial.
+ * Durante el trial, el usuario obtiene las features del plan que eligió (profesional/premium), no basico.
+ * 1) Si hay subscription trial/active → usar plan de esa sub
+ * 2) Si no hay sub pero trialEndsAt en futuro (legacy) → basico
  */
 async function getOwnerPlanIncludingTrial(ownerId) {
   const ownerRestaurants = await prisma.userRestaurant.findMany({
@@ -163,27 +163,27 @@ async function getOwnerPlanIncludingTrial(ownerId) {
 
   const restaurantIds = ownerRestaurants.map((r) => r.restaurantId);
 
-  for (const rid of restaurantIds) {
-    const r = await prisma.restaurant.findUnique({
-      where: { id: rid },
-      select: { trialEndsAt: true },
-    });
-    if (r?.trialEndsAt && new Date() < r.trialEndsAt) {
-      return 'basico';
-    }
-  }
-
-  // También buscar subscription 'trial' (por si trialEndsAt es null en datos legacy)
-  const trialSub = await prisma.subscription.findFirst({
+  // Primero buscar subscription (trial o activa) para obtener el plan real
+  const sub = await prisma.subscription.findFirst({
     where: {
       restaurantId: { in: restaurantIds },
-      status: 'trial',
+      status: { in: ['trial', 'active', 'grace'] },
     },
+    orderBy: { startDate: 'desc' },
     select: { plan: true },
   });
-  if (trialSub?.plan && VALID_PLANS.includes(trialSub.plan)) {
-    return trialSub.plan;
+  if (sub?.plan && VALID_PLANS.includes(sub.plan)) {
+    return sub.plan;
   }
+
+  // Legacy: trialEndsAt sin subscription asociada → basico
+  const inTrial = await prisma.restaurant.findFirst({
+    where: {
+      id: { in: restaurantIds },
+      trialEndsAt: { gt: new Date() },
+    },
+  });
+  if (inTrial) return 'basico';
 
   return getOwnerPlan(ownerId);
 }

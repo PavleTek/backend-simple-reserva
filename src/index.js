@@ -17,6 +17,7 @@ const adminRouter = require("./routes/admin.routes");
 const uploadRouter = require("./routes/upload.routes");
 const billingRouter = require("./routes/billing.routes");
 const webhooksRouter = require("./routes/webhooks.routes");
+const analyticsRouter = require("./routes/analytics.routes");
 const errorHandler = require("./middleware/errorHandler");
 const { startReminderJob } = require("./jobs/reminderJob");
 const { startDailySummaryJob } = require("./jobs/dailySummaryJob");
@@ -146,6 +147,7 @@ app.use("/api/restaurant/:restaurantId/schedules", scheduleRouter);
 app.use("/api/restaurant/:restaurantId/team", teamRouter);
 app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/analytics", analyticsRouter);
 app.use("/api/webhooks", webhooksRouter);
 
 app.use((req, res) => {

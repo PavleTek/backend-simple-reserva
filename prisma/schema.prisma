@@ -230,6 +230,23 @@ model PlanConfig {
   updatedAt DateTime @updatedAt
 }
 
+// Booking analytics events - tracking user behavior on the booking page
+model BookingEvent {
+  id           String   @id @default(cuid())
+  sessionId    String
+  restaurantId String
+  eventName    String
+  stepName     String?
+  properties   Json?
+  deviceType   String?
+  userAgent    String?
+  timestamp    DateTime @default(now())
+
+  @@index([restaurantId, eventName, timestamp])
+  @@index([sessionId])
+  @@index([timestamp])
+}
+
 // Per-owner overrides for price, features, and limits (super admin editable)
 model PlanOverride {
   id        String   @id @default(cuid())

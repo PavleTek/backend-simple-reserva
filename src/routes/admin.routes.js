@@ -505,6 +505,184 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
   }
 });
 
+// ─── Booking Analytics ───────────────────────────────────────────
+
+router.get('/booking-analytics', async (req, res, next) => {
+  try {
+    const { dateFrom, dateTo, restaurantId, deviceType } = req.query;
+
+    const now = new Date();
+    const defaultTo = new Date(now);
+    const defaultFrom = new Date(now);
+    defaultFrom.setDate(defaultFrom.getDate() - 30);
+
+    const from = dateFrom ? new Date(dateFrom) : defaultFrom;
+    const to = dateTo ? new Date(dateTo) : defaultTo;
+
+    if (isNaN(from.getTime()) || isNaN(to.getTime()) || from >= to) {
+      return res.status(400).json({ error: 'Rango de fechas inválido' });
+    }
+
+    const where = {
+      timestamp: { gte: from, lte: to },
+    };
+    if (restaurantId) where.restaurantId = restaurantId;
+    if (deviceType) where.deviceType = deviceType;
+
+    const funnelSteps = [
+      'booking.page_view',
+      'booking.date_selected',
+      'booking.party_selected',
+      'booking.slots_loaded',
+      'booking.time_selected',
+      'booking.contact_view',
+      'booking.contact_submitted',
+      'booking.confirmed',
+    ];
+
+    const stepCounts = await Promise.all(
+      funnelSteps.map(async (eventName) => {
+        const sessions = await prisma.bookingEvent.findMany({
+          where: { ...where, eventName },
+          select: { sessionId: true },
+          distinct: ['sessionId'],
+        });
+        return { eventName, count: sessions.length };
+      })
+    );
+
+    const funnel = funnelSteps.map((name, i) => {
+      const rec = stepCounts.find((r) => r.eventName === name);
+      const count = rec ? rec.count : 0;
+      const prevCount = i > 0 ? (stepCounts[i - 1]?.count ?? 0) : count;
+      const dropOff = prevCount > 0 ? (1 - count / prevCount) * 100 : 0;
+      return { step: name, count, dropOffPercent: i > 0 ? Math.round(dropOff * 10) / 10 : 0 };
+    });
+
+    const confirmedEvents = await prisma.bookingEvent.findMany({
+      where: { ...where, eventName: 'booking.confirmed' },
+      select: { properties: true },
+    });
+
+    const elapsedMsList = confirmedEvents
+      .map((e) => {
+        const p = e.properties;
+        if (p && typeof p === 'object' && 'totalElapsedMs' in p) {
+          const v = p.totalElapsedMs;
+          return typeof v === 'number' && Number.isFinite(v) ? v : null;
+        }
+        return null;
+      })
+      .filter((v) => v != null);
+
+    const sorted = [...elapsedMsList].sort((a, b) => a - b);
+    const p50 = sorted.length > 0 ? sorted[Math.floor(sorted.length * 0.5)] : null;
+    const p75 = sorted.length > 0 ? sorted[Math.floor(sorted.length * 0.75)] : null;
+    const p90 = sorted.length > 0 ? sorted[Math.floor(sorted.length * 0.9)] : null;
+    const sub30Count = elapsedMsList.filter((v) => v < 30000).length;
+
+    const thirtySecondPromise = {
+      p50Ms: p50,
+      p75Ms: p75,
+      p90Ms: p90,
+      sub30Count,
+      sub30Rate: confirmedEvents.length > 0 ? (sub30Count / confirmedEvents.length) * 100 : 0,
+      totalConfirmed: confirmedEvents.length,
+    };
+
+    const pageViews = stepCounts.find((r) => r.eventName === 'booking.page_view')?.count ?? 0;
+
+    const [dateChanged, partyChanged, zoneChanged, contactBack, noSlots, submitError, phoneError] = await Promise.all([
+      prisma.bookingEvent.count({ where: { ...where, eventName: 'booking.date_changed' } }),
+      prisma.bookingEvent.count({ where: { ...where, eventName: 'booking.party_changed' } }),
+      prisma.bookingEvent.count({ where: { ...where, eventName: 'booking.zone_changed' } }),
+      prisma.bookingEvent.count({ where: { ...where, eventName: 'booking.contact_back' } }),
+      prisma.bookingEvent.count({ where: { ...where, eventName: 'booking.no_slots_shown' } }),
+      prisma.bookingEvent.count({ where: { ...where, eventName: 'booking.submit_error' } }),
+      prisma.bookingEvent.count({ where: { ...where, eventName: 'booking.phone_validation_error' } }),
+    ]);
+
+    const contactViewCount = stepCounts.find((r) => r.eventName === 'booking.contact_view')?.count ?? 0;
+    const contactSubmittedCount = stepCounts.find((r) => r.eventName === 'booking.contact_submitted')?.count ?? 0;
+
+    const friction = {
+      dateChangeCount: dateChanged,
+      partyChangeCount: partyChanged,
+      zoneChangeCount: zoneChanged,
+      contactBackCount: contactBack,
+      backRatePercent: contactViewCount > 0 ? (contactBack / contactViewCount) * 100 : 0,
+      noSlotsCount: noSlots,
+      noSlotsRatePercent: pageViews > 0 ? (noSlots / pageViews) * 100 : 0,
+      submitErrorCount: submitError,
+      submitErrorRatePercent: contactSubmittedCount > 0 ? (submitError / contactSubmittedCount) * 100 : 0,
+      phoneErrorCount: phoneError,
+      phoneErrorRatePercent: contactSubmittedCount > 0 ? (phoneError / contactSubmittedCount) * 100 : 0,
+    };
+
+    const deviceCounts = await prisma.bookingEvent.groupBy({
+      by: ['deviceType'],
+      where: { ...where, eventName: 'booking.page_view' },
+      _count: { sessionId: true },
+    });
+
+    const deviceBreakdown = deviceCounts.map((d) => ({
+      device: d.deviceType || 'unknown',
+      sessions: d._count.sessionId,
+    }));
+
+    const restaurantsWithNoSlots = await prisma.bookingEvent.groupBy({
+      by: ['restaurantId'],
+      where: { ...where, eventName: 'booking.no_slots_shown' },
+      _count: { id: true },
+    });
+
+    const pageViewByRestaurant = await prisma.bookingEvent.groupBy({
+      by: ['restaurantId'],
+      where: { ...where, eventName: 'booking.page_view' },
+      _count: { sessionId: true },
+    });
+
+    const restaurantIds = [...new Set(restaurantsWithNoSlots.map((r) => r.restaurantId))];
+    const restaurantsMap = {};
+    if (restaurantIds.length > 0) {
+      const restaurants = await prisma.restaurant.findMany({
+        where: { id: { in: restaurantIds } },
+        select: { id: true, name: true, slug: true },
+      });
+      restaurants.forEach((r) => { restaurantsMap[r.id] = r; });
+    }
+
+    const zeroAvailabilityRate = restaurantsWithNoSlots.map((r) => {
+      const pv = pageViewByRestaurant.find((p) => p.restaurantId === r.restaurantId)?._count?.sessionId ?? 0;
+      const noSlotsCount = r._count.id;
+      const rate = pv > 0 ? (noSlotsCount / pv) * 100 : 0;
+      const rest = restaurantsMap[r.restaurantId];
+      return {
+        restaurantId: r.restaurantId,
+        restaurantName: rest?.name ?? null,
+        restaurantSlug: rest?.slug ?? null,
+        noSlotsCount,
+        pageViews: pv,
+        zeroAvailabilityRatePercent: rate,
+      };
+    });
+
+    const funnelCompletionRate = pageViews > 0 ? ((stepCounts.find((r) => r.eventName === 'booking.confirmed')?.count ?? 0) / pageViews) * 100 : 0;
+
+    res.json({
+      dateRange: { from: from.toISOString(), to: to.toISOString() },
+      funnel,
+      funnelCompletionRate,
+      thirtySecondPromise,
+      friction,
+      deviceBreakdown,
+      zeroAvailabilityRate: zeroAvailabilityRate.sort((a, b) => b.zeroAvailabilityRatePercent - a.zeroAvailabilityRatePercent).slice(0, 20),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── Analytics ───────────────────────────────────────────────────
 
 router.get('/analytics', async (req, res, next) => {
