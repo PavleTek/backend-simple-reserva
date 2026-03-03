@@ -4,18 +4,27 @@
  * WhatsApp uses Twilio WhatsApp API (TWILIO_WHATSAPP_FROM for sender).
  */
 
+const { formatTime, formatDateDisplay } = require('../utils/dateFormat');
+
+/**
+ * Normalizes phone to E.164 format for Twilio.
+ * Accepts: Chilean numbers (legacy) and international E.164 (e.g. +34912345678).
+ */
 function normalizePhone(phone) {
   if (!phone || typeof phone !== 'string') return null;
-  let cleaned = phone.replace(/\D/g, '');
-  if (cleaned.startsWith('56') && cleaned.length >= 9) {
-    return `+${cleaned}`;
+  const trimmed = phone.trim();
+  if (!trimmed) return null;
+  // Already E.164 (starts with +, 10-15 digits)
+  if (trimmed.startsWith('+')) {
+    const digits = trimmed.replace(/\D/g, '');
+    if (digits.length >= 10 && digits.length <= 15) return trimmed;
+    return null;
   }
-  if (cleaned.length === 9 && cleaned.startsWith('9')) {
-    return `+56${cleaned}`;
-  }
-  if (cleaned.length === 8) {
-    return `+569${cleaned}`;
-  }
+  // Legacy Chilean formats
+  const cleaned = trimmed.replace(/\D/g, '');
+  if (cleaned.startsWith('56') && cleaned.length >= 9) return `+${cleaned}`;
+  if (cleaned.length === 9 && cleaned.startsWith('9')) return `+56${cleaned}`;
+  if (cleaned.length === 8) return `+569${cleaned}`;
   return null;
 }
 
@@ -103,16 +112,8 @@ async function sendReservationConfirmation(options) {
   }
 
   const dt = new Date(dateTime);
-  const dateStr = dt.toLocaleDateString('es-CL', {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
-  const timeStr = dt.toLocaleTimeString('es-CL', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const dateStr = formatDateDisplay(dt);
+  const timeStr = formatTime(dt);
 
   const baseUrl = getBaseUrl().replace(/\/$/, '');
   const link = `${baseUrl}/reservation/${secureToken}`;
@@ -156,10 +157,7 @@ async function sendReservationReminder(options) {
   if (!to) return false;
 
   const dt = new Date(dateTime);
-  const timeStr = dt.toLocaleTimeString('es-CL', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const timeStr = formatTime(dt);
 
   const baseUrl = getBaseUrl().replace(/\/$/, '');
   const link = `${baseUrl}/reservation/${secureToken}`;
@@ -204,16 +202,8 @@ async function sendModificationAlertToCustomer(options) {
     body = `SimpleReserva: Tu reserva en ${restaurantName} ha sido cancelada correctamente.`;
   } else if (type === 'modified' && dateTime && partySize) {
     const dt = new Date(dateTime);
-    const dateStr = dt.toLocaleDateString('es-CL', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-    });
-    const timeStr = dt.toLocaleTimeString('es-CL', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+    const dateStr = formatDateDisplay(dt);
+    const timeStr = formatTime(dt);
     body = `SimpleReserva: Tu reserva en ${restaurantName} ha sido actualizada. Nueva fecha: ${dateStr} a las ${timeStr} para ${partySize} persona(s).`;
   } else {
     return false;
@@ -292,16 +282,8 @@ async function sendCancellationNotification(options) {
   if (!emails || emails.length === 0) return false;
 
   const dt = new Date(dateTime);
-  const dateStr = dt.toLocaleDateString('es-CL', {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
-  const timeStr = dt.toLocaleTimeString('es-CL', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  const dateStr = formatDateDisplay(dt);
+  const timeStr = formatTime(dt);
 
   const subject = `SimpleReserva: Reserva cancelada - ${restaurantName}`;
   const body = [

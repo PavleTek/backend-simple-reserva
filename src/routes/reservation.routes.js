@@ -486,8 +486,16 @@ router.get('/:slug/availability', async (req, res, next) => {
     ]);
 
     const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
+    const minNotice = restaurant.minimumNoticeMinutes ?? 60;
+    const now = new Date();
+    const todayLocal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const isToday = date === todayLocal;
+    const minSlotTime = new Date(now.getTime() + minNotice * 60000);
+
     const available = [];
     for (const slot of timeSlots) {
+      if (isToday && slot.start < minSlotTime) continue;
+
       const isBlocked = blockedSlots.some(
         (bs) => slot.start < bs.endDatetime && slot.end > bs.startDatetime
       );
@@ -534,6 +542,8 @@ router.get('/:slug', async (req, res, next) => {
         email: true,
         menuPdfUrl: true,
         logoUrl: true,
+        advanceBookingLimitDays: true,
+        minimumNoticeMinutes: true,
         zones: {
           where: { isActive: true },
           orderBy: { sortOrder: 'asc' },
@@ -551,13 +561,25 @@ router.get('/:slug', async (req, res, next) => {
             },
           },
         },
+        schedules: {
+          where: { isActive: true },
+          select: { dayOfWeek: true },
+        },
       },
     });
 
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
     const access = await hasActiveAccess(restaurant.id);
-    res.json({ ...restaurant, bookingEnabled: access });
+    const activeDays = [...new Set(restaurant.schedules.map((s) => s.dayOfWeek))];
+    const { schedules, ...rest } = restaurant;
+    res.json({
+      ...rest,
+      activeDays,
+      advanceBookingLimitDays: restaurant.advanceBookingLimitDays ?? 30,
+      minimumNoticeMinutes: restaurant.minimumNoticeMinutes ?? 60,
+      bookingEnabled: access,
+    });
   } catch (error) {
     next(error);
   }

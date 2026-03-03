@@ -67,12 +67,26 @@ model Restaurant {
 
   userRestaurants           UserRestaurant[]
   zones                     Zone[]
+  durationRules             DurationRule[]
   schedules                 Schedule[]
   blockedSlots              BlockedSlot[]
   reservations              Reservation[]
   subscriptions             Subscription[]
 
   @@index([isActive])
+}
+
+model DurationRule {
+  id              String     @id @default(cuid())
+  restaurantId    String
+  restaurant      Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  minPartySize    Int
+  maxPartySize    Int
+  durationMinutes Int
+  createdAt       DateTime   @default(now())
+
+  @@unique([restaurantId, minPartySize])
+  @@index([restaurantId])
 }
 
 model Zone {

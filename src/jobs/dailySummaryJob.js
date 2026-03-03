@@ -6,6 +6,7 @@
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const { sendDailySummary } = require('../services/notificationService');
+const { formatTime } = require('../utils/dateFormat');
 
 const PANEL_BASE_URL = process.env.RESTAURANT_PANEL_URL || process.env.BOOKING_BASE_URL || 'http://localhost:5175';
 
@@ -42,10 +43,7 @@ async function runDailySummary() {
     if (count === 0) continue;
 
     const firstTime = rest.reservations[0]
-      ? new Date(rest.reservations[0].dateTime).toLocaleTimeString('es-CL', {
-          hour: '2-digit',
-          minute: '2-digit',
-        })
+      ? formatTime(new Date(rest.reservations[0].dateTime))
       : null;
     const panelUrl = `${PANEL_BASE_URL.replace(/\/$/, '')}/reservations?date=${start.toISOString().split('T')[0]}`;
 

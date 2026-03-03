@@ -49,8 +49,25 @@ function generateTimeSlots(schedule, slotDuration) {
   return slots;
 }
 
+/**
+ * Resolves the slot duration in minutes for a given party size.
+ * Uses durationRules if available, otherwise falls back to restaurant.defaultSlotDurationMinutes.
+ * Rules are ordered by minPartySize (asc); the first matching rule (minPartySize <= partySize <= maxPartySize) is used.
+ */
+function resolveDuration(restaurant, partySize, durationRules) {
+  if (durationRules && durationRules.length > 0) {
+    const sorted = [...durationRules].sort((a, b) => a.minPartySize - b.minPartySize);
+    const rule = sorted.find(
+      (r) => partySize >= r.minPartySize && partySize <= r.maxPartySize
+    );
+    if (rule) return rule.durationMinutes;
+  }
+  return restaurant?.defaultSlotDurationMinutes ?? 60;
+}
+
 module.exports = {
   getScheduleWindows,
   isSlotInSchedule,
   generateTimeSlots,
+  resolveDuration,
 };
