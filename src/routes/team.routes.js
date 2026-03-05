@@ -12,11 +12,22 @@ router.use(authorizeRestaurant);
 
 router.get(
   '/',
-  authenticateRestaurantRoles(['owner', 'admin']),
+  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
   async (req, res, next) => {
     try {
-      const userRestaurants = await prisma.userRestaurant.findMany({
-        where: { restaurantId: req.activeRestaurant.restaurantId },
+      const { restaurantId } = req.activeRestaurant;
+
+      // Get the organization for this restaurant
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { organizationId: true }
+      });
+
+      if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+      // Get all managers in the organization
+      const managers = await prisma.organizationManager.findMany({
+        where: { organizationId: restaurant.organizationId },
         include: {
           user: {
             select: {
@@ -28,15 +39,23 @@ router.get(
               createdAt: true,
             },
           },
+          restaurantAssignments: {
+            where: { restaurantId },
+            select: { id: true }
+          }
         },
         orderBy: { createdAt: 'asc' },
       });
 
-      const members = userRestaurants.map((ur) => ({
-        ...ur.user,
-        role: ur.role,
-        userRestaurantId: ur.id,
-      }));
+      // Filter to only those assigned to THIS restaurant, or include all if needed?
+      // Usually "team members" for a restaurant are those assigned to it.
+      const members = managers
+        .filter(m => m.restaurantAssignments.length > 0)
+        .map((m) => ({
+          ...m.user,
+          role: 'restaurant_manager',
+          organizationManagerId: m.id,
+        }));
 
       res.json(members);
     } catch (error) {
@@ -47,17 +66,24 @@ router.get(
 
 router.post(
   '/',
-  authenticateRestaurantRoles(['owner']),
+  authenticateRestaurantRoles(['restaurant_owner']),
   async (req, res, next) => {
     try {
       const { email, name, lastName, temporaryPassword, restaurantIds } = req.body;
+      const { restaurantId } = req.activeRestaurant;
+      
       const restaurantIdsToAdd = Array.isArray(restaurantIds) && restaurantIds.length > 0
         ? restaurantIds
-        : [req.activeRestaurant.restaurantId];
+        : [restaurantId];
 
       if (!email || !temporaryPassword) {
         throw new ValidationError('Se requiere email y contraseña temporal');
       }
+
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { organizationId: true }
+      });
 
       for (const rid of restaurantIdsToAdd) {
         const canAdd = await planService.canAddTeamMember(req.user.id, rid, true);
@@ -80,15 +106,21 @@ router.post(
             name: name || null,
             lastName: lastName || null,
             hashedPassword,
-            role: 'admin',
+            role: 'restaurant_manager',
           },
         });
 
-        await tx.userRestaurant.createMany({
-          data: restaurantIdsToAdd.map((rid) => ({
+        const manager = await tx.organizationManager.create({
+          data: {
+            organizationId: restaurant.organizationId,
             userId: newUser.id,
+          }
+        });
+
+        await tx.managerRestaurantAssignment.createMany({
+          data: restaurantIdsToAdd.map((rid) => ({
+            organizationManagerId: manager.id,
             restaurantId: rid,
-            role: 'admin',
           })),
         });
 
@@ -100,7 +132,7 @@ router.post(
         email: user.email,
         name: user.name,
         lastName: user.lastName,
-        role: 'admin',
+        role: 'restaurant_manager',
         createdAt: user.createdAt,
       });
     } catch (error) {
@@ -111,26 +143,33 @@ router.post(
 
 router.get(
   '/:userId/restaurants',
-  authenticateRestaurantRoles(['owner']),
+  authenticateRestaurantRoles(['restaurant_owner']),
   async (req, res, next) => {
     try {
       const { userId } = req.params;
+      const { restaurantId } = req.activeRestaurant;
 
-      const ownerRestaurantIds = (await prisma.userRestaurant.findMany({
-        where: { userId: req.user.id },
-        select: { restaurantId: true },
-      })).map((r) => r.restaurantId);
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { organizationId: true }
+      });
 
-      const userRestaurants = await prisma.userRestaurant.findMany({
+      const manager = await prisma.organizationManager.findUnique({
         where: {
-          userId,
-          restaurantId: { in: ownerRestaurantIds },
+          organizationId_userId: {
+            organizationId: restaurant.organizationId,
+            userId
+          }
         },
-        select: { restaurantId: true },
+        include: {
+          restaurantAssignments: {
+            select: { restaurantId: true }
+          }
+        }
       });
 
       res.json({
-        restaurantIds: userRestaurants.map((ur) => ur.restaurantId),
+        restaurantIds: manager ? manager.restaurantAssignments.map((ra) => ra.restaurantId) : [],
       });
     } catch (error) {
       next(error);
@@ -140,58 +179,60 @@ router.get(
 
 router.patch(
   '/:userId',
-  authenticateRestaurantRoles(['owner']),
+  authenticateRestaurantRoles(['restaurant_owner']),
   async (req, res, next) => {
     try {
       const { userId } = req.params;
       const { restaurantIds } = req.body;
+      const { restaurantId: activeRestaurantId } = req.activeRestaurant;
 
       if (!Array.isArray(restaurantIds) || restaurantIds.length === 0) {
         throw new ValidationError('restaurantIds debe ser un array no vacío');
       }
 
-      const userRestaurant = await prisma.userRestaurant.findUnique({
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: activeRestaurantId },
+        include: { organization: true }
+      });
+
+      const manager = await prisma.organizationManager.findUnique({
         where: {
-          userId_restaurantId: {
+          organizationId_userId: {
+            organizationId: restaurant.organizationId,
             userId,
-            restaurantId: req.activeRestaurant.restaurantId,
           },
         },
       });
 
-      if (!userRestaurant) {
-        throw new NotFoundError('Usuario no encontrado en este restaurante');
+      if (!manager) {
+        throw new NotFoundError('Usuario no encontrado en esta organización');
       }
 
-      if (userRestaurant.role === 'owner') {
-        throw new ForbiddenError('No puedes modificar los accesos del propietario');
+      // Verify owner owns the organization
+      if (restaurant.organization.ownerId !== req.user.id) {
+        throw new ForbiddenError('No tienes permiso para gestionar este equipo');
       }
 
-      // Verificar que el owner tenga acceso a todos los restaurantIds
-      const ownerRestaurantIds = (await prisma.userRestaurant.findMany({
-        where: { userId: req.user.id },
-        select: { restaurantId: true },
-      })).map((r) => r.restaurantId);
+      // Verify all restaurantIds belong to the same organization
+      const targetRestaurants = await prisma.restaurant.findMany({
+        where: {
+          id: { in: restaurantIds },
+          organizationId: restaurant.organizationId
+        }
+      });
 
-      const invalidIds = restaurantIds.filter((rid) => !ownerRestaurantIds.includes(rid));
-      if (invalidIds.length > 0) {
+      if (targetRestaurants.length !== restaurantIds.length) {
         throw new ForbiddenError('No tienes acceso a una o más ubicaciones seleccionadas');
       }
 
       await prisma.$transaction(async (tx) => {
-        // Solo eliminar accesos a restaurantes que este owner gestiona
-        await tx.userRestaurant.deleteMany({
-          where: {
-            userId,
-            role: 'admin',
-            restaurantId: { in: ownerRestaurantIds },
-          },
+        await tx.managerRestaurantAssignment.deleteMany({
+          where: { organizationManagerId: manager.id },
         });
-        await tx.userRestaurant.createMany({
+        await tx.managerRestaurantAssignment.createMany({
           data: restaurantIds.map((rid) => ({
-            userId,
+            organizationManagerId: manager.id,
             restaurantId: rid,
-            role: 'admin',
           })),
         });
       });
@@ -205,33 +246,37 @@ router.patch(
 
 router.delete(
   '/:userId',
-  authenticateRestaurantRoles(['owner']),
+  authenticateRestaurantRoles(['restaurant_owner']),
   async (req, res, next) => {
     try {
       if (req.params.userId === req.user.id) {
         throw new ForbiddenError('No puedes eliminarte a ti mismo');
       }
 
-      const userRestaurant = await prisma.userRestaurant.findUnique({
-        where: {
-          userId_restaurantId: {
-            userId: req.params.userId,
-            restaurantId: req.activeRestaurant.restaurantId,
-          },
-        },
-        include: { user: true },
+      const { restaurantId } = req.activeRestaurant;
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { organizationId: true }
       });
 
-      if (!userRestaurant) {
+      const manager = await prisma.organizationManager.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: restaurant.organizationId,
+            userId: req.params.userId,
+          },
+        },
+      });
+
+      if (!manager) {
         throw new NotFoundError('Usuario no encontrado');
       }
 
-      if (userRestaurant.role === 'owner') {
-        throw new ForbiddenError('No puedes eliminar al propietario');
-      }
-
-      await prisma.userRestaurant.delete({
-        where: { id: userRestaurant.id },
+      // In the new model, owners are not in OrganizationManager, so we don't need to check role here
+      // as long as we are deleting from OrganizationManager.
+      
+      await prisma.organizationManager.delete({
+        where: { id: manager.id },
       });
 
       res.json({ message: 'Miembro del equipo eliminado' });

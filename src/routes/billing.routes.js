@@ -1,22 +1,30 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
-const { getActiveSubscription, hasActiveAccess, isTrialing, getRestaurantWithTrial } = require('../services/subscriptionService');
+const { getActiveSubscription, hasActiveAccess, isTrialing, getOrganizationWithTrial } = require('../services/subscriptionService');
 const planService = require('../services/planService');
 
 const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(['owner', 'admin']));
+router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']));
 
 router.get('/subscription', async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
-    const restaurant = await getRestaurantWithTrial(restaurantId);
-    const sub = await getActiveSubscription(restaurantId);
-    const trialing = await isTrialing(restaurantId);
-    const hasAccess = await hasActiveAccess(restaurantId);
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true }
+    });
+    
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const organizationId = restaurant.organizationId;
+
+    const org = await getOrganizationWithTrial(organizationId);
+    const sub = await getActiveSubscription(organizationId);
+    const trialing = await isTrialing(organizationId);
+    const hasAccess = await hasActiveAccess(organizationId);
 
     const inGrace = sub?.status === 'grace' && sub?.gracePeriodEndsAt && new Date() < sub.gracePeriodEndsAt;
     const status = trialing ? 'trial' : inGrace ? 'grace' : (sub ? 'active' : 'expired');
@@ -25,7 +33,7 @@ router.get('/subscription', async (req, res, next) => {
     let plan = (sub?.plan && planService.VALID_PLANS.includes(sub.plan)) ? sub.plan : null;
     if (!plan && trialing) {
       const trialSub = await prisma.subscription.findFirst({
-        where: { restaurantId, status: 'trial' },
+        where: { organizationId, status: 'trial' },
         select: { plan: true },
       });
       plan = (trialSub?.plan && planService.VALID_PLANS.includes(trialSub.plan)) ? trialSub.plan : 'basico';
@@ -37,14 +45,18 @@ router.get('/subscription', async (req, res, next) => {
     res.json({
       plan,
       status,
-      trialEndsAt: restaurant?.trialEndsAt?.toISOString() ?? null,
+      trialEndsAt: org?.trialEndsAt?.toISOString() ?? null,
       cancelAtEndDate,
       paymentGracePeriod: inGrace,
       gracePeriodEndsAt: sub?.gracePeriodEndsAt?.toISOString() ?? null,
       hasAccess,
       canActivate: !hasAccess || inGrace || trialing,
       planConfig: planConfig ? {
-        biweeklyPriceCLP: planConfig.biweeklyPriceCLP,
+        displayName: planConfig.displayName,
+        description: planConfig.description,
+        priceCLP: planConfig.priceCLP,
+        billingFrequency: planConfig.billingFrequency,
+        billingFrequencyType: planConfig.billingFrequencyType,
         maxLocations: planConfig.maxLocations,
         maxZones: planConfig.maxZones,
         maxTables: planConfig.maxTables,
@@ -59,7 +71,11 @@ router.get('/subscription', async (req, res, next) => {
           const cfg = await planService.getPlanConfig(p);
           return cfg ? {
             plan: p,
-            biweeklyPriceCLP: cfg.biweeklyPriceCLP,
+            displayName: cfg.displayName,
+            description: cfg.description,
+            priceCLP: cfg.priceCLP,
+            billingFrequency: cfg.billingFrequency,
+            billingFrequencyType: cfg.billingFrequencyType,
             maxLocations: cfg.maxLocations,
             maxZones: cfg.maxZones,
             maxTables: cfg.maxTables,
@@ -85,9 +101,16 @@ router.get('/subscription', async (req, res, next) => {
   }
 });
 
-router.post('/billing/checkout', authenticateRestaurantRoles(['owner']), async (req, res, next) => {
+router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true }
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const organizationId = restaurant.organizationId;
+
     const plan = req.body?.plan && planService.VALID_PLANS.includes(req.body.plan) ? req.body.plan : 'profesional';
     const mercadopagoService = require('../services/mercadopagoService');
 
@@ -103,7 +126,7 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['owner']), async (
       : `${appUrl.replace(/\/$/, '')}/billing?restaurantId=${restaurantId}`;
 
     const result = await mercadopagoService.createSubscription(
-      restaurantId,
+      organizationId,
       req.user.id,
       backUrl,
       user?.email,
@@ -128,15 +151,22 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['owner']), async (
   }
 });
 
-router.post('/billing/confirm', authenticateRestaurantRoles(['owner']), async (req, res, next) => {
+router.post('/billing/confirm', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true }
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const organizationId = restaurant.organizationId;
+
     const preapprovalId = req.body?.preapprovalId?.trim();
     if (!preapprovalId) {
       return res.status(400).json({ error: 'preapprovalId requerido' });
     }
     const mercadopagoService = require('../services/mercadopagoService');
-    const result = await mercadopagoService.confirmSubscriptionFromPreapproval(restaurantId, preapprovalId);
+    const result = await mercadopagoService.confirmSubscriptionFromPreapproval(organizationId, preapprovalId);
     if (result.activated) {
       return res.json({ ok: true, message: 'Suscripción activada' });
     }
@@ -149,11 +179,18 @@ router.post('/billing/confirm', authenticateRestaurantRoles(['owner']), async (r
   }
 });
 
-router.post('/billing/cancel', authenticateRestaurantRoles(['owner']), async (req, res, next) => {
+router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true }
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const organizationId = restaurant.organizationId;
+
     const sub = await prisma.subscription.findFirst({
-      where: { restaurantId, status: 'active' },
+      where: { organizationId, status: 'active' },
       orderBy: { startDate: 'desc' },
     });
     if (!sub?.mercadopagoPreapprovalId) {
@@ -163,7 +200,8 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['owner']), async (re
     const mercadopagoService = require('../services/mercadopagoService');
     await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
     const config = await planService.getPlanConfig(sub.plan);
-    const billingDays = config?.billingFrequencyDays ?? 14;
+    const mpFreq = planService.toMercadoPagoFrequency(config?.billingFrequency ?? 1, config?.billingFrequencyType ?? 'months');
+    const billingDays = mpFreq.frequency_type === 'months' ? mpFreq.frequency * 30 : mpFreq.frequency;
     const periodEnd = new Date(Date.now() + billingDays * 24 * 60 * 60 * 1000);
     await prisma.subscription.update({
       where: { id: sub.id },

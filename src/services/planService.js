@@ -9,6 +9,8 @@ const prisma = require('../lib/prisma');
 const FALLBACK_CONFIG = {
   basico: {
     plan: 'basico',
+    displayName: 'Básico',
+    description: '1 local, ideal para empezar',
     smsConfirmations: true,
     smsReminders: true,
     whatsappConfirmations: true,
@@ -25,12 +27,15 @@ const FALLBACK_CONFIG = {
     maxZones: 3,
     maxTables: 15,
     maxTeamMembers: 2,
-    biweeklyPriceCLP: 2990,
+    priceCLP: 2990,
     currency: 'CLP',
-    billingFrequencyDays: 14,
+    billingFrequency: 1,
+    billingFrequencyType: 'months',
   },
   profesional: {
     plan: 'profesional',
+    displayName: 'Profesional',
+    description: 'Hasta 3 locales para tu negocio en crecimiento',
     smsConfirmations: true,
     smsReminders: true,
     whatsappConfirmations: true,
@@ -47,12 +52,15 @@ const FALLBACK_CONFIG = {
     maxZones: null,
     maxTables: null,
     maxTeamMembers: 5,
-    biweeklyPriceCLP: 4990,
+    priceCLP: 4990,
     currency: 'CLP',
-    billingFrequencyDays: 14,
+    billingFrequency: 1,
+    billingFrequencyType: 'months',
   },
   premium: {
     plan: 'premium',
+    displayName: 'Premium',
+    description: 'Hasta 20 locales para cadenas',
     smsConfirmations: true,
     smsReminders: true,
     whatsappConfirmations: true,
@@ -69,27 +77,43 @@ const FALLBACK_CONFIG = {
     maxZones: null,
     maxTables: null,
     maxTeamMembers: null,
-    biweeklyPriceCLP: 9990,
+    priceCLP: 9990,
     currency: 'CLP',
-    billingFrequencyDays: 14,
+    billingFrequency: 1,
+    billingFrequencyType: 'months',
   },
 };
 
-// In-memory cache: { planKey: PlanConfig } and { ownerId: { override, config } }
-// TTL: config is long-lived; override+config per owner cached for 60s
+// In-memory cache: { planKey: PlanConfig } and { organizationId: { override, config } }
 const planConfigCache = new Map();
-const ownerConfigCache = new Map();
+const orgConfigCache = new Map();
 const CACHE_TTL_MS = 60 * 1000;
 
 const VALID_PLANS = ['basico', 'profesional', 'premium'];
-
-const PLAN_LABELS = { basico: 'Básico', profesional: 'Profesional', premium: 'Premium' };
 
 const UPGRADE_HINTS = {
   basico: 'Actualiza a Profesional (hasta 3 locales) o Premium (hasta 20 locales) en Facturación.',
   profesional: 'Actualiza a Premium (hasta 20 locales) en Facturación.',
   premium: null, // no upgrade
 };
+
+/**
+ * Helper to translate frequency to Mercado Pago format.
+ */
+function toMercadoPagoFrequency(billingFrequency, billingFrequencyType) {
+  switch (billingFrequencyType) {
+    case 'days':
+      return { frequency: billingFrequency, frequency_type: 'days' };
+    case 'weeks':
+      return { frequency: billingFrequency * 7, frequency_type: 'days' };
+    case 'months':
+      return { frequency: billingFrequency, frequency_type: 'months' };
+    case 'yearly':
+      return { frequency: billingFrequency * 12, frequency_type: 'months' };
+    default:
+      return { frequency: billingFrequency, frequency_type: 'months' };
+  }
+}
 
 /**
  * Get plan config from DB (with cache). Falls back to FALLBACK_CONFIG if PlanConfig not in Prisma client.
@@ -119,22 +143,18 @@ async function getPlanConfig(planKey) {
 }
 
 /**
- * Get owner's plan from their subscriptions (any restaurant they own).
- * Returns plan key or null.
+ * Get owner's plan from their organization subscription.
  */
 async function getOwnerPlan(ownerId) {
-  const ownerRestaurants = await prisma.userRestaurant.findMany({
-    where: { userId: ownerId, role: 'owner' },
-    select: { restaurantId: true },
+  const org = await prisma.restaurantOrganization.findUnique({
+    where: { ownerId },
+    select: { id: true },
   });
-  if (ownerRestaurants.length === 0) return null;
+  if (!org) return null;
 
-  const restaurantIds = ownerRestaurants.map((r) => r.restaurantId);
-
-  // Get active subscription from any of owner's restaurants
   const sub = await prisma.subscription.findFirst({
     where: {
-      restaurantId: { in: restaurantIds },
+      organizationId: org.id,
       status: { in: ['active', 'trial', 'cancelled'] },
     },
     orderBy: { startDate: 'desc' },
@@ -150,23 +170,18 @@ async function getOwnerPlan(ownerId) {
 
 /**
  * Get owner's plan when in trial.
- * Durante el trial, el usuario obtiene las features del plan que eligió (profesional/premium), no basico.
- * 1) Si hay subscription trial/active → usar plan de esa sub
- * 2) Si no hay sub pero trialEndsAt en futuro (legacy) → basico
  */
 async function getOwnerPlanIncludingTrial(ownerId) {
-  const ownerRestaurants = await prisma.userRestaurant.findMany({
-    where: { userId: ownerId, role: 'owner' },
-    select: { restaurantId: true },
+  const org = await prisma.restaurantOrganization.findUnique({
+    where: { ownerId },
+    select: { id: true, trialEndsAt: true },
   });
-  if (ownerRestaurants.length === 0) return null;
-
-  const restaurantIds = ownerRestaurants.map((r) => r.restaurantId);
+  if (!org) return null;
 
   // Primero buscar subscription (trial o activa) para obtener el plan real
   const sub = await prisma.subscription.findFirst({
     where: {
-      restaurantId: { in: restaurantIds },
+      organizationId: org.id,
       status: { in: ['trial', 'active', 'grace'] },
     },
     orderBy: { startDate: 'desc' },
@@ -176,26 +191,22 @@ async function getOwnerPlanIncludingTrial(ownerId) {
     return sub.plan;
   }
 
-  // Legacy: trialEndsAt sin subscription asociada → basico
-  const inTrial = await prisma.restaurant.findFirst({
-    where: {
-      id: { in: restaurantIds },
-      trialEndsAt: { gt: new Date() },
-    },
-  });
-  if (inTrial) return 'basico';
+  // Legacy/Trial: trialEndsAt en futuro
+  if (org.trialEndsAt && org.trialEndsAt > new Date()) {
+    return 'basico';
+  }
 
   return getOwnerPlan(ownerId);
 }
 
 /**
- * Get PlanOverride for owner if exists and not expired.
+ * Get PlanOverride for organization if exists and not expired.
  */
-async function getPlanOverride(ownerId) {
+async function getPlanOverride(organizationId) {
   if (!prisma.planOverride) return null;
   try {
     const override = await prisma.planOverride.findUnique({
-      where: { userId: ownerId },
+      where: { organizationId },
     });
     if (!override) return null;
     if (override.expiresAt && new Date() > override.expiresAt) return null;
@@ -214,7 +225,7 @@ function mergeConfigWithOverride(config, override) {
 
   const merged = { ...config };
 
-  if (override.biweeklyPriceCLP != null) merged.biweeklyPriceCLP = override.biweeklyPriceCLP;
+  if (override.priceCLP != null) merged.priceCLP = override.priceCLP;
   if (override.menuPdf != null) merged.menuPdf = override.menuPdf;
   if (override.advancedBookingSettings != null) merged.advancedBookingSettings = override.advancedBookingSettings;
   if (override.brandingRemoval != null) merged.brandingRemoval = override.brandingRemoval;
@@ -232,13 +243,16 @@ function mergeConfigWithOverride(config, override) {
 
 /**
  * Resolve effective plan config for an owner. Uses cache.
- * Nuevos usuarios tienen plan básico por defecto (trial). Si no se resuelve, propietarios con restaurantes = básico.
- * @param {string} ownerId - User id of the owner
- * @param {boolean} includeTrial - If true, trial gives básico access
  */
 async function resolvePlanConfig(ownerId, includeTrial = true) {
-  const cacheKey = `${ownerId}:${includeTrial}`;
-  const cached = ownerConfigCache.get(cacheKey);
+  const org = await prisma.restaurantOrganization.findUnique({
+    where: { ownerId },
+    select: { id: true },
+  });
+  if (!org) return null;
+
+  const cacheKey = `${org.id}:${includeTrial}`;
+  const cached = orgConfigCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
     return cached.config;
   }
@@ -247,35 +261,36 @@ async function resolvePlanConfig(ownerId, includeTrial = true) {
     ? await getOwnerPlanIncludingTrial(ownerId)
     : await getOwnerPlan(ownerId);
 
-  // Propietario con restaurantes siempre tiene plan (básico por defecto). Evita "Sin plan activo" en trial/legacy.
-  if (!planKey) {
-    const hasRestaurants = await prisma.userRestaurant.count({
-      where: { userId: ownerId, role: 'owner' },
-    });
-    if (hasRestaurants > 0) planKey = 'basico';
-  }
-  if (!planKey) return null;
+  // Fallback a básico si tiene organización
+  if (!planKey) planKey = 'basico';
 
   const config = await getPlanConfig(planKey) || FALLBACK_CONFIG[planKey];
   if (!config) return null;
 
-  const override = await getPlanOverride(ownerId);
+  const override = await getPlanOverride(org.id);
   const resolved = mergeConfigWithOverride(config, override);
 
-  ownerConfigCache.set(cacheKey, { ts: Date.now(), config: resolved });
+  orgConfigCache.set(cacheKey, { ts: Date.now(), config: resolved });
   return resolved;
 }
 
 /**
- * Resolve plan config for a restaurant (via its owner).
+ * Resolve plan config for a restaurant (via its organization).
  */
 async function resolvePlanConfigForRestaurant(restaurantId, includeTrial = true) {
-  const ownerLink = await prisma.userRestaurant.findFirst({
-    where: { restaurantId, role: 'owner' },
-    select: { userId: true },
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { organizationId: true },
   });
-  if (!ownerLink) return null;
-  return resolvePlanConfig(ownerLink.userId, includeTrial);
+  if (!restaurant) return null;
+
+  const org = await prisma.restaurantOrganization.findUnique({
+    where: { id: restaurant.organizationId },
+    select: { ownerId: true },
+  });
+  if (!org) return null;
+
+  return resolvePlanConfig(org.ownerId, includeTrial);
 }
 
 /**
@@ -300,15 +315,11 @@ async function getLimit(ownerId, limitKey, includeTrial = true) {
  * Check if owner can add another location.
  */
 async function canAddLocation(ownerId, includeTrial = true) {
-  let config = await resolvePlanConfig(ownerId, includeTrial);
-  const count = await prisma.userRestaurant.count({
-    where: { userId: ownerId, role: 'owner' },
+  const config = await resolvePlanConfig(ownerId, includeTrial);
+  const count = await prisma.restaurant.count({
+    where: { organization: { ownerId } },
   });
 
-  // Usuario con restaurantes: siempre tiene plan (básico como mínimo). Si no se resuelve, usar básico.
-  if (!config && count > 0) {
-    config = await getPlanConfig('basico') || FALLBACK_CONFIG.basico;
-  }
   if (!config) {
     return {
       allowed: false,
@@ -317,7 +328,7 @@ async function canAddLocation(ownerId, includeTrial = true) {
   }
 
   const max = config.maxLocations;
-  const planName = PLAN_LABELS[config.plan] || config.plan;
+  const planName = config.displayName || config.plan;
   if (count >= max) {
     const hint = UPGRADE_HINTS[config.plan];
     const reason = hint
@@ -389,15 +400,13 @@ async function canAddTeamMember(ownerId, restaurantId, includeTrial = true) {
   const maxTeam = config.maxTeamMembers;
   if (maxTeam == null) return { allowed: true }; // unlimited
 
-  const ownerLink = await prisma.userRestaurant.findFirst({
-    where: { restaurantId, role: 'owner' },
-    select: { userId: true },
+  const teamCount = await prisma.organizationManager.count({
+    where: {
+      organization: { ownerId },
+      restaurantAssignments: { some: { restaurantId } }
+    },
   });
-  if (!ownerLink) return { allowed: false };
 
-  const teamCount = await prisma.userRestaurant.count({
-    where: { restaurantId },
-  });
   if (teamCount >= maxTeam) {
     return {
       allowed: false,
@@ -412,13 +421,12 @@ async function canAddTeamMember(ownerId, restaurantId, includeTrial = true) {
 /**
  * Invalidate cache (call when PlanConfig or PlanOverride changes).
  */
-function invalidateCache(ownerId) {
-  if (ownerId) {
-    for (const key of ownerConfigCache.keys()) {
-      if (key.startsWith(`${ownerId}:`)) ownerConfigCache.delete(key);
-    }
+function invalidateCache(organizationId) {
+  if (organizationId) {
+    orgConfigCache.delete(`${organizationId}:true`);
+    orgConfigCache.delete(`${organizationId}:false`);
   } else {
-    ownerConfigCache.clear();
+    orgConfigCache.clear();
   }
   planConfigCache.clear();
 }
@@ -437,5 +445,6 @@ module.exports = {
   canAddTable,
   canAddTeamMember,
   invalidateCache,
+  toMercadoPagoFrequency,
   VALID_PLANS,
 };

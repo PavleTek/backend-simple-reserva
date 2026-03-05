@@ -4,6 +4,9 @@ const { isSlotInSchedule, generateTimeSlots } = require('../utils/scheduleUtils'
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const { sendReservationConfirmation, sendCancellationNotification, sendModificationAlertToCustomer } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
+const { getEffectiveTimezone, parseInTimezone, nowInTimezone } = require('../utils/timezone');
+const { incrementDataVersion } = require('../utils/dataVersion');
+const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
 
 const router = express.Router();
 
@@ -16,14 +19,31 @@ router.get('/token/:secureToken', async (req, res, next) => {
     const reservation = await prisma.reservation.findUnique({
       where: { secureToken: req.params.secureToken },
       include: {
-        restaurant: { select: { name: true, slug: true } },
+        restaurant: { 
+          select: { 
+            id: true,
+            name: true, 
+            slug: true, 
+            timezone: true,
+            organization: { include: { owner: { select: { country: true } } } }
+          } 
+        },
         table: { select: { label: true } },
       },
     });
 
     if (!reservation) throw new NotFoundError('Reserva no encontrada');
 
-    res.json(reservation);
+    const ownerCountry = reservation.restaurant.organization?.owner?.country || 'CL';
+    const effectiveTimezone = getEffectiveTimezone(reservation.restaurant, ownerCountry);
+
+    res.json({
+      ...reservation,
+      restaurant: {
+        ...reservation.restaurant,
+        effectiveTimezone
+      }
+    });
   } catch (error) {
     next(error);
   }
@@ -40,7 +60,11 @@ router.patch('/token/:secureToken', async (req, res, next) => {
     const reservation = await prisma.reservation.findUnique({
       where: { secureToken: req.params.secureToken },
       include: {
-        restaurant: true,
+        restaurant: {
+          include: {
+            organization: { include: { owner: { select: { country: true } } } }
+          }
+        },
         table: true,
       },
     });
@@ -50,18 +74,21 @@ router.patch('/token/:secureToken', async (req, res, next) => {
     }
 
     const restaurant = reservation.restaurant;
+    const ownerCountry = restaurant.organization?.owner?.country || 'CL';
+    const timezone = getEffectiveTimezone(restaurant, ownerCountry);
+
     const size = parseInt(partySize);
     if (isNaN(size) || size < 1) {
       throw new ValidationError('partySize debe ser un número positivo');
     }
 
     const [datePart] = date.split('T');
-    const dateTime = new Date(`${datePart}T${time}`);
+    const dateTime = parseInTimezone(datePart, time, timezone);
     if (isNaN(dateTime.getTime())) {
       throw new ValidationError('Formato de fecha u hora inválido');
     }
 
-    const dayOfWeek = dateTime.getDay();
+    const dayOfWeek = dateTime.getDay(); // Note: luxon toJSDate() follows JS getDay() (0=Sun)
     const schedule = await prisma.schedule.findFirst({
       where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
     });
@@ -72,12 +99,12 @@ router.patch('/token/:secureToken', async (req, res, next) => {
     const slotDuration = restaurant.defaultSlotDurationMinutes;
     const [timeH, timeM] = time.split(':').map(Number);
     const timeMin = timeH * 60 + timeM;
-    if (!isSlotInSchedule(schedule, timeMin, slotDuration)) {
+    if (!isSlotInSchedule(schedule, timeMin, slotDuration, restaurant.scheduleMode)) {
       throw new ValidationError('La hora solicitada está fuera del horario de atención');
     }
 
-    const dayStart = new Date(`${datePart}T00:00:00`);
-    const dayEnd = new Date(`${datePart}T23:59:59`);
+    const dayStart = parseInTimezone(datePart, '00:00', timezone);
+    const dayEnd = parseInTimezone(datePart, '23:59', timezone);
     const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
 
     const tablesWhere = {
@@ -161,6 +188,8 @@ router.patch('/token/:secureToken', async (req, res, next) => {
       restaurantId: restaurant.id,
     }).catch((err) => console.error('[Notification] Modification alert failed:', err));
 
+    incrementDataVersion(restaurant.id).catch(console.error);
+
     res.json(updated);
   } catch (error) {
     next(error);
@@ -174,11 +203,8 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
       include: {
         restaurant: {
           include: {
-            userRestaurants: {
-              where: { role: { in: ['owner', 'admin'] } },
-              include: { user: { select: { email: true } } },
-            },
-          },
+            organization: { include: { owner: { select: { email: true } } } }
+          }
         },
         table: { select: { label: true } },
       },
@@ -199,7 +225,7 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
     const panelBase = process.env.RESTAURANT_PANEL_URL || process.env.BOOKING_BASE_URL || 'http://localhost:5175';
     const panelUrl = `${panelBase.replace(/\/$/, '')}/reservations?date=${new Date(reservation.dateTime).toISOString().split('T')[0]}`;
     const emails = [...new Set(
-      (reservation.restaurant?.userRestaurants || []).map((ur) => ur.user?.email).filter(Boolean),
+      [reservation.restaurant?.organization?.owner?.email].filter(Boolean),
     )];
     sendCancellationNotification({
       emails,
@@ -209,6 +235,7 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
       dateTime: reservation.dateTime,
       partySize: reservation.partySize,
       panelUrl,
+      restaurantId: reservation.restaurantId,
     }).catch((err) => console.error('[Reservation] Cancellation notification failed:', err.message));
 
     sendModificationAlertToCustomer({
@@ -217,6 +244,8 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
       type: 'cancelled',
       restaurantId: reservation.restaurantId,
     }).catch((err) => console.error('[Notification] Cancellation alert failed:', err));
+
+    incrementDataVersion(reservation.restaurantId).catch(console.error);
 
     res.json(updated);
   } catch (error) {
@@ -253,23 +282,29 @@ router.post('/', async (req, res, next) => {
 
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug: restaurantSlug, isActive: true },
+      include: {
+        organization: { include: { owner: { select: { country: true } } } }
+      }
     });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+    const ownerCountry = restaurant.organization?.owner?.country || 'CL';
+    const timezone = getEffectiveTimezone(restaurant, ownerCountry);
 
     const { allowed, reason } = await canCreateReservation(restaurant.id);
     if (!allowed) throw new ValidationError(reason);
 
-    const dateTime = new Date(`${date}T${time}:00`);
+    const dateTime = parseInTimezone(date, time, timezone);
     if (isNaN(dateTime.getTime())) {
       throw new ValidationError('Formato de fecha u hora inválido');
     }
 
-    const now = new Date();
+    const now = nowInTimezone(timezone).toJSDate();
     const advanceDays = restaurant.advanceBookingLimitDays ?? 30;
-    const limitDate = new Date(now);
-    limitDate.setDate(limitDate.getDate() + advanceDays);
-    limitDate.setHours(23, 59, 59, 999);
-    if (dateTime > limitDate) {
+    const limitDateObj = nowInTimezone(timezone).plus({ days: advanceDays });
+    const limitDateFinal = limitDateObj.set({ hour: 23, minute: 59, second: 59, millisecond: 999 }).toJSDate();
+
+    if (dateTime > limitDateFinal) {
       throw new ValidationError(`Solo se puede reservar hasta ${advanceDays} días por adelantado`);
     }
 
@@ -295,7 +330,7 @@ router.post('/', async (req, res, next) => {
         if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
         const reqMinutes = dateTime.getHours() * 60 + dateTime.getMinutes();
-        if (!isSlotInSchedule(schedule, reqMinutes, slotDuration)) {
+        if (!isSlotInSchedule(schedule, reqMinutes, slotDuration, restaurant.scheduleMode)) {
           throw new ValidationError('La hora solicitada está fuera del horario de atención');
         }
 
@@ -326,8 +361,8 @@ router.post('/', async (req, res, next) => {
           throw new ValidationError('No hay mesas disponibles para este número de comensales');
         }
 
-        const dayStart = new Date(`${date}T00:00:00`);
-        const dayEnd = new Date(`${date}T23:59:59`);
+        const dayStart = parseInTimezone(date, '00:00', timezone);
+        const dayEnd = parseInTimezone(date, '23:59', timezone);
 
         const dayReservations = await tx.reservation.findMany({
           where: {
@@ -378,7 +413,7 @@ router.post('/', async (req, res, next) => {
           },
           include: {
             restaurant: { select: { name: true } },
-            table: { select: { label: true } },
+            table: { select: { id: true, label: true } },
           },
         });
       },
@@ -397,6 +432,11 @@ router.post('/', async (req, res, next) => {
         }).catch((err) => console.error('[Notification] Confirmation failed:', err));
       }
     });
+
+    incrementDataVersion(restaurant.id).catch(console.error);
+
+    incrementReservationAnalytics(restaurant.id, restaurant.organizationId, new Date())
+      .catch(err => console.error('[ReservationAnalytics] Error:', err));
 
     res.status(201).json(reservation);
   } catch (error) {
@@ -422,15 +462,21 @@ router.get('/:slug/availability', async (req, res, next) => {
 
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug, isActive: true },
+      include: {
+        organization: { include: { owner: { select: { country: true } } } }
+      }
     });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+    const ownerCountry = restaurant.organization?.owner?.country || 'CL';
+    const timezone = getEffectiveTimezone(restaurant, ownerCountry);
 
     const access = await hasActiveAccess(restaurant.id);
     if (!access) {
       return res.json({ slots: [], reason: 'subscription_expired' });
     }
 
-    const requestedDate = new Date(`${date}T00:00:00`);
+    const requestedDate = parseInTimezone(date, '00:00', timezone);
     const dayOfWeek = requestedDate.getDay();
 
     const schedule = await prisma.schedule.findFirst({
@@ -453,19 +499,19 @@ router.get('/:slug/availability', async (req, res, next) => {
       orderBy: { maxCapacity: 'asc' },
     });
 
-    if (tables.length === 0) return res.json({ slots: [], reason: 'no_tables' });
+    if (!tables.length) return res.json({ slots: [], reason: 'no_tables' });
 
     const duration = restaurant.defaultSlotDurationMinutes;
-    const slotDefs = generateTimeSlots(schedule, duration);
+    const slotDefs = generateTimeSlots(schedule, duration, restaurant.scheduleMode);
     const timeSlots = slotDefs.map(({ time, startMin }) => {
-      const start = new Date(`${date}T${time}:00`);
+      const start = parseInTimezone(date, time, timezone);
       const end = new Date(start.getTime() + duration * 60000);
       return { time, start, end };
     });
     if (timeSlots.length === 0) return res.json({ slots: [], reason: 'no_slots' });
 
-    const dayStart = new Date(`${date}T00:00:00`);
-    const dayEnd = new Date(`${date}T23:59:59`);
+    const dayStart = parseInTimezone(date, '00:00', timezone);
+    const dayEnd = parseInTimezone(date, '23:59', timezone);
 
     const [blockedSlots, existingReservations] = await Promise.all([
       prisma.blockedSlot.findMany({
@@ -487,8 +533,8 @@ router.get('/:slug/availability', async (req, res, next) => {
 
     const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
     const minNotice = restaurant.minimumNoticeMinutes ?? 60;
-    const now = new Date();
-    const todayLocal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const now = nowInTimezone(timezone).toJSDate();
+    const todayLocal = nowInTimezone(timezone).toFormat('yyyy-MM-dd');
     const isToday = date === todayLocal;
     const minSlotTime = new Date(now.getTime() + minNotice * 60000);
 
@@ -544,6 +590,8 @@ router.get('/:slug', async (req, res, next) => {
         logoUrl: true,
         advanceBookingLimitDays: true,
         minimumNoticeMinutes: true,
+        timezone: true,
+        organization: { include: { owner: { select: { country: true } } } },
         zones: {
           where: { isActive: true },
           orderBy: { sortOrder: 'asc' },
@@ -570,16 +618,118 @@ router.get('/:slug', async (req, res, next) => {
 
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
+    const ownerCountry = restaurant.organization?.owner?.country || 'CL';
+    const effectiveTimezone = getEffectiveTimezone(restaurant, ownerCountry);
+
     const access = await hasActiveAccess(restaurant.id);
     const activeDays = [...new Set(restaurant.schedules.map((s) => s.dayOfWeek))];
-    const { schedules, ...rest } = restaurant;
+    const { schedules, organization, ...rest } = restaurant;
     res.json({
       ...rest,
       activeDays,
       advanceBookingLimitDays: restaurant.advanceBookingLimitDays ?? 30,
       minimumNoticeMinutes: restaurant.minimumNoticeMinutes ?? 60,
       bookingEnabled: access,
+      effectiveTimezone,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/public/restaurants/:slug/menus
+ * Returns array of { menuType, url } for the public booking page
+ */
+router.get('/:slug/menus', async (req, res, next) => {
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { slug: req.params.slug },
+      select: { id: true },
+    });
+
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+    const menus = await prisma.restaurantMenu.findMany({
+      where: { restaurantId: restaurant.id },
+      select: { menuType: true, url: true },
+    });
+
+    res.json(menus);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/public/restaurants/:slug/menu/:menuType
+ * Redirects to R2 or streams the menu PDF
+ */
+router.get('/:slug/menu/:menuType', async (req, res, next) => {
+  try {
+    const { slug, menuType } = req.params;
+
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { slug },
+      select: { id: true },
+    });
+
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+    const menu = await prisma.restaurantMenu.findUnique({
+      where: {
+        restaurantId_menuType: {
+          restaurantId: restaurant.id,
+          menuType,
+        },
+      },
+    });
+
+    if (!menu) throw new NotFoundError('Menú no encontrado');
+
+    // If R2_PUBLIC_URL is set, redirect to it
+    if (process.env.R2_PUBLIC_URL) {
+      const publicUrl = require('../services/r2Service').getPublicUrl(menu.r2Key);
+      if (publicUrl) {
+        return res.redirect(302, publicUrl);
+      }
+    }
+
+    // Otherwise stream from R2
+    const r2Service = require('../services/r2Service');
+    const stream = await r2Service.getFileStream(menu.r2Key);
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    stream.pipe(res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/public/restaurants/id/:restaurantId/menu/:menuType
+ * Internal alias for when slug is not available (e.g. initial upload)
+ */
+router.get('/id/:restaurantId/menu/:menuType', async (req, res, next) => {
+  try {
+    const { restaurantId, menuType } = req.params;
+
+    const menu = await prisma.restaurantMenu.findUnique({
+      where: {
+        restaurantId_menuType: {
+          restaurantId,
+          menuType,
+        },
+      },
+    });
+
+    if (!menu) throw new NotFoundError('Menú no encontrado');
+
+    const r2Service = require('../services/r2Service');
+    const stream = await r2Service.getFileStream(menu.r2Key);
+    
+    res.setHeader('Content-Type', 'application/pdf');
+    stream.pipe(res);
   } catch (error) {
     next(error);
   }

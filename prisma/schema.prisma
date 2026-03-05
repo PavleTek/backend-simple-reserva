@@ -13,7 +13,8 @@ model User {
   name                          String?
   lastName                      String?
   hashedPassword                String
-  role                          String    // "super_admin" (system-wide) or "owner"/"admin" (legacy, use UserRestaurant for restaurant access)
+  role                          String    // "super_admin" | "restaurant_owner" | "restaurant_manager"
+  country                       String    @default("CL") // "CL", "AR", "UY"
   lastLogin                     DateTime?
   twoFactorSecret               String?
   twoFactorEnabled              Boolean   @default(false)
@@ -25,28 +26,66 @@ model User {
   createdAt                     DateTime  @default(now())
   updatedAt                     DateTime  @updatedAt
 
-  userRestaurants               UserRestaurant[]
-  planOverride                  PlanOverride?
-
+  ownedOrganization             RestaurantOrganization? @relation("OrgOwner")
+  managedOrganizations          OrganizationManager[]
+  
   @@index([role])
 }
 
-model UserRestaurant {
-  id           String   @id @default(cuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  restaurantId String
-  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  role         String   // "owner" | "admin"
-  createdAt    DateTime @default(now())
+model RestaurantOrganization {
+  id            String   @id @default(cuid())
+  name          String
+  ownerId       String   @unique
+  owner         User     @relation("OrgOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  
+  planConfigId  String
+  planConfig    PlanConfig @relation(fields: [planConfigId], references: [id])
+  
+  trialEndsAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  @@unique([userId, restaurantId])
+  restaurants   Restaurant[]
+  managers      OrganizationManager[]
+  subscriptions Subscription[]
+  planOverride  PlanOverride?
+  reservationAnalytics ReservationAnalytics[]
+
+  @@index([ownerId])
+}
+
+model OrganizationManager {
+  id             String                 @id @default(cuid())
+  organizationId String
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime               @default(now())
+
+  restaurantAssignments ManagerRestaurantAssignment[]
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
   @@index([userId])
+}
+
+model ManagerRestaurantAssignment {
+  id                    String              @id @default(cuid())
+  organizationManagerId String
+  organizationManager   OrganizationManager @relation(fields: [organizationManagerId], references: [id], onDelete: Cascade)
+  restaurantId          String
+  restaurant            Restaurant          @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  createdAt             DateTime            @default(now())
+
+  @@unique([organizationManagerId, restaurantId])
+  @@index([organizationManagerId])
   @@index([restaurantId])
 }
 
 model Restaurant {
   id                        String    @id @default(cuid())
+  organizationId            String
+  organization              RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   slug                      String    @unique
   name                      String
   description               String?
@@ -60,20 +99,40 @@ model Restaurant {
   minimumNoticeMinutes     Int      @default(60)
   noShowGracePeriodMinutes Int      @default(15)
   menuPdfUrl                String?
+  timezone                  String?   // IANA timezone string, e.g. "America/Santiago". If null, resolved from owner's country.
   isActive                  Boolean   @default(true)
-  trialEndsAt               DateTime? // null = legacy/no trial; set = trial ends at this date (14 days from signup or inherited)
+  scheduleMode              String    @default("continuous") // "continuous" | "service_periods"
+  dataVersion               Int       @default(0)
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
 
-  userRestaurants           UserRestaurant[]
   zones                     Zone[]
   durationRules             DurationRule[]
   schedules                 Schedule[]
   blockedSlots              BlockedSlot[]
   reservations              Reservation[]
-  subscriptions             Subscription[]
+  menus                     RestaurantMenu[]
+  managerAssignments        ManagerRestaurantAssignment[]
+  reservationAnalytics      ReservationAnalytics[]
 
+  @@index([organizationId])
   @@index([isActive])
+}
+
+model RestaurantMenu {
+  id           String   @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  menuType     String   // "main" | "drinks" | "dessert"
+  fileName     String   // original filename
+  fileSize     Int      // bytes
+  r2Key        String   // R2 object key, e.g. "menus/{restaurantId}/{menuType}-{timestamp}.pdf"
+  url          String   // full public URL or path
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([restaurantId, menuType])
+  @@index([restaurantId])
 }
 
 model DurationRule {
@@ -120,15 +179,19 @@ model RestaurantTable {
 }
 
 model Schedule {
-  id            String    @id @default(cuid())
-  restaurantId  String
-  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  dayOfWeek     Int       // 0=Sunday, 1=Monday, ..., 6=Saturday
-  openTime      String    // "09:00"
-  closeTime     String    // "22:00"
-  breakStartTime String?  // "15:00" - start of gap (e.g. between lunch and dinner)
-  breakEndTime   String?  // "19:00" - end of gap
-  isActive      Boolean   @default(true)
+  id                  String    @id @default(cuid())
+  restaurantId        String
+  restaurant          Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dayOfWeek           Int       // 0=Sunday, 1=Monday, ..., 6=Saturday
+  openTime            String    // "09:00"
+  closeTime           String    // "22:00"
+  isActive            Boolean   @default(true)
+  breakfastStartTime  String?   // service_periods mode
+  breakfastEndTime    String?
+  lunchStartTime      String?
+  lunchEndTime        String?
+  dinnerStartTime     String?
+  dinnerEndTime       String?
 
   @@unique([restaurantId, dayOfWeek])
 }
@@ -169,8 +232,8 @@ model Reservation {
 
 model Subscription {
   id            String    @id @default(cuid())
-  restaurantId  String
-  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization  RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   plan          String    @default("profesional") // "basico" | "profesional" | "premium"
   status        String    @default("trial") // "trial", "active", "grace", "cancelled", "expired"
   startDate     DateTime  @default(now())
@@ -179,7 +242,7 @@ model Subscription {
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
   createdAt     DateTime  @default(now())
 
-  @@index([restaurantId])
+  @@index([organizationId])
 }
 
 model EmailSender {
@@ -193,6 +256,7 @@ model Configuration {
   twoFactorEnabled      Boolean   @default(false)
   appName               String    @default("SimpleReserva")
   recoveryEmailSenderId String?
+  dashboardPollingIntervalSeconds Int @default(30)
   updatedAt             DateTime  @updatedAt
 }
 
@@ -200,6 +264,7 @@ model Configuration {
 model PlanConfig {
   id     String @id @default(cuid())
   plan   String @unique // "basico" | "profesional" | "premium"
+  isDefaultPlan Boolean @default(true)
 
   // Feature flags (boolean)
   smsConfirmations         Boolean @default(true)
@@ -222,12 +287,17 @@ model PlanConfig {
   maxTeamMembers  Int?    // null = unlimited
 
   // Pricing (flat per plan, not per location)
-  biweeklyPriceCLP     Int    @default(0)
+  displayName          String @default("")
+  description          String?
+  priceCLP             Int    @default(0)
   currency             String @default("CLP")
-  billingFrequencyDays Int    @default(14)
+  billingFrequency     Int    @default(1)
+  billingFrequencyType String @default("months") // "days" | "weeks" | "months" | "yearly"
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  organizations RestaurantOrganization[]
 }
 
 // Booking analytics events - tracking user behavior on the booking page
@@ -247,14 +317,14 @@ model BookingEvent {
   @@index([timestamp])
 }
 
-// Per-owner overrides for price, features, and limits (super admin editable)
+// Per-organization overrides for price, features, and limits (super admin editable)
 model PlanOverride {
-  id        String   @id @default(cuid())
-  userId    String   @unique // owner's User id
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String   @id @default(cuid())
+  organizationId String   @unique
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   // Price override (null = use plan default)
-  biweeklyPriceCLP Int?
+  priceCLP Int?
 
   // Feature overrides (null = use plan default)
   menuPdf                 Boolean?
@@ -276,6 +346,22 @@ model PlanOverride {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  @@index([userId])
+  @@index([organizationId])
   @@index([expiresAt])
+}
+
+model ReservationAnalytics {
+  id               String                  @id @default(cuid())
+  date             DateTime                @db.Date
+  restaurantId     String?
+  restaurant       Restaurant?             @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  organizationId   String?
+  organization     RestaurantOrganization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  reservationCount Int                     @default(0)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  @@index([date])
+  @@index([restaurantId, date])
+  @@index([organizationId, date])
 }

@@ -121,26 +121,42 @@ const authorizeRestaurant = async (req, res, next) => {
       return;
     }
 
+    // 1. Super Admin access
     if (req.user.role === 'super_admin') {
-      req.activeRestaurant = { restaurantId, role: 'owner' };
+      req.activeRestaurant = { restaurantId, role: 'restaurant_owner' };
       next();
       return;
     }
 
-    const userRestaurant = await prisma.userRestaurant.findUnique({
+    // 2. Owner access (via RestaurantOrganization)
+    const ownedRestaurant = await prisma.restaurant.findFirst({
       where: {
-        userId_restaurantId: { userId: req.user.id, restaurantId },
-      },
-      select: { role: true },
+        id: restaurantId,
+        organization: { ownerId: req.user.id }
+      }
     });
 
-    if (!userRestaurant) {
-      res.status(403).json({ error: 'No tienes acceso a este restaurante' });
+    if (ownedRestaurant) {
+      req.activeRestaurant = { restaurantId, role: 'restaurant_owner' };
+      next();
       return;
     }
 
-    req.activeRestaurant = { restaurantId, role: userRestaurant.role };
-    next();
+    // 3. Manager access (via OrganizationManager and ManagerRestaurantAssignment)
+    const managerAssignment = await prisma.managerRestaurantAssignment.findFirst({
+      where: {
+        restaurantId,
+        organizationManager: { userId: req.user.id }
+      }
+    });
+
+    if (managerAssignment) {
+      req.activeRestaurant = { restaurantId, role: 'restaurant_manager' };
+      next();
+      return;
+    }
+
+    res.status(403).json({ error: 'No tienes acceso a este restaurante' });
   } catch (error) {
     next(error);
   }

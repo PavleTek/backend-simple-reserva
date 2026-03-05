@@ -21,34 +21,36 @@ function msToDays(ms) {
 }
 
 async function runTrialReminders() {
-  const restaurants = await prisma.restaurant.findMany({
+  const organizations = await prisma.restaurantOrganization.findMany({
     where: {
       trialEndsAt: { not: null },
-      isActive: true,
     },
     include: {
-      userRestaurants: {
-        where: { role: 'owner' },
-        include: { user: { select: { email: true, name: true } } },
-      },
-      _count: { select: { reservations: true } },
+      owner: { select: { id: true, email: true, name: true } },
+      restaurants: {
+        select: {
+          id: true,
+          name: true,
+          _count: { select: { reservations: true } },
+        }
+      }
     },
   });
 
   let sent = 0;
   const now = new Date();
 
-  for (const rest of restaurants) {
-    const inTrial = await isTrialing(rest.id);
+  for (const org of organizations) {
+    const inTrial = await isTrialing(org.id);
     if (!inTrial) continue;
 
-    const trialEndsAt = rest.trialEndsAt;
+    const trialEndsAt = org.trialEndsAt;
     if (!trialEndsAt) continue;
 
     const daysLeft = msToDays(trialEndsAt.getTime() - now.getTime());
     if (daysLeft !== 7 && daysLeft !== 12) continue;
 
-    const ownerId = rest.userRestaurants.find((ur) => ur.role === 'owner')?.userId;
+    const ownerId = org.ownerId;
     const planConfig = ownerId ? await planService.resolvePlanConfig(ownerId, true) : null;
     const priceStr = formatPriceCLP(planConfig?.biweeklyPriceCLP);
 
@@ -64,14 +66,17 @@ async function runTrialReminders() {
         ? `Te quedan 7 días de prueba en SimpleReserva`
         : `Tu prueba de SimpleReserva termina en 2 días`;
 
-    const reservationCount = rest._count.reservations;
+    // If multiple restaurants, we use the first one for the name in the email, or just the organization name
+    const restaurantName = org.restaurants[0]?.name || org.name;
+    const reservationCount = org.restaurants.reduce((acc, r) => acc + r._count.reservations, 0);
+    
     const body =
       daysLeft === 7
-        ? `Hola,\n\nTe quedan 7 días de prueba gratuita en SimpleReserva para ${rest.name}.\n\n${reservationCount > 0 ? `Hasta ahora has recibido ${reservationCount} reservas. ` : ''}Activa tu suscripción antes de que termine la prueba para seguir recibiendo reservas sin interrupciones.\n\nPrecio: ${priceStr} cada 2 semanas. Sin contrato.\n\nActivar suscripción: ${panelUrl}\n\nSaludos,\nEl equipo de SimpleReserva`
-        : `Hola,\n\nTu prueba gratuita de SimpleReserva para ${rest.name} termina en 2 días.\n\nActiva tu suscripción para no perder acceso a tu página de reservas:\n\n${panelUrl}\n\nPrecio: ${priceStr} cada 2 semanas. IVA incluido. Cancela cuando quieras.\n\nSaludos,\nEl equipo de SimpleReserva`;
+        ? `Hola,\n\nTe quedan 7 días de prueba gratuita en SimpleReserva para ${restaurantName}.\n\n${reservationCount > 0 ? `Hasta ahora has recibido ${reservationCount} reservas. ` : ''}Activa tu suscripción antes de que termine la prueba para seguir recibiendo reservas sin interrupciones.\n\nPrecio: ${priceStr} cada 2 semanas. Sin contrato.\n\nActivar suscripción: ${panelUrl}\n\nSaludos,\nEl equipo de SimpleReserva`
+        : `Hola,\n\nTu prueba gratuita de SimpleReserva para ${restaurantName} termina en 2 días.\n\nActiva tu suscripción para no perder acceso a tu página de reservas:\n\n${panelUrl}\n\nPrecio: ${priceStr} cada 2 semanas. IVA incluido. Cancela cuando quieras.\n\nSaludos,\nEl equipo de SimpleReserva`;
 
-    const emails = [...new Set(rest.userRestaurants.map((ur) => ur.user.email).filter(Boolean))];
-    for (const email of emails) {
+    const email = org.owner?.email;
+    if (email) {
       try {
         await sendEmail({
           fromEmail,

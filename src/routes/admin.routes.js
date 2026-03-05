@@ -33,8 +33,8 @@ router.get('/restaurants', async (req, res, next) => {
         take: limit,
         orderBy: { createdAt: 'desc' },
         include: {
-          _count: { select: { reservations: true, userRestaurants: true } },
-          subscriptions: true,
+          _count: { select: { reservations: true, managerAssignments: true } },
+          organization: { include: { owner: true } },
         },
       }),
       prisma.restaurant.count({ where }),
@@ -52,9 +52,9 @@ router.get('/restaurants/:id', async (req, res, next) => {
       where: { id: req.params.id },
       include: {
         zones: { include: { tables: true } },
-        userRestaurants: {
+        organization: {
           include: {
-            user: {
+            owner: {
               select: {
                 id: true,
                 email: true,
@@ -64,9 +64,23 @@ router.get('/restaurants/:id', async (req, res, next) => {
                 createdAt: true,
               },
             },
+            managers: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    email: true,
+                    name: true,
+                    lastName: true,
+                    lastLogin: true,
+                    createdAt: true,
+                  },
+                },
+              }
+            }
           },
         },
-        subscriptions: true,
+        menus: true,
       },
     });
 
@@ -121,8 +135,13 @@ router.get('/users', async (req, res, next) => {
           name: true,
           lastName: true,
           role: true,
-          userRestaurants: {
-            include: { restaurant: { select: { id: true, name: true } } },
+          ownedOrganization: {
+            include: { restaurants: { select: { id: true, name: true } } }
+          },
+          managedOrganizations: {
+            include: { 
+              organization: { include: { restaurants: { select: { id: true, name: true } } } }
+            }
           },
           lastLogin: true,
           createdAt: true,
@@ -176,7 +195,8 @@ router.patch('/plans/:plan', async (req, res, next) => {
       'whatsappModificationAlerts', 'menuPdf', 'advancedBookingSettings', 'brandingRemoval',
       'analyticsWeekly', 'analyticsMonthly', 'crossLocationDashboard', 'prioritySupport',
       'maxLocations', 'maxZones', 'maxTables', 'maxTeamMembers',
-      'biweeklyPriceCLP', 'currency', 'billingFrequencyDays',
+      'priceCLP', 'currency', 'billingFrequency', 'billingFrequencyType',
+      'displayName', 'description',
     ];
     const data = {};
     for (const key of allowed) {
@@ -198,7 +218,13 @@ router.patch('/plans/:plan', async (req, res, next) => {
 router.get('/plan-overrides', async (req, res, next) => {
   try {
     const overrides = await prisma.planOverride.findMany({
-      include: { user: { select: { id: true, email: true, name: true, lastName: true } } },
+      include: { 
+        organization: { 
+          include: { 
+            owner: { select: { id: true, email: true, name: true, lastName: true } } 
+          } 
+        } 
+      },
       orderBy: { createdAt: 'desc' },
     });
     res.json(overrides);
@@ -209,38 +235,38 @@ router.get('/plan-overrides', async (req, res, next) => {
 
 router.post('/plan-overrides', async (req, res, next) => {
   try {
-    const { userId, biweeklyPriceCLP, expiresAt, reason, ...featureLimits } = req.body;
-    if (!userId) throw new ValidationError('userId es requerido');
+    const { organizationId, priceCLP, expiresAt, reason, ...featureLimits } = req.body;
+    if (!organizationId) throw new ValidationError('organizationId es requerido');
 
     const override = await prisma.planOverride.upsert({
-      where: { userId },
+      where: { organizationId },
       update: {
-        ...(biweeklyPriceCLP !== undefined && { biweeklyPriceCLP }),
+        ...(priceCLP !== undefined && { priceCLP }),
         ...(expiresAt !== undefined && { expiresAt: expiresAt ? new Date(expiresAt) : null }),
         ...(reason !== undefined && { reason }),
         ...featureLimits,
       },
       create: {
-        userId,
-        biweeklyPriceCLP: biweeklyPriceCLP ?? null,
+        organizationId,
+        priceCLP: priceCLP ?? null,
         expiresAt: expiresAt ? new Date(expiresAt) : null,
         reason: reason || null,
         ...featureLimits,
       },
     });
-    planService.invalidateCache(userId);
+    planService.invalidateCache(organizationId);
     res.status(201).json(override);
   } catch (error) {
     next(error);
   }
 });
 
-router.delete('/plan-overrides/:userId', async (req, res, next) => {
+router.delete('/plan-overrides/:organizationId', async (req, res, next) => {
   try {
     await prisma.planOverride.delete({
-      where: { userId: req.params.userId },
+      where: { organizationId: req.params.organizationId },
     });
-    planService.invalidateCache(req.params.userId);
+    planService.invalidateCache(req.params.organizationId);
     res.json({ message: 'Override eliminado' });
   } catch (error) {
     if (error.code === 'P2025') throw new NotFoundError('Override no encontrado');
@@ -258,8 +284,13 @@ router.get('/users/:id', async (req, res, next) => {
         name: true,
         lastName: true,
         role: true,
-        userRestaurants: {
-          include: { restaurant: { select: { id: true, name: true } } },
+        ownedOrganization: {
+          include: { restaurants: { select: { id: true, name: true } } }
+        },
+        managedOrganizations: {
+          include: { 
+            organization: { include: { restaurants: { select: { id: true, name: true } } } }
+          }
         },
         lastLogin: true,
         createdAt: true,
@@ -341,7 +372,7 @@ router.put('/users/:id/role', async (req, res, next) => {
     const { role } = req.body;
     const userId = req.params.id;
 
-    if (!['super_admin', 'owner', 'admin'].includes(role)) {
+    if (!['super_admin', 'restaurant_owner', 'restaurant_manager'].includes(role)) {
       return res.status(400).json({ error: 'Rol inválido' });
     }
 
@@ -368,100 +399,6 @@ router.put('/users/:id/role', async (req, res, next) => {
   }
 });
 
-router.delete('/users/:id', async (req, res, next) => {
-  try {
-    const userId = req.params.id;
-
-    if (userId === req.user.id) {
-      return res.status(400).json({ error: 'No puedes eliminar tu propia cuenta' });
-    }
-
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundError('Usuario no encontrado');
-
-    if (user.role === 'super_admin') {
-      const superAdminCount = await prisma.user.count({
-        where: { role: 'super_admin' },
-      });
-      if (superAdminCount <= 1) {
-        return res.status(400).json({ error: 'No se puede eliminar al último super administrador' });
-      }
-    }
-
-    await prisma.user.delete({ where: { id: userId } });
-
-    res.json({ message: 'Usuario eliminado correctamente' });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/users', async (req, res, next) => {
-  try {
-    const { email, password, name, lastName, role } = req.body;
-    const { hashPassword } = require('../utils/password');
-
-    if (!email || !password || !role) {
-      return res.status(400).json({ error: 'Email, contraseña y rol son obligatorios' });
-    }
-
-    if (!['super_admin', 'owner', 'admin'].includes(role)) {
-      return res.status(400).json({ error: 'Rol inválido' });
-    }
-
-    const existingUser = await prisma.user.findFirst({
-      where: { email: { equals: email, mode: 'insensitive' } },
-    });
-
-    if (existingUser) {
-      return res.status(409).json({ error: 'El email ya está en uso' });
-    }
-
-    const hashedPassword = await hashPassword(password);
-
-    const newUser = await prisma.user.create({
-      data: {
-        email: email.toLowerCase().trim(),
-        hashedPassword,
-        name,
-        lastName,
-        role,
-      },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        lastName: true,
-        role: true,
-        createdAt: true,
-      },
-    });
-
-    res.status(201).json(newUser);
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/users/:id/reset-2fa', async (req, res, next) => {
-  try {
-    await prisma.user.update({
-      where: { id: req.params.id },
-      data: {
-        twoFactorSecret: null,
-        twoFactorEnabled: false,
-        userEnabledTwoFactor: false,
-        twoFactorRecoveryCode: null,
-        twoFactorRecoveryCodeExpires: null,
-      },
-    });
-
-    res.json({ message: '2FA restablecido correctamente' });
-  } catch (error) {
-    next(error);
-  }
-});
-
 // ─── Subscriptions ───────────────────────────────────────────────
 
 router.get('/subscriptions', async (req, res, next) => {
@@ -473,7 +410,7 @@ router.get('/subscriptions', async (req, res, next) => {
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
-        include: { restaurant: { select: { name: true } } },
+        include: { organization: { include: { restaurants: { select: { name: true } } } } },
       }),
       prisma.subscription.count(),
     ]);
@@ -496,7 +433,7 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
     const subscription = await prisma.subscription.update({
       where: { id: req.params.id },
       data,
-      include: { restaurant: { select: { name: true } } },
+      include: { organization: { select: { name: true } } },
     });
 
     res.json(subscription);
@@ -683,6 +620,61 @@ router.get('/booking-analytics', async (req, res, next) => {
   }
 });
 
+// ─── Reservation Analytics ───────────────────────────────────────
+
+router.get('/reservation-analytics', async (req, res, next) => {
+  try {
+    const { dateFrom, dateTo, restaurantId } = req.query;
+
+    if (!dateFrom || !dateTo) {
+      return res.status(400).json({ error: 'dateFrom y dateTo son requeridos' });
+    }
+
+    const from = new Date(dateFrom);
+    const to = new Date(dateTo);
+
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+      return res.status(400).json({ error: 'Formato de fecha inválido' });
+    }
+
+    const where = {
+      date: { gte: from, lte: to },
+    };
+
+    if (restaurantId) {
+      where.restaurantId = restaurantId;
+    } else {
+      // If no restaurantId, we want the global aggregate rows
+      where.restaurantId = null;
+    }
+
+    const [data, restaurants] = await Promise.all([
+      prisma.reservationAnalytics.findMany({
+        where,
+        orderBy: { date: 'asc' },
+        select: {
+          date: true,
+          reservationCount: true,
+        },
+      }),
+      prisma.restaurant.findMany({
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' },
+      }),
+    ]);
+
+    res.json({
+      data: data.map(row => ({
+        date: row.date.toISOString().split('T')[0],
+        reservationCount: row.reservationCount,
+      })),
+      restaurants,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── Analytics ───────────────────────────────────────────────────
 
 router.get('/analytics', async (req, res, next) => {
@@ -714,6 +706,45 @@ router.get('/analytics', async (req, res, next) => {
       reservationsThisMonth,
       activeSubscriptions,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── App Configuration ───────────────────────────────────────────
+
+router.get('/config', async (req, res, next) => {
+  try {
+    const config = await prisma.configuration.findFirst();
+    res.json(config);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/config', async (req, res, next) => {
+  try {
+    const { dashboardPollingIntervalSeconds } = req.body;
+
+    if (dashboardPollingIntervalSeconds !== undefined) {
+      if (typeof dashboardPollingIntervalSeconds !== 'number' || dashboardPollingIntervalSeconds < 5 || dashboardPollingIntervalSeconds > 300) {
+        throw new ValidationError('El intervalo de sondeo debe ser un número entre 5 y 300 segundos');
+      }
+    }
+
+    const currentConfig = await prisma.configuration.findFirst();
+    if (!currentConfig) {
+      throw new NotFoundError('Configuración no encontrada');
+    }
+
+    const updated = await prisma.configuration.update({
+      where: { id: currentConfig.id },
+      data: {
+        ...(dashboardPollingIntervalSeconds !== undefined && { dashboardPollingIntervalSeconds }),
+      },
+    });
+
+    res.json(updated);
   } catch (error) {
     next(error);
   }

@@ -11,7 +11,7 @@ async function runTrialExpiry() {
   const expired = await prisma.subscription.updateMany({
     where: {
       status: 'trial',
-      restaurant: {
+      organization: {
         trialEndsAt: { lt: now, not: null },
       },
     },

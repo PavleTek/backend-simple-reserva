@@ -6,7 +6,7 @@
  * - Trial 14 días → luego pago. Suscripción activa = cobros recurrentes.
  *
  * MP API preapproval: frequency_type válidos = [days, months].
- * Usamos days/14 para cobro quincenal (billingFrequencyDays = cada 2 semanas).
+ * Usamos el helper planService.toMercadoPagoFrequency para mapear days/weeks/months/yearly.
  */
 
 const prisma = require('../lib/prisma');
@@ -35,10 +35,10 @@ function getClient() {
  */
 async function getEffectiveAmount(plan, ownerId) {
   const config = await planService.getPlanConfig(plan);
-  const baseAmount = config?.biweeklyPriceCLP ?? 4990;
+  const baseAmount = config?.priceCLP ?? 4990;
   const override = ownerId ? await planService.getPlanOverride(ownerId) : null;
-  if (override?.biweeklyPriceCLP != null) {
-    return override.biweeklyPriceCLP;
+  if (override?.priceCLP != null) {
+    return override.priceCLP;
   }
   return baseAmount;
 }
@@ -46,23 +46,23 @@ async function getEffectiveAmount(plan, ownerId) {
 /**
  * Crea preapproval en MP. Redirige al checkout para que el usuario pague.
  *
- * @param {string} restaurantId
+ * @param {string} organizationId
  * @param {string} ownerId - para aplicar PlanOverride
  * @param {string} backUrl
  * @param {string} payerEmail
  * @param {string} plan - basico | profesional | premium
  */
-async function createSubscription(restaurantId, ownerId, backUrl, payerEmail, plan = 'profesional') {
-  const restaurant = await prisma.restaurant.findUnique({
-    where: { id: restaurantId },
+async function createSubscription(organizationId, ownerId, backUrl, payerEmail, plan = 'profesional') {
+  const organization = await prisma.restaurantOrganization.findUnique({
+    where: { id: organizationId },
     select: { name: true },
   });
-  if (!restaurant) throw new Error('Restaurante no encontrado');
+  if (!organization) throw new Error('Organización no encontrada');
 
-  const biweeklyAmount = await getEffectiveAmount(plan, ownerId);
+  const planAmount = await getEffectiveAmount(plan, ownerId);
   const config = await planService.getPlanConfig(plan);
-  const billingDays = config?.billingFrequencyDays ?? 14;
-  let amount = Math.round(biweeklyAmount);
+  const mpFreq = planService.toMercadoPagoFrequency(config?.billingFrequency ?? 1, config?.billingFrequencyType ?? 'months');
+  let amount = Math.round(planAmount);
   if (amount < MIN_AMOUNT_CLP) {
     amount = MIN_AMOUNT_CLP;
   }
@@ -87,7 +87,7 @@ async function createSubscription(restaurantId, ownerId, backUrl, payerEmail, pl
     throw new Error('Configura BACKEND_PUBLIC_URL en .env (ej: URL de ngrok)');
   }
 
-  const externalRef = `${restaurantId}|${plan}`;
+  const externalRef = `${organizationId}|${plan}`;
   const endDate = new Date();
   endDate.setFullYear(endDate.getFullYear() + 2);
 
@@ -97,13 +97,13 @@ async function createSubscription(restaurantId, ownerId, backUrl, payerEmail, pl
   const notificationUrl = `${backendBase}/api/webhooks/mercadopago`;
 
   const body = {
-    reason: `SimpleReserva ${plan} - ${restaurant.name}`,
+    reason: `SimpleReserva ${plan} - ${organization.name}`,
     external_reference: externalRef,
     payer_email: emailForPayer,
     status: 'pending',
     auto_recurring: {
-      frequency: billingDays,
-      frequency_type: 'days',
+      frequency: mpFreq.frequency,
+      frequency_type: mpFreq.frequency_type,
       end_date: endDate.toISOString(),
       transaction_amount: amount,
       currency_id: CURRENCY,
@@ -115,7 +115,7 @@ async function createSubscription(restaurantId, ownerId, backUrl, payerEmail, pl
   console.log('[MercadoPago] Request (sanitized):', {
     payer_email: emailForPayer,
     amount,
-    frequency: `cada ${billingDays} días`,
+    frequency: `${mpFreq.frequency} ${mpFreq.frequency_type}`,
     currency_id: CURRENCY,
     back_url: effectiveBackUrl.slice(0, 50) + '...',
     notification_url: notificationUrl,
@@ -164,75 +164,72 @@ async function cancelSubscription(preapprovalId) {
   }
 }
 
-async function activateRestaurantSubscription(restaurantId, preapprovalId, plan = 'profesional') {
+async function activateOrganizationSubscription(organizationId, preapprovalId, plan = 'profesional') {
   const existing = await prisma.subscription.findFirst({
     where: { mercadopagoPreapprovalId: preapprovalId, status: 'active' },
   });
   if (existing) return;
 
-  const restaurant = await prisma.restaurant.findUnique({ where: { id: restaurantId } });
-  if (!restaurant) {
-    console.error('[MercadoPago] activateRestaurantSubscription: restaurante no encontrado:', restaurantId);
-    throw new Error(`Restaurante no encontrado: ${restaurantId}`);
+  const organization = await prisma.restaurantOrganization.findUnique({ where: { id: organizationId } });
+  if (!organization) {
+    console.error('[MercadoPago] activateOrganizationSubscription: organización no encontrada:', organizationId);
+    throw new Error(`Organización no encontrada: ${organizationId}`);
   }
 
   const validPlan = planService.VALID_PLANS.includes(plan) ? plan : 'profesional';
 
   await prisma.$transaction(async (tx) => {
     await tx.subscription.updateMany({
-      where: { restaurantId, status: 'trial' },
+      where: { organizationId, status: 'trial' },
       data: { status: 'cancelled' },
     });
     await tx.subscription.create({
       data: {
-        restaurantId,
+        organizationId,
         plan: validPlan,
         status: 'active',
         mercadopagoPreapprovalId: preapprovalId,
       },
     });
-    await tx.restaurant.update({
-      where: { id: restaurantId },
+    await tx.restaurantOrganization.update({
+      where: { id: organizationId },
       data: { trialEndsAt: null },
     });
   });
 }
 
-async function deactivateRestaurantSubscription(restaurantId) {
+async function deactivateOrganizationSubscription(organizationId) {
   await prisma.subscription.updateMany({
-    where: { restaurantId },
+    where: { organizationId },
     data: { status: 'expired', endDate: new Date() },
   });
 }
 
-async function enterGracePeriod(restaurantId) {
+async function enterGracePeriod(organizationId) {
   const graceEnd = new Date();
   graceEnd.setDate(graceEnd.getDate() + 7);
   await prisma.subscription.updateMany({
-    where: { restaurantId, status: 'active' },
+    where: { organizationId, status: 'active' },
     data: { status: 'grace', gracePeriodEndsAt: graceEnd },
   });
 
   // Notify owners by email
   try {
-    const restaurant = await prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-      select: {
-        name: true,
-        userRestaurants: {
-          where: { role: 'owner' },
-          select: { user: { select: { email: true } } },
-        },
-      },
-    });
-    if (restaurant) {
-      const emails = [...new Set(restaurant.userRestaurants.map((ur) => ur.user?.email).filter(Boolean))];
+  const organization = await prisma.restaurantOrganization.findUnique({
+    where: { id: organizationId },
+    select: {
+      name: true,
+      owner: { select: { email: true } },
+    },
+  });
+    if (organization && organization.owner?.email) {
+      const emails = [organization.owner.email];
       const panelBase = (process.env.APP_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
-      const panelUrl = `${panelBase}/billing?restaurantId=${restaurantId}`;
+      const panelUrl = `${panelBase}/billing?organizationId=${organizationId}`;
       const { sendPaymentFailureNotification } = require('./notificationService');
       await sendPaymentFailureNotification({
         emails,
-        restaurantName: restaurant.name,
+        restaurantName: organization.name,
         panelUrl,
       });
     }
@@ -245,7 +242,7 @@ async function enterGracePeriod(restaurantId) {
  * Confirma suscripción desde preapproval_id (fallback cuando el webhook no llega).
  * Usado cuando el usuario vuelve de MP con preapproval_id en la URL.
  */
-async function confirmSubscriptionFromPreapproval(restaurantId, preapprovalId) {
+async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId) {
   const client = getClient();
   let mpSub;
   try {
@@ -257,11 +254,11 @@ async function confirmSubscriptionFromPreapproval(restaurantId, preapprovalId) {
 
   const externalRef = mpSub?.external_reference ? String(mpSub.external_reference) : '';
   const parts = externalRef.split('|');
-  const refRestaurantId = parts[0];
+  const refOrganizationId = parts[0];
   const plan = parts[1] || 'profesional';
 
-  if (refRestaurantId !== restaurantId) {
-    return { activated: false, reason: 'La suscripción no corresponde a este restaurante' };
+  if (refOrganizationId !== organizationId) {
+    return { activated: false, reason: 'La suscripción no corresponde a esta organización' };
   }
 
   const status = mpSub?.status ?? mpSub?.Status ?? null;
@@ -271,16 +268,16 @@ async function confirmSubscriptionFromPreapproval(restaurantId, preapprovalId) {
     return { activated: false, reason: `Pago aún no autorizado (estado: ${status || 'desconocido'})` };
   }
 
-  await activateRestaurantSubscription(restaurantId, preapprovalId, plan);
-  console.log('[MercadoPago] confirmSubscriptionFromPreapproval activated:', restaurantId, plan);
+  await activateOrganizationSubscription(organizationId, preapprovalId, plan);
+  console.log('[MercadoPago] confirmSubscriptionFromPreapproval activated:', organizationId, plan);
   return { activated: true };
 }
 
 module.exports = {
   createSubscription,
   cancelSubscription,
-  activateRestaurantSubscription,
-  deactivateRestaurantSubscription,
+  activateOrganizationSubscription,
+  deactivateOrganizationSubscription,
   enterGracePeriod,
   confirmSubscriptionFromPreapproval,
 };

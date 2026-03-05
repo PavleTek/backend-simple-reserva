@@ -11,6 +11,7 @@ const {
   verifyRecoveryCode: verifyRecoveryCodeUtil
 } = require('../utils/twoFactor');
 const { sendEmail } = require('../services/emailService');
+const { SUPPORTED_COUNTRIES } = require('../utils/timezone');
 
 function stripUser(user, lastLoginOverride) {
   return {
@@ -19,24 +20,59 @@ function stripUser(user, lastLoginOverride) {
     name: user.name,
     lastName: user.lastName,
     role: user.role,
+    country: user.country,
     lastLogin: lastLoginOverride || user.lastLogin,
     createdAt: user.createdAt
   };
 }
 
 async function getRestaurantsForUser(userId) {
-  const userRestaurants = await prisma.userRestaurant.findMany({
-    where: { userId },
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
     include: {
-      restaurant: { select: { id: true, name: true, slug: true } },
-    },
+      ownedOrganization: {
+        include: { restaurants: { select: { id: true, name: true, slug: true } } }
+      },
+      managedOrganizations: {
+        include: {
+          organization: true,
+          restaurantAssignments: {
+            include: { restaurant: { select: { id: true, name: true, slug: true } } }
+          }
+        }
+      }
+    }
   });
-  return userRestaurants.map((ur) => ({
-    id: ur.restaurant.id,
-    name: ur.restaurant.name,
-    slug: ur.restaurant.slug,
-    role: ur.role,
-  }));
+
+  if (!user) return [];
+
+  const restaurants = [];
+
+  // If owner, they see all restaurants in their organization
+  if (user.ownedOrganization) {
+    user.ownedOrganization.restaurants.forEach(r => {
+      restaurants.push({
+        id: r.id,
+        name: r.name,
+        slug: r.slug,
+        role: 'restaurant_owner'
+      });
+    });
+  }
+
+  // If manager, they see assigned restaurants
+  user.managedOrganizations.forEach(mo => {
+    mo.restaurantAssignments.forEach(ra => {
+      restaurants.push({
+        id: ra.restaurant.id,
+        name: ra.restaurant.name,
+        slug: ra.restaurant.slug,
+        role: 'restaurant_manager'
+      });
+    });
+  });
+
+  return restaurants;
 }
 
 function generateSlug(restaurantName) {
@@ -54,8 +90,10 @@ function generateSlug(restaurantName) {
 const login = async (req, res) => {
   try {
     const { email: identifier, password } = req.body;
+    console.log('[AUTH] POST /login received', { email: identifier || '(missing)', hasPassword: !!password });
 
     if (!identifier || !password) {
+      console.log('[AUTH] Login rejected: missing email or password');
       res.status(400).json({ error: 'Se requiere usuario/email y contraseña' });
       return;
     }
@@ -69,18 +107,17 @@ const login = async (req, res) => {
       }
     });
 
-    if (user) {
-      console.log(`[AUTH] Login attempt for identifier: ${identifier}`);
-      console.log(`[AUTH] Hashed password in DB: ${user.hashedPassword}`);
-    }
-
     if (!user) {
+      console.log('[AUTH] Login failed: no user found for email', identifier);
       res.status(401).json({ error: 'Credenciales inválidas' });
       return;
     }
 
+    console.log('[AUTH] User found', { userId: user.id, email: user.email, role: user.role });
+
     const isPasswordValid = await comparePassword(password, user.hashedPassword);
     if (!isPasswordValid) {
+      console.log('[AUTH] Login failed: invalid password for', user.email);
       res.status(401).json({ error: 'Credenciales inválidas' });
       return;
     }
@@ -101,6 +138,7 @@ const login = async (req, res) => {
       const userHas2FA = user.twoFactorSecret && user.twoFactorEnabled;
 
       if (userHas2FA) {
+        console.log('[AUTH] Login: 2FA verification required for', user.email);
         const tempToken = generateTempToken(userWithoutPassword);
         res.status(200).json({
           message: 'Se requiere verificación 2FA',
@@ -109,6 +147,7 @@ const login = async (req, res) => {
         });
         return;
       } else {
+        console.log('[AUTH] Login: 2FA setup required for', user.email);
         const tempToken = generateTempToken(userWithoutPassword);
         res.status(200).json({
           message: 'Se requiere configuración de 2FA',
@@ -121,6 +160,7 @@ const login = async (req, res) => {
 
     const token = generateToken(userWithoutPassword);
     const restaurants = await getRestaurantsForUser(user.id);
+    console.log('[AUTH] Login success', { userId: user.id, email: user.email, restaurantsCount: restaurants.length });
 
     res.status(200).json({
       message: 'Inicio de sesión exitoso',
@@ -129,23 +169,21 @@ const login = async (req, res) => {
       token
     });
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('[AUTH] Login error:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
 
 const register = async (req, res) => {
   try {
-    const { email, password, name, lastName, restaurantName, restaurantSlug, plan } = req.body;
+    const { email, password, name, lastName, restaurantName, restaurantSlug, plan, country } = req.body;
 
     if (!email || !password || !restaurantName) {
       res.status(400).json({ error: 'Se requiere email, contraseña y nombre del restaurante' });
       return;
     }
 
-    // Primer trial: siempre plan básico, sin tarjeta. Después del trial, pagan el plan que elijan en MercadoPago.
-    const selectedPlan = 'basico';
-    const hasTrial = true;
+    const selectedCountry = country && SUPPORTED_COUNTRIES.includes(country) ? country : 'CL';
 
     const existingUser = await prisma.user.findFirst({
       where: {
@@ -174,43 +212,61 @@ const register = async (req, res) => {
 
     const hashedPassword = await hashPassword(password);
 
-    const trialEndsAt = hasTrial ? (() => {
+    const trialEndsAt = (() => {
       const d = new Date();
       d.setDate(d.getDate() + 14);
       return d;
-    })() : null;
+    })();
 
     const result = await prisma.$transaction(async (tx) => {
-      const restaurant = await tx.restaurant.create({
-        data: {
-          name: restaurantName,
-          slug,
-          trialEndsAt,
-        }
-      });
-
+      // 1. Create User
       const user = await tx.user.create({
         data: {
           email: email.toLowerCase().trim(),
           name: name || null,
           lastName: lastName || null,
           hashedPassword,
-          role: 'owner',
+          role: 'restaurant_owner',
+          country: selectedCountry,
         }
       });
 
-      await tx.userRestaurant.create({
+      // 2. Find default plan
+      const defaultPlan = await tx.planConfig.findFirst({
+        where: { plan: plan || 'profesional', isDefaultPlan: true }
+      }) || await tx.planConfig.findFirst({
+        where: { plan: 'profesional' }
+      });
+
+      if (!defaultPlan) {
+        throw new Error('No se encontró una configuración de plan válida');
+      }
+
+      // 3. Create Organization
+      const organization = await tx.restaurantOrganization.create({
         data: {
-          userId: user.id,
-          restaurantId: restaurant.id,
-          role: 'owner',
+          name: `${restaurantName} Org`,
+          ownerId: user.id,
+          planConfigId: defaultPlan.id,
+          trialEndsAt,
         }
       });
 
+      // 4. Create Restaurant
+      const restaurant = await tx.restaurant.create({
+        data: {
+          organizationId: organization.id,
+          name: restaurantName,
+          slug,
+          timezone: null,
+        }
+      });
+
+      // 5. Create Subscription on Org
       await tx.subscription.create({
         data: {
-          restaurantId: restaurant.id,
-          plan: 'basico',
+          organizationId: organization.id,
+          plan: defaultPlan.plan,
           status: 'trial'
         }
       });
@@ -222,7 +278,6 @@ const register = async (req, res) => {
     const token = generateToken(userWithoutPassword);
     const restaurants = await getRestaurantsForUser(result.user.id);
 
-    // Send welcome email (fire-and-forget, don't block response)
     try {
       const panelUrl = (process.env.APP_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
       const { sendWelcomeEmail } = require('../services/notificationService');
@@ -245,7 +300,6 @@ const register = async (req, res) => {
       },
       restaurants,
       token,
-      plan: selectedPlan,
       requiresPayment: false,
     });
   } catch (error) {
@@ -262,10 +316,10 @@ const addRestaurant = async (req, res) => {
       return;
     }
 
-    const ownerEntry = await prisma.userRestaurant.findFirst({
-      where: { userId, role: 'owner' },
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { ownerId: userId },
     });
-    if (!ownerEntry) {
+    if (!org) {
       res.status(403).json({ error: 'Solo los propietarios pueden agregar nuevas ubicaciones' });
       return;
     }
@@ -291,57 +345,16 @@ const addRestaurant = async (req, res) => {
       return;
     }
 
-    // Inherit trial: new location gets earliest trialEndsAt among owner's restaurants
-    const ownerRestaurants = await prisma.restaurant.findMany({
-      where: {
-        userRestaurants: {
-          some: { userId, role: 'owner' },
-        },
+    const result = await prisma.restaurant.create({
+      data: {
+        organizationId: org.id,
+        name: name.trim(),
+        slug,
+        address: address?.trim() || null,
+        phone: phone?.trim() || null,
+        email: email?.trim() || null,
+        timezone: null,
       },
-      select: { trialEndsAt: true },
-    });
-    let trialEndsAt = null;
-    const now = new Date();
-    const futureTrials = ownerRestaurants
-      .map((r) => r.trialEndsAt)
-      .filter((d) => d && d > now);
-    if (futureTrials.length > 0) {
-      trialEndsAt = new Date(Math.min(...futureTrials.map((d) => d.getTime())));
-    } else {
-      // Owner has no active trial; new location gets fresh 14-day trial
-      trialEndsAt = new Date();
-      trialEndsAt.setDate(trialEndsAt.getDate() + 14);
-    }
-
-    const result = await prisma.$transaction(async (tx) => {
-      const restaurant = await tx.restaurant.create({
-        data: {
-          name: name.trim(),
-          slug,
-          address: address?.trim() || null,
-          phone: phone?.trim() || null,
-          email: email?.trim() || null,
-          trialEndsAt,
-        },
-      });
-
-      await tx.userRestaurant.create({
-        data: {
-          userId,
-          restaurantId: restaurant.id,
-          role: 'owner',
-        },
-      });
-
-      await tx.subscription.create({
-        data: {
-          restaurantId: restaurant.id,
-          plan: 'basico',
-          status: 'trial',
-        },
-      });
-
-      return restaurant;
     });
 
     const restaurants = await getRestaurantsForUser(userId);
@@ -383,7 +396,7 @@ const getProfile = async (req, res) => {
 const updateProfile = async (req, res) => {
   try {
     const currentUser = req.user;
-    const { email, name, lastName } = req.body;
+    const { email, name, lastName, country } = req.body;
     const userId = currentUser.id;
 
     if (email) {
@@ -411,6 +424,7 @@ const updateProfile = async (req, res) => {
     if (email !== undefined) updateData.email = email.toLowerCase().trim();
     if (name !== undefined) updateData.name = name;
     if (lastName !== undefined) updateData.lastName = lastName;
+    if (country !== undefined && SUPPORTED_COUNTRIES.includes(country)) updateData.country = country;
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
@@ -1116,16 +1130,15 @@ const getRestaurantsTodaySummary = async (req, res) => {
     if (req.user.role === 'super_admin') {
       return res.json({ locations: [] });
     }
-    const userRestaurants = await prisma.userRestaurant.findMany({
-      where: { userId: req.user.id },
-      include: { restaurant: { select: { id: true, name: true, slug: true } } },
-    });
+    
+    const restaurants = await getRestaurantsForUser(req.user.id);
+    const locationIds = restaurants.map((r) => r.id);
+    
     const today = new Date();
     const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const todayEnd = new Date(todayStart);
     todayEnd.setDate(todayEnd.getDate() + 1);
 
-    const locationIds = userRestaurants.map((ur) => ur.restaurant.id);
     const reservations = await prisma.reservation.findMany({
       where: {
         restaurantId: { in: locationIds },
@@ -1144,13 +1157,13 @@ const getRestaurantsTodaySummary = async (req, res) => {
       byRestaurant[r.restaurantId].covers += r.partySize || 0;
     }
 
-    const locations = userRestaurants.map((ur) => ({
-      id: ur.restaurant.id,
-      name: ur.restaurant.name,
-      slug: ur.restaurant.slug,
-      role: ur.role,
-      todayReservations: byRestaurant[ur.restaurant.id]?.count ?? 0,
-      todayCovers: byRestaurant[ur.restaurant.id]?.covers ?? 0,
+    const locations = restaurants.map((r) => ({
+      id: r.id,
+      name: r.name,
+      slug: r.slug,
+      role: r.role,
+      todayReservations: byRestaurant[r.id]?.count ?? 0,
+      todayCovers: byRestaurant[r.id]?.covers ?? 0,
     }));
 
     res.json({ date: today.toISOString().split('T')[0], locations });

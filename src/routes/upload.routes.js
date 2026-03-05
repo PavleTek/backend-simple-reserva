@@ -67,7 +67,7 @@ router.post(
   '/menu',
   authenticateToken,
   authorizeRestaurant,
-  authenticateRestaurantRoles(['owner', 'admin']),
+  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
   upload.single('menu'),
   async (req, res, next) => {
     try {
@@ -105,7 +105,7 @@ router.post(
   '/logo',
   authenticateToken,
   authorizeRestaurant,
-  authenticateRestaurantRoles(['owner', 'admin']),
+  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
   uploadLogo.single('logo'),
   async (req, res, next) => {
     try {

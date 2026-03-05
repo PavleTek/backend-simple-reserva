@@ -6,7 +6,7 @@
 
 const crypto = require('crypto');
 const express = require('express');
-const { activateRestaurantSubscription, enterGracePeriod } = require('../services/mercadopagoService');
+const { activateOrganizationSubscription, enterGracePeriod } = require('../services/mercadopagoService');
 
 const router = express.Router();
 
@@ -81,27 +81,27 @@ router.post('/mercadopago', express.json(), async (req, res) => {
       }
 
       const parts = String(externalRef).split('|');
-      const restaurantId = parts[0];
+      const organizationId = parts[0];
       const plan = parts[1] || 'profesional';
 
       const status = mpSub?.status ?? mpSub?.Status ?? null;
-      console.log('[Webhook] MercadoPago preapproval:', { status, external_reference: externalRef, restaurantId, plan });
+      console.log('[Webhook] MercadoPago preapproval:', { status, external_reference: externalRef, organizationId, plan });
 
       // Activar cuando el pago está autorizado. MP puede enviar "authorized" o "approved".
       const isAuthorized = status === 'authorized' || status === 'approved';
       if (isAuthorized) {
         try {
-          await activateRestaurantSubscription(restaurantId, preapprovalId, plan);
-          console.log('[Webhook] MercadoPago subscription activated:', restaurantId, plan);
+          await activateOrganizationSubscription(organizationId, preapprovalId, plan);
+          console.log('[Webhook] MercadoPago subscription activated:', organizationId, plan);
         } catch (err) {
-          console.error('[Webhook] activateRestaurantSubscription failed:', err?.message ?? err);
+          console.error('[Webhook] activateOrganizationSubscription failed:', err?.message ?? err);
         }
       } else if (status === 'payment_required') {
         // Pago fallido o método inválido → periodo de gracia para actualizar
-        await enterGracePeriod(restaurantId);
-        console.log('[Webhook] MercadoPago payment_required → grace period:', restaurantId);
+        await enterGracePeriod(organizationId);
+        console.log('[Webhook] MercadoPago payment_required → grace period:', organizationId);
       } else if (status === 'cancelled' || status === 'expired') {
-        await enterGracePeriod(restaurantId);
+        await enterGracePeriod(organizationId);
       } else {
         console.log('[Webhook] MercadoPago status ignorado (no authorized/approved):', status);
       }

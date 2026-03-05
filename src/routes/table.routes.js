@@ -8,7 +8,7 @@ const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(['owner', 'admin']));
+router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']));
 
 router.get('/zone/:zoneId', async (req, res, next) => {
   try {

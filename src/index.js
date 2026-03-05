@@ -13,6 +13,7 @@ const tableRouter = require("./routes/table.routes");
 const scheduleRouter = require("./routes/schedule.routes");
 const reservationRouter = require("./routes/reservation.routes");
 const teamRouter = require("./routes/team.routes");
+const menuRouter = require("./routes/menu.routes");
 const adminRouter = require("./routes/admin.routes");
 const uploadRouter = require("./routes/upload.routes");
 const billingRouter = require("./routes/billing.routes");
@@ -21,7 +22,6 @@ const analyticsRouter = require("./routes/analytics.routes");
 const errorHandler = require("./middleware/errorHandler");
 const { startReminderJob } = require("./jobs/reminderJob");
 const { startDailySummaryJob } = require("./jobs/dailySummaryJob");
-const { startNoShowJob } = require("./jobs/noShowJob");
 const { startTrialReminderJob } = require("./jobs/trialReminderJob");
 const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
 const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
@@ -107,7 +107,11 @@ app.get("/api/public/plans", async (req, res, next) => {
       orderBy: { plan: "asc" },
       select: {
         plan: true,
-        biweeklyPriceCLP: true,
+        displayName: true,
+        description: true,
+        priceCLP: true,
+        billingFrequency: true,
+        billingFrequencyType: true,
         maxLocations: true,
         maxZones: true,
         maxTables: true,
@@ -145,6 +149,7 @@ app.use("/api/restaurant/:restaurantId/zones", zoneRouter);
 app.use("/api/restaurant/:restaurantId/tables", tableRouter);
 app.use("/api/restaurant/:restaurantId/schedules", scheduleRouter);
 app.use("/api/restaurant/:restaurantId/team", teamRouter);
+app.use("/api/restaurant/:restaurantId/menus", menuRouter);
 app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/analytics", analyticsRouter);
@@ -161,7 +166,6 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`SimpleReserva API running on port ${PORT}`);
   startReminderJob();
   startDailySummaryJob();
-  // startNoShowJob(); // Deactivated: no-show marking is manual-only
   startTrialReminderJob();
   startTrialExpiryJob();
   startGracePeriodExpiryJob();

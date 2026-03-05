@@ -4,15 +4,17 @@ const bcrypt = require('bcryptjs');
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🌱 Starting comprehensive database seeding...');
+  console.log('🌱 Starting comprehensive database seeding with Organizations...');
 
   const summary = {
     PlanConfig: { created: 0, skipped: 0 },
     EmailSender: { created: 0, skipped: 0 },
     Configuration: { created: 0, skipped: 0 },
-    Restaurant: { created: 0, skipped: 0 },
     User: { created: 0, skipped: 0 },
-    UserRestaurant: { created: 0, skipped: 0 },
+    RestaurantOrganization: { created: 0, skipped: 0 },
+    Restaurant: { created: 0, skipped: 0 },
+    OrganizationManager: { created: 0, skipped: 0 },
+    ManagerRestaurantAssignment: { created: 0, skipped: 0 },
     Zone: { created: 0, skipped: 0 },
     RestaurantTable: { created: 0, skipped: 0 },
     Schedule: { created: 0, skipped: 0 },
@@ -25,6 +27,9 @@ async function main() {
   const planConfigs = [
     {
       plan: 'basico',
+      displayName: 'Básico',
+      description: '1 local, ideal para empezar',
+      isDefaultPlan: true,
       smsConfirmations: true,
       smsReminders: true,
       whatsappConfirmations: true,
@@ -41,12 +46,16 @@ async function main() {
       maxZones: 3,
       maxTables: 15,
       maxTeamMembers: 2,
-      biweeklyPriceCLP: 2990,
+      priceCLP: 2990,
       currency: 'CLP',
-      billingFrequencyDays: 14,
+      billingFrequency: 1,
+      billingFrequencyType: 'months',
     },
     {
       plan: 'profesional',
+      displayName: 'Profesional',
+      description: 'Hasta 3 locales para tu negocio en crecimiento',
+      isDefaultPlan: true,
       smsConfirmations: true,
       smsReminders: true,
       whatsappConfirmations: true,
@@ -63,12 +72,16 @@ async function main() {
       maxZones: null,
       maxTables: null,
       maxTeamMembers: 5,
-      biweeklyPriceCLP: 4990,
+      priceCLP: 4990,
       currency: 'CLP',
-      billingFrequencyDays: 14,
+      billingFrequency: 1,
+      billingFrequencyType: 'months',
     },
     {
       plan: 'premium',
+      displayName: 'Premium',
+      description: 'Hasta 20 locales para cadenas',
+      isDefaultPlan: true,
       smsConfirmations: true,
       smsReminders: true,
       whatsappConfirmations: true,
@@ -85,473 +98,263 @@ async function main() {
       maxZones: null,
       maxTables: null,
       maxTeamMembers: null,
-      biweeklyPriceCLP: 9990,
+      priceCLP: 9990,
       currency: 'CLP',
-      billingFrequencyDays: 14,
+      billingFrequency: 1,
+      billingFrequencyType: 'months',
     },
   ];
+  
+  const planConfigMap = {};
   for (const data of planConfigs) {
-    const existing = await prisma.planConfig.findUnique({ where: { plan: data.plan } });
-    if (!existing) {
-      await prisma.planConfig.create({ data });
-      summary.PlanConfig.created += 1;
-    } else {
-      summary.PlanConfig.skipped += 1;
-    }
-  }
-  if (summary.PlanConfig.created > 0) {
-    console.log(`✅ Created ${summary.PlanConfig.created} plan configs (basico, profesional, premium).`);
-  } else if (summary.PlanConfig.skipped > 0) {
-    console.log('ℹ️  PlanConfig already exists, skipping.');
+    const pc = await prisma.planConfig.upsert({
+      where: { plan: data.plan },
+      create: data,
+      update: data,
+    });
+    planConfigMap[data.plan] = pc;
+    summary.PlanConfig.created += 1;
   }
 
   // 1. Seed EmailSender
-  const existingSenderCount = await prisma.emailSender.count();
-  let emailSender;
-  if (existingSenderCount === 0) {
-    emailSender = await prisma.emailSender.create({
-      data: { email: 'noreply@simplereserva.com' }
-    });
-    summary.EmailSender.created = 1;
-    console.log('✅ Created EmailSender: noreply@simplereserva.com');
-  } else {
-    emailSender = await prisma.emailSender.findFirst();
-    summary.EmailSender.skipped = existingSenderCount;
-    console.log('ℹ️  EmailSender already exists, skipping.');
-  }
+  const emailSender = await prisma.emailSender.upsert({
+    where: { email: 'noreply@simplereserva.com' },
+    create: { email: 'noreply@simplereserva.com' },
+    update: {},
+  });
+  summary.EmailSender.created = 1;
 
   // 2. Seed Configuration
-  const existingConfigCount = await prisma.configuration.count();
-  if (existingConfigCount === 0) {
-    await prisma.configuration.create({
-      data: {
-        twoFactorEnabled: false,
-        appName: 'SimpleReserva',
-        recoveryEmailSenderId: emailSender.id,
-      }
+  await prisma.configuration.upsert({
+    where: { id: 'default-config' },
+    create: {
+      id: 'default-config',
+      twoFactorEnabled: false,
+      appName: 'SimpleReserva',
+      recoveryEmailSenderId: emailSender.id,
+      dashboardPollingIntervalSeconds: 30,
+    },
+    update: {
+      recoveryEmailSenderId: emailSender.id,
+    }
+  });
+  summary.Configuration.created = 1;
+
+  // 3. Seed Users & Organizations
+  const seedPassword = 'asdf';
+  const passwordHash = await bcrypt.hash(seedPassword, 12);
+
+  const superAdmins = [
+    { email: 'admin@simplereserva.com', name: 'Super', lastName: 'Admin', role: 'super_admin' },
+    { email: 'pavle@simplereserva.com', name: 'Pavle', lastName: 'Admin', role: 'super_admin' },
+  ];
+
+  for (const u of superAdmins) {
+    await prisma.user.upsert({
+      where: { email: u.email },
+      create: { ...u, hashedPassword: passwordHash },
+      update: { role: u.role },
     });
-    summary.Configuration.created = 1;
-    console.log('✅ Created default Configuration.');
-  } else {
-    summary.Configuration.skipped = existingConfigCount;
-    console.log('ℹ️  Configuration already exists, skipping.');
+    summary.User.created += 1;
   }
 
-  // 3. Seed Restaurants
-  const existingRestaurantCount = await prisma.restaurant.count();
-  let restaurants = [];
-  if (existingRestaurantCount === 0) {
-    const restaurantData = [
-      {
-        slug: 'la-casona-de-pedro',
-        name: 'La Casona de Pedro',
-        description: 'Tradición chilena en el corazón de Santiago. Carnes a las brasas y los mejores vinos.',
-        address: 'Av. Vitacura 1234, Vitacura, Santiago',
-        phone: '+56 2 2234 5678',
-        email: 'contacto@lacasona.cl',
-        defaultSlotDurationMinutes: 60,
+  const owners = [
+    { email: 'carlos@lacasona.cl', name: 'Carlos', lastName: 'Rodriguez', role: 'restaurant_owner', orgName: 'La Casona Group' },
+    { email: 'maria@elporton.cl', name: 'Maria', lastName: 'Gomez', role: 'restaurant_owner', orgName: 'El Porton Enterprises' },
+    { email: 'diego@sushiwave.cl', name: 'Diego', lastName: 'Perez', role: 'restaurant_owner', orgName: 'Sushi Wave Nikkei' },
+  ];
+
+  const orgs = [];
+  for (const o of owners) {
+    const user = await prisma.user.upsert({
+      where: { email: o.email },
+      create: { 
+        email: o.email, 
+        name: o.name, 
+        lastName: o.lastName, 
+        role: o.role, 
+        hashedPassword: passwordHash 
       },
-      {
-        slug: 'el-porton-rojo',
-        name: 'El Porton Rojo',
-        description: 'Cocina de autor con vista al mar. Mariscos frescos y ambiente bohemio.',
-        address: 'Cerro Alegre, Calle Templeman 567, Valparaíso',
-        phone: '+56 32 2234 8901',
-        email: 'info@elporton.cl',
-        defaultSlotDurationMinutes: 90,
+      update: { role: o.role },
+    });
+    summary.User.created += 1;
+
+    const org = await prisma.restaurantOrganization.upsert({
+      where: { ownerId: user.id },
+      create: {
+        name: o.orgName,
+        ownerId: user.id,
+        planConfigId: planConfigMap.profesional.id,
+        trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
       },
-      {
-        slug: 'sushi-wave',
-        name: 'Sushi Wave',
-        description: 'Fusión nikkei con los mejores ingredientes de la costa central.',
-        address: 'Av. San Martín 890, Viña del Mar',
-        phone: '+56 32 2256 7890',
-        email: 'hola@sushiwave.cl',
-        defaultSlotDurationMinutes: 45,
-      }
-    ];
+      update: { name: o.orgName },
+    });
+    orgs.push(org);
+    summary.RestaurantOrganization.created += 1;
 
-    for (const data of restaurantData) {
-      const restaurant = await prisma.restaurant.create({ data });
-      restaurants.push(restaurant);
-    }
-    summary.Restaurant.created = restaurants.length;
-    console.log(`✅ Created ${restaurants.length} restaurants.`);
-  } else {
-    restaurants = await prisma.restaurant.findMany();
-    summary.Restaurant.skipped = existingRestaurantCount;
-    console.log('ℹ️  Restaurants already exist, skipping.');
-  }
-
-  // 4. Seed Users (Super Admins, Owners, Admins)
-  const existingUserCount = await prisma.user.count();
-  if (existingUserCount === 0) {
-    const adminHash = await bcrypt.hash('admin123', 12);
-    const ownerHash = await bcrypt.hash('owner123', 12);
-
-    const userData = [
-      // Super Admins
-      { email: 'admin@simplereserva.com', name: 'Super', lastName: 'Admin', hashedPassword: adminHash, role: 'super_admin' },
-      { email: 'pavle@simplereserva.com', name: 'Pavle', lastName: 'Admin', hashedPassword: adminHash, role: 'super_admin' },
-    ];
-
-    const userRestaurantLinks = [];
-
-    // Add Owners and Admins for each restaurant if they were just created
-    if (restaurants.length >= 3) {
-      userData.push(
-        { email: 'carlos@lacasona.cl', name: 'Carlos', lastName: 'Rodriguez', hashedPassword: ownerHash, role: 'owner' },
-        { email: 'maria@elporton.cl', name: 'Maria', lastName: 'Gomez', hashedPassword: ownerHash, role: 'owner' },
-        { email: 'diego@sushiwave.cl', name: 'Diego', lastName: 'Perez', hashedPassword: ownerHash, role: 'owner' },
-        { email: 'ana@lacasona.cl', name: 'Ana', lastName: 'Soto', hashedPassword: adminHash, role: 'admin' },
-        { email: 'jose@elporton.cl', name: 'Jose', lastName: 'Muñoz', hashedPassword: adminHash, role: 'admin' }
-      );
-      userRestaurantLinks.push(
-        { userIndex: 2, restaurantIndex: 0, role: 'owner' },
-        { userIndex: 3, restaurantIndex: 1, role: 'owner' },
-        { userIndex: 4, restaurantIndex: 2, role: 'owner' },
-        { userIndex: 5, restaurantIndex: 0, role: 'admin' },
-        { userIndex: 6, restaurantIndex: 1, role: 'admin' }
-      );
-    }
-
-    const createdUsers = [];
-    for (const data of userData) {
-      const user = await prisma.user.create({ data });
-      createdUsers.push(user);
-    }
-    summary.User.created = userData.length;
-    console.log(`✅ Created ${userData.length} users.`);
-
-    for (const link of userRestaurantLinks) {
-      await prisma.userRestaurant.create({
+    // Use upsert or check for existing subscription to avoid duplicates
+    const existingSub = await prisma.subscription.findFirst({
+      where: { organizationId: org.id, status: 'trial' }
+    });
+    if (!existingSub) {
+      await prisma.subscription.create({
         data: {
-          userId: createdUsers[link.userIndex].id,
-          restaurantId: restaurants[link.restaurantIndex].id,
-          role: link.role,
+          organizationId: org.id,
+          plan: 'profesional',
+          status: 'trial',
+        }
+      });
+      summary.Subscription.created += 1;
+    }
+  }
+
+  // 4. Seed Restaurants
+  const restaurantData = [
+    {
+      organizationId: orgs[0].id,
+      slug: 'la-casona-de-pedro',
+      name: 'La Casona de Pedro',
+      description: 'Tradición chilena en el corazón de Santiago.',
+      address: 'Av. Vitacura 1234, Vitacura, Santiago',
+      phone: '+56 2 2234 5678',
+      email: 'contacto@lacasona.cl',
+      defaultSlotDurationMinutes: 60,
+    },
+    {
+      organizationId: orgs[1].id,
+      slug: 'el-porton-rojo',
+      name: 'El Porton Rojo',
+      description: 'Cocina de autor con vista al mar.',
+      address: 'Cerro Alegre, Calle Templeman 567, Valparaíso',
+      phone: '+56 32 2234 8901',
+      email: 'info@elporton.cl',
+      defaultSlotDurationMinutes: 90,
+    },
+    {
+      organizationId: orgs[2].id,
+      slug: 'sushi-wave',
+      name: 'Sushi Wave',
+      description: 'Fusión nikkei con los mejores ingredientes.',
+      address: 'Av. San Martín 890, Viña del Mar',
+      phone: '+56 32 2256 7890',
+      email: 'hola@sushiwave.cl',
+      defaultSlotDurationMinutes: 45,
+    }
+  ];
+
+  const restaurants = [];
+  for (const data of restaurantData) {
+    const r = await prisma.restaurant.upsert({
+      where: { slug: data.slug },
+      create: data,
+      update: data,
+    });
+    restaurants.push(r);
+    summary.Restaurant.created += 1;
+  }
+
+  // 5. Seed Managers
+  const managers = [
+    { email: 'ana@lacasona.cl', name: 'Ana', lastName: 'Soto', role: 'restaurant_manager', orgId: orgs[0].id, restaurantSlugs: ['la-casona-de-pedro'] },
+    { email: 'jose@elporton.cl', name: 'Jose', lastName: 'Muñoz', role: 'restaurant_manager', orgId: orgs[1].id, restaurantSlugs: ['el-porton-rojo'] },
+  ];
+
+  for (const m of managers) {
+    const user = await prisma.user.upsert({
+      where: { email: m.email },
+      create: { 
+        email: m.email, 
+        name: m.name, 
+        lastName: m.lastName, 
+        role: m.role, 
+        hashedPassword: passwordHash 
+      },
+      update: { role: m.role },
+    });
+    summary.User.created += 1;
+
+    const orgManager = await prisma.organizationManager.upsert({
+      where: { organizationId_userId: { organizationId: m.orgId, userId: user.id } },
+      create: { organizationId: m.orgId, userId: user.id },
+      update: {},
+    });
+    summary.OrganizationManager.created += 1;
+
+    for (const slug of m.restaurantSlugs) {
+      const rest = restaurants.find(r => r.slug === slug);
+      if (rest) {
+        await prisma.managerRestaurantAssignment.upsert({
+          where: { organizationManagerId_restaurantId: { organizationManagerId: orgManager.id, restaurantId: rest.id } },
+          create: { organizationManagerId: orgManager.id, restaurantId: rest.id },
+          update: {},
+        });
+        summary.ManagerRestaurantAssignment.created += 1;
+      }
+    }
+  }
+
+  // 6. Seed Zones, Tables, Schedules, etc.
+  for (const rest of restaurants) {
+    // Check for existing zones to avoid duplicates
+    let zone = await prisma.zone.findFirst({
+      where: { restaurantId: rest.id, name: 'Salón Principal' }
+    });
+    if (!zone) {
+      zone = await prisma.zone.create({
+        data: { restaurantId: rest.id, name: 'Salón Principal', sortOrder: 0 }
+      });
+      summary.Zone.created += 1;
+    }
+
+    const existingTable = await prisma.restaurantTable.findFirst({
+      where: { zoneId: zone.id, label: 'M1' }
+    });
+    if (!existingTable) {
+      await prisma.restaurantTable.create({
+        data: { zoneId: zone.id, label: 'M1', minCapacity: 2, maxCapacity: 4 }
+      });
+      summary.RestaurantTable.created += 1;
+    }
+
+    for (let i = 0; i < 7; i++) {
+      await prisma.schedule.upsert({
+        where: {
+          restaurantId_dayOfWeek: {
+            restaurantId: rest.id,
+            dayOfWeek: i,
+          }
         },
+        create: {
+          restaurantId: rest.id,
+          dayOfWeek: i,
+          openTime: '12:00',
+          closeTime: '23:00',
+          isActive: true,
+          breakfastStartTime: null,
+          breakfastEndTime: null,
+          lunchStartTime: null,
+          lunchEndTime: null,
+          dinnerStartTime: null,
+          dinnerEndTime: null,
+        },
+        update: {
+          openTime: '12:00',
+          closeTime: '23:00',
+          isActive: true,
+          breakfastStartTime: null,
+          breakfastEndTime: null,
+          lunchStartTime: null,
+          lunchEndTime: null,
+          dinnerStartTime: null,
+          dinnerEndTime: null,
+        }
       });
+      summary.Schedule.created += 1;
     }
-    if (userRestaurantLinks.length > 0) {
-      summary.UserRestaurant.created = userRestaurantLinks.length;
-      console.log(`✅ Created ${userRestaurantLinks.length} UserRestaurant links.`);
-    }
-  } else {
-    summary.User.skipped = existingUserCount;
-    console.log('ℹ️  Users already exist, skipping.');
-  }
-
-  // 5. Seed Zones
-  const existingZoneCount = await prisma.zone.count();
-  let zones = [];
-  if (existingZoneCount === 0 && restaurants.length >= 3) {
-    const zoneData = [
-      // La Casona
-      { restaurantId: restaurants[0].id, name: 'Terraza', sortOrder: 0 },
-      { restaurantId: restaurants[0].id, name: 'Salon Interior', sortOrder: 1 },
-      { restaurantId: restaurants[0].id, name: 'Barra', sortOrder: 2 },
-      // El Porton
-      { restaurantId: restaurants[1].id, name: 'Patio', sortOrder: 0 },
-      { restaurantId: restaurants[1].id, name: 'Comedor Principal', sortOrder: 1 },
-      // Sushi Wave
-      { restaurantId: restaurants[2].id, name: 'Sushi Bar', sortOrder: 0 },
-      { restaurantId: restaurants[2].id, name: 'Salon', sortOrder: 1 },
-      { restaurantId: restaurants[2].id, name: 'Terraza', sortOrder: 2 },
-    ];
-
-    for (const data of zoneData) {
-      const zone = await prisma.zone.create({ data });
-      zones.push(zone);
-    }
-    summary.Zone.created = zones.length;
-    console.log(`✅ Created ${zones.length} zones.`);
-  } else {
-    zones = await prisma.zone.findMany();
-    summary.Zone.skipped = existingZoneCount;
-    console.log('ℹ️  Zones already exist, skipping.');
-  }
-
-  // 6. Seed RestaurantTable
-  const existingTableCount = await prisma.restaurantTable.count();
-  let tables = [];
-  if (existingTableCount === 0 && zones.length >= 8) {
-    const tableData = [
-      // La Casona / Terraza (zones[0])
-      { zoneId: zones[0].id, label: 'T1', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[0].id, label: 'T2', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[0].id, label: 'T3', minCapacity: 4, maxCapacity: 6 },
-      { zoneId: zones[0].id, label: 'T4', minCapacity: 6, maxCapacity: 8 },
-      // La Casona / Salon Interior (zones[1])
-      { zoneId: zones[1].id, label: 'S1', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[1].id, label: 'S2', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[1].id, label: 'S3', minCapacity: 4, maxCapacity: 6 },
-      { zoneId: zones[1].id, label: 'S4', minCapacity: 4, maxCapacity: 6 },
-      { zoneId: zones[1].id, label: 'S5', minCapacity: 6, maxCapacity: 10 },
-      // La Casona / Barra (zones[2])
-      { zoneId: zones[2].id, label: 'B1', minCapacity: 1, maxCapacity: 2 },
-      { zoneId: zones[2].id, label: 'B2', minCapacity: 1, maxCapacity: 2 },
-      { zoneId: zones[2].id, label: 'B3', minCapacity: 1, maxCapacity: 2 },
-      // El Porton / Patio (zones[3])
-      { zoneId: zones[3].id, label: 'P1', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[3].id, label: 'P2', minCapacity: 4, maxCapacity: 6 },
-      { zoneId: zones[3].id, label: 'P3', minCapacity: 4, maxCapacity: 6 },
-      { zoneId: zones[3].id, label: 'P4', minCapacity: 8, maxCapacity: 12 },
-      // El Porton / Comedor (zones[4])
-      { zoneId: zones[4].id, label: 'C1', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[4].id, label: 'C2', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[4].id, label: 'C3', minCapacity: 4, maxCapacity: 6 },
-      { zoneId: zones[4].id, label: 'C4', minCapacity: 6, maxCapacity: 8 },
-      // Sushi Wave / Sushi Bar (zones[5])
-      { zoneId: zones[5].id, label: 'SB1', minCapacity: 1, maxCapacity: 2 },
-      { zoneId: zones[5].id, label: 'SB2', minCapacity: 1, maxCapacity: 2 },
-      { zoneId: zones[5].id, label: 'SB3', minCapacity: 1, maxCapacity: 2 },
-      { zoneId: zones[5].id, label: 'SB4', minCapacity: 1, maxCapacity: 2 },
-      // Sushi Wave / Salon (zones[6])
-      { zoneId: zones[6].id, label: 'M1', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[6].id, label: 'M2', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[6].id, label: 'M3', minCapacity: 4, maxCapacity: 6 },
-      // Sushi Wave / Terraza (zones[7])
-      { zoneId: zones[7].id, label: 'TZ1', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zones[7].id, label: 'TZ2', minCapacity: 4, maxCapacity: 6 },
-    ];
-
-    for (const data of tableData) {
-      const table = await prisma.restaurantTable.create({ data });
-      tables.push(table);
-    }
-    summary.RestaurantTable.created = tables.length;
-    console.log(`✅ Created ${tables.length} tables.`);
-  } else {
-    tables = await prisma.restaurantTable.findMany();
-    summary.RestaurantTable.skipped = existingTableCount;
-    console.log('ℹ️  Tables already exist, skipping.');
-  }
-
-  // 7. Seed Schedules
-  const existingScheduleCount = await prisma.schedule.count();
-  if (existingScheduleCount === 0 && restaurants.length >= 3) {
-    const scheduleData = [];
-    
-    // La Casona: Mon-Sat 12:00-23:00, Sun closed
-    for (let i = 0; i < 7; i++) {
-      scheduleData.push({
-        restaurantId: restaurants[0].id,
-        dayOfWeek: i,
-        openTime: '12:00',
-        closeTime: '23:00',
-        isActive: i !== 0, // 0 is Sunday
-      });
-    }
-
-    // El Porton: Mon-Sun 11:00-22:00
-    for (let i = 0; i < 7; i++) {
-      scheduleData.push({
-        restaurantId: restaurants[1].id,
-        dayOfWeek: i,
-        openTime: '11:00',
-        closeTime: '22:00',
-        isActive: true,
-      });
-    }
-
-    // Sushi Wave: Tue-Sun 13:00-23:00, Mon closed
-    for (let i = 0; i < 7; i++) {
-      scheduleData.push({
-        restaurantId: restaurants[2].id,
-        dayOfWeek: i,
-        openTime: '13:00',
-        closeTime: '23:00',
-        isActive: i !== 1, // 1 is Monday
-      });
-    }
-
-    for (const data of scheduleData) {
-      await prisma.schedule.create({ data });
-    }
-    summary.Schedule.created = scheduleData.length;
-    console.log(`✅ Created ${scheduleData.length} schedule entries.`);
-  } else {
-    summary.Schedule.skipped = existingScheduleCount;
-    console.log('ℹ️  Schedules already exist, skipping.');
-  }
-
-  // 8. Seed BlockedSlots
-  const existingBlockedCount = await prisma.blockedSlot.count();
-  if (existingBlockedCount === 0 && restaurants.length >= 3) {
-    const now = new Date();
-    const nextMonday = new Date(now);
-    nextMonday.setDate(now.getDate() + ((1 + 7 - now.getDay()) % 7 || 7));
-    nextMonday.setHours(0, 0, 0, 0);
-    const nextMondayEnd = new Date(nextMonday);
-    nextMondayEnd.setHours(23, 59, 59, 999);
-
-    const nextSaturday = new Date(now);
-    nextSaturday.setDate(now.getDate() + ((6 + 7 - now.getDay()) % 7 || 7));
-    nextSaturday.setHours(18, 0, 0, 0);
-    const nextSaturdayEnd = new Date(nextSaturday);
-    nextSaturdayEnd.setHours(22, 0, 0, 0);
-
-    const twoDaysFromNow = new Date(now);
-    twoDaysFromNow.setDate(now.getDate() + 2);
-    twoDaysFromNow.setHours(13, 0, 0, 0);
-    const twoDaysFromNowEnd = new Date(twoDaysFromNow);
-    twoDaysFromNowEnd.setHours(15, 0, 0, 0);
-
-    const blockedData = [
-      { restaurantId: restaurants[0].id, startDatetime: nextMonday, endDatetime: nextMondayEnd, reason: 'Fumigación programada' },
-      { restaurantId: restaurants[1].id, startDatetime: nextSaturday, endDatetime: nextSaturdayEnd, reason: 'Evento privado' },
-      { restaurantId: restaurants[2].id, startDatetime: twoDaysFromNow, endDatetime: twoDaysFromNowEnd, reason: 'Mantenimiento de equipos' },
-    ];
-
-    for (const data of blockedData) {
-      await prisma.blockedSlot.create({ data });
-    }
-    summary.BlockedSlot.created = blockedData.length;
-    console.log(`✅ Created ${blockedData.length} blocked slots.`);
-  } else {
-    summary.BlockedSlot.skipped = existingBlockedCount;
-    console.log('ℹ️  Blocked slots already exist, skipping.');
-  }
-
-  // 9. Seed Reservations
-  const existingReservationCount = await prisma.reservation.count();
-  if (existingReservationCount === 0 && restaurants.length >= 3 && tables.length > 0) {
-    const now = new Date();
-    const reservationData = [];
-
-    const names = ['Juan Pérez', 'Andrés Bello', 'Michelle Bachelet', 'Alexis Sánchez', 'Arturo Vidal', 'Violeta Parra', 'Pablo Neruda', 'Gabriela Mistral', 'Isabel Allende', 'Pedro Pascal', 'Cecilia Bolocco', 'Felipe Camiroaga', 'Tonka Tomicic', 'Luis Jara', 'Mario Kreutzberger', 'Daniela Vega', 'Benjamín Vicuña', 'Paz Bascuñán', 'Jorge Zabaleta', 'Carolina Arregui'];
-    
-    // Past reservations (last 7 days)
-    for (let i = 0; i < 10; i++) {
-      const resDate = new Date(now);
-      resDate.setDate(now.getDate() - (i + 1));
-      resDate.setHours(13 + (i % 8), 0, 0, 0);
-      
-      const restIdx = i % 3;
-      const restTables = tables.filter(t => zones.find(z => z.id === t.zoneId && z.restaurantId === restaurants[restIdx].id));
-      const table = restTables[i % restTables.length];
-
-      reservationData.push({
-        restaurantId: restaurants[restIdx].id,
-        tableId: table.id,
-        customerName: names[i],
-        customerPhone: `+56 9 ${Math.floor(10000000 + Math.random() * 90000000)}`,
-        customerEmail: `customer${i}@example.com`,
-        partySize: Math.min(table.maxCapacity, 2 + (i % 4)),
-        dateTime: resDate,
-        durationMinutes: restaurants[restIdx].defaultSlotDurationMinutes,
-        status: i % 5 === 0 ? 'no_show' : (i % 4 === 0 ? 'cancelled' : 'completed'),
-        notes: i % 3 === 0 ? 'Sin gluten por favor' : null,
-      });
-    }
-
-    // Upcoming reservations (next 7 days)
-    for (let i = 0; i < 15; i++) {
-      const resDate = new Date(now);
-      resDate.setDate(now.getDate() + (i % 7) + 1);
-      resDate.setHours(19 + (i % 3), 0, 0, 0);
-      
-      const restIdx = i % 3;
-      const restTables = tables.filter(t => zones.find(z => z.id === t.zoneId && z.restaurantId === restaurants[restIdx].id));
-      const table = restTables[i % restTables.length];
-
-      reservationData.push({
-        restaurantId: restaurants[restIdx].id,
-        tableId: table.id,
-        customerName: names[i + 5],
-        customerPhone: `+56 9 ${Math.floor(10000000 + Math.random() * 90000000)}`,
-        customerEmail: `customer${i + 10}@example.com`,
-        partySize: Math.min(table.maxCapacity, 2 + (i % 4)),
-        dateTime: resDate,
-        durationMinutes: restaurants[restIdx].defaultSlotDurationMinutes,
-        status: 'confirmed',
-        notes: i % 4 === 0 ? 'Celebración de cumpleaños' : null,
-      });
-    }
-
-    for (const data of reservationData) {
-      await prisma.reservation.create({ data });
-    }
-    summary.Reservation.created = reservationData.length;
-    console.log(`✅ Created ${reservationData.length} reservations.`);
-  } else {
-    summary.Reservation.skipped = existingReservationCount;
-    console.log('ℹ️  Reservations already exist, skipping.');
-  }
-
-  // 10. Seed Subscriptions (MVP: single plan, trial or active)
-  const existingSubCount = await prisma.subscription.count();
-  if (existingSubCount === 0 && restaurants.length >= 3) {
-    const now = new Date();
-    const trialEndsAt = new Date(now);
-    trialEndsAt.setDate(trialEndsAt.getDate() + 14);
-
-    // Restaurant 0: paid (active subscription)
-    await prisma.restaurant.update({
-      where: { id: restaurants[0].id },
-      data: { trialEndsAt: null },
-    });
-    await prisma.subscription.create({
-      data: {
-        restaurantId: restaurants[0].id,
-        plan: 'profesional',
-        status: 'active',
-        startDate: new Date(new Date().setMonth(now.getMonth() - 6)),
-      },
-    });
-
-    // Restaurant 1: paid (active subscription)
-    await prisma.restaurant.update({
-      where: { id: restaurants[1].id },
-      data: { trialEndsAt: null },
-    });
-    await prisma.subscription.create({
-      data: {
-        restaurantId: restaurants[1].id,
-        plan: 'profesional',
-        status: 'active',
-        startDate: new Date(new Date().setMonth(now.getMonth() - 3)),
-      },
-    });
-
-    // Restaurant 2: trial (14 days)
-    await prisma.restaurant.update({
-      where: { id: restaurants[2].id },
-      data: { trialEndsAt },
-    });
-    await prisma.subscription.create({
-      data: {
-        restaurantId: restaurants[2].id,
-        plan: 'profesional',
-        status: 'trial',
-        startDate: now,
-      },
-    });
-
-    summary.Subscription.created = 3;
-    console.log(`✅ Created 3 subscriptions.`);
-  } else {
-    summary.Subscription.skipped = existingSubCount;
-    console.log('ℹ️  Subscriptions already exist, skipping.');
   }
 
   console.log('\n📊 Seeding Summary:');
   console.table(summary);
-
-  console.log('\n🔑 Credentials Summary:');
-  console.log('--------------------------------------------------');
-  console.log('Super Admins (admin123):');
-  console.log('  admin@simplereserva.com');
-  console.log('  pavle@simplereserva.com');
-  console.log('\nRestaurant Owners (owner123):');
-  console.log('  carlos@lacasona.cl  (La Casona de Pedro)');
-  console.log('  maria@elporton.cl   (El Porton Rojo)');
-  console.log('  diego@sushiwave.cl  (Sushi Wave)');
-  console.log('\nRestaurant Admins (admin123):');
-  console.log('  ana@lacasona.cl     (La Casona de Pedro)');
-  console.log('  jose@elporton.cl    (El Porton Rojo)');
-  console.log('--------------------------------------------------');
-
   console.log('\n🎉 Database seeding completed successfully!');
 }
 

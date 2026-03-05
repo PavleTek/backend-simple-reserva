@@ -30,9 +30,13 @@ async function runDailySummary() {
         },
         orderBy: { dateTime: 'asc' },
       },
-      userRestaurants: {
-        where: { role: { in: ['owner', 'admin'] } },
-        include: { user: { select: { email: true } } },
+      organization: {
+        include: {
+          owner: { select: { email: true } },
+          managers: {
+            include: { user: { select: { email: true } } }
+          }
+        }
       },
     },
   });
@@ -47,7 +51,16 @@ async function runDailySummary() {
       : null;
     const panelUrl = `${PANEL_BASE_URL.replace(/\/$/, '')}/reservations?date=${start.toISOString().split('T')[0]}`;
 
-    const emails = [...new Set(rest.userRestaurants.map((ur) => ur.user.email).filter(Boolean))];
+    const emails = new Set();
+    if (rest.organization?.owner?.email) {
+      emails.add(rest.organization.owner.email);
+    }
+    if (rest.organization?.managers) {
+      rest.organization.managers.forEach(m => {
+        if (m.user?.email) emails.add(m.user.email);
+      });
+    }
+
     for (const email of emails) {
       const ok = await sendDailySummary({
         email,

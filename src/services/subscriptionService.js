@@ -6,17 +6,17 @@
 
 const prisma = require('../lib/prisma');
 
-async function getRestaurantWithTrial(restaurantId) {
-  return prisma.restaurant.findUnique({
-    where: { id: restaurantId },
+async function getOrganizationWithTrial(organizationId) {
+  return prisma.restaurantOrganization.findUnique({
+    where: { id: organizationId },
     select: { trialEndsAt: true },
   });
 }
 
-async function getActiveSubscription(restaurantId) {
+async function getActiveSubscription(organizationId) {
   const sub = await prisma.subscription.findFirst({
     where: {
-      restaurantId,
+      organizationId,
       status: { in: ['active', 'cancelled', 'grace'] },
     },
     orderBy: { startDate: 'desc' },
@@ -34,29 +34,29 @@ async function getActiveSubscription(restaurantId) {
 }
 
 /**
- * Check if restaurant has active access (trial or paid).
+ * Check if organization has active access (trial or paid).
  */
-async function hasActiveAccess(restaurantId) {
-  const restaurant = await getRestaurantWithTrial(restaurantId);
-  if (!restaurant) return false;
+async function hasActiveAccess(organizationId) {
+  const organization = await getOrganizationWithTrial(organizationId);
+  if (!organization) return false;
 
   // In trial: trialEndsAt is set and in the future
-  if (restaurant.trialEndsAt && new Date() < restaurant.trialEndsAt) {
+  if (organization.trialEndsAt && new Date() < organization.trialEndsAt) {
     return true;
   }
 
   // Paid: active subscription
-  const sub = await getActiveSubscription(restaurantId);
+  const sub = await getActiveSubscription(organizationId);
   return !!sub;
 }
 
 /**
- * Check if restaurant is in trial period.
+ * Check if organization is in trial period.
  */
-async function isTrialing(restaurantId) {
-  const restaurant = await getRestaurantWithTrial(restaurantId);
-  if (!restaurant || !restaurant.trialEndsAt) return false;
-  return new Date() < restaurant.trialEndsAt;
+async function isTrialing(organizationId) {
+  const organization = await getOrganizationWithTrial(organizationId);
+  if (!organization || !organization.trialEndsAt) return false;
+  return new Date() < organization.trialEndsAt;
 }
 
 /**
@@ -64,7 +64,13 @@ async function isTrialing(restaurantId) {
  * @returns {{ allowed: boolean, reason?: string }}
  */
 async function canCreateReservation(restaurantId) {
-  const hasAccess = await hasActiveAccess(restaurantId);
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { organizationId: true },
+  });
+  if (!restaurant) return { allowed: false, reason: 'Restaurante no encontrado' };
+
+  const hasAccess = await hasActiveAccess(restaurant.organizationId);
   if (!hasAccess) {
     return {
       allowed: false,
@@ -78,19 +84,29 @@ async function canCreateReservation(restaurantId) {
  * Check if restaurant can send SMS confirmations.
  */
 async function canSendConfirmations(restaurantId) {
-  return hasActiveAccess(restaurantId);
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { organizationId: true },
+  });
+  if (!restaurant) return false;
+  return hasActiveAccess(restaurant.organizationId);
 }
 
 /**
  * Check if restaurant can send reminders.
  */
 async function canSendReminders(restaurantId) {
-  return hasActiveAccess(restaurantId);
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { organizationId: true },
+  });
+  if (!restaurant) return false;
+  return hasActiveAccess(restaurant.organizationId);
 }
 
 module.exports = {
   getActiveSubscription,
-  getRestaurantWithTrial,
+  getOrganizationWithTrial,
   hasActiveAccess,
   isTrialing,
   canCreateReservation,

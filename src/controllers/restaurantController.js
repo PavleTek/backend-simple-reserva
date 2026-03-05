@@ -1,29 +1,32 @@
 const prisma = require('../lib/prisma');
-const { NotFoundError, ValidationError } = require('../utils/errors');
+const { ValidationError } = require('../utils/errors');
+const { getEffectiveTimezone, COUNTRY_TIMEZONES } = require('../utils/timezone');
 
 const getRestaurant = async (req, res, next) => {
   try {
     const restaurant = await prisma.restaurant.findUnique({
       where: { id: req.activeRestaurant.restaurantId },
       include: {
-        zones: {
-          where: { isActive: true },
-          orderBy: { sortOrder: 'asc' },
+        organization: {
           include: {
-            tables: {
-              where: { isActive: true },
-              orderBy: { label: 'asc' },
-            },
-          },
-        },
+            owner: { select: { country: true } }
+          }
+        }
       },
     });
 
     if (!restaurant) {
-      throw new NotFoundError('Restaurante no encontrado');
+      throw new ValidationError('Restaurante no encontrado');
     }
 
-    res.json(restaurant);
+    const ownerCountry = restaurant.organization?.owner?.country || 'CL';
+    const effectiveTimezone = getEffectiveTimezone(restaurant, ownerCountry);
+
+    res.json({
+      ...restaurant,
+      effectiveTimezone,
+      organization: undefined // Remove sensitive/unneeded data
+    });
   } catch (error) {
     next(error);
   }
@@ -31,7 +34,7 @@ const getRestaurant = async (req, res, next) => {
 
 const updateRestaurant = async (req, res, next) => {
   try {
-    const { name, description, address, phone, email, slug, defaultSlotDurationMinutes, bufferMinutesBetweenReservations, advanceBookingLimitDays, minimumNoticeMinutes, noShowGracePeriodMinutes, logoUrl } = req.body;
+    const { name, description, address, phone, email, slug, defaultSlotDurationMinutes, bufferMinutesBetweenReservations, advanceBookingLimitDays, minimumNoticeMinutes, noShowGracePeriodMinutes, logoUrl, timezone, scheduleMode } = req.body;
 
     if (slug) {
       const existing = await prisma.restaurant.findUnique({
@@ -40,6 +43,13 @@ const updateRestaurant = async (req, res, next) => {
 
       if (existing && existing.id !== req.activeRestaurant.restaurantId) {
         throw new ValidationError('El slug ya está en uso');
+      }
+    }
+
+    if (timezone !== undefined && timezone !== null) {
+      const validTimezones = Object.values(COUNTRY_TIMEZONES);
+      if (!validTimezones.includes(timezone)) {
+        throw new ValidationError('Zona horaria no válida');
       }
     }
 
@@ -52,6 +62,7 @@ const updateRestaurant = async (req, res, next) => {
         ...(phone !== undefined && { phone }),
         ...(email !== undefined && { email }),
         ...(slug !== undefined && { slug }),
+        ...(timezone !== undefined && { timezone }),
         ...(defaultSlotDurationMinutes !== undefined && {
           defaultSlotDurationMinutes: Math.min(240, Math.max(15, parseInt(defaultSlotDurationMinutes, 10) || 60)),
         }),
@@ -67,6 +78,7 @@ const updateRestaurant = async (req, res, next) => {
         ...(noShowGracePeriodMinutes !== undefined && {
           noShowGracePeriodMinutes: Math.min(120, Math.max(0, parseInt(noShowGracePeriodMinutes, 10) || 15)),
         }),
+        ...(scheduleMode !== undefined && { scheduleMode }),
         ...(logoUrl !== undefined && { logoUrl: logoUrl || null }),
       },
     });

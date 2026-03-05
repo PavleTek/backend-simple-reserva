@@ -7,7 +7,7 @@ const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(['owner', 'admin']));
+router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']));
 
 router.get('/', async (req, res, next) => {
   try {
@@ -44,14 +44,27 @@ router.put('/', async (req, res, next) => {
       if (entry.openTime >= entry.closeTime) {
         throw new ValidationError(`El horario de apertura (${entry.openTime}) debe ser anterior al de cierre (${entry.closeTime})`);
       }
-      if (entry.breakStartTime && !timeRegex.test(entry.breakStartTime)) {
-        throw new ValidationError('breakStartTime debe tener formato HH:MM');
-      }
-      if (entry.breakEndTime && !timeRegex.test(entry.breakEndTime)) {
-        throw new ValidationError('breakEndTime debe tener formato HH:MM');
-      }
-      if (entry.breakStartTime && entry.breakEndTime && entry.breakStartTime >= entry.breakEndTime) {
-        throw new ValidationError('El fin del primer servicio debe ser antes del inicio del segundo');
+
+      const periodFields = [
+        ['breakfastStartTime', 'breakfastEndTime', 'Desayuno'],
+        ['lunchStartTime', 'lunchEndTime', 'Almuerzo'],
+        ['dinnerStartTime', 'dinnerEndTime', 'Cena']
+      ];
+
+      for (const [startKey, endKey, label] of periodFields) {
+        const start = entry[startKey];
+        const end = entry[endKey];
+        if (start || end) {
+          if (!start || !end) {
+            throw new ValidationError(`Ambas horas de inicio y fin son requeridas para el periodo de ${label}`);
+          }
+          if (!timeRegex.test(start) || !timeRegex.test(end)) {
+            throw new ValidationError(`Las horas de ${label} deben tener formato HH:MM`);
+          }
+          if (start >= end) {
+            throw new ValidationError(`La hora de inicio de ${label} (${start}) debe ser anterior a la de fin (${end})`);
+          }
+        }
       }
     }
 
@@ -66,8 +79,12 @@ router.put('/', async (req, res, next) => {
           dayOfWeek: entry.dayOfWeek,
           openTime: entry.openTime,
           closeTime: entry.closeTime,
-          breakStartTime: entry.breakStartTime || null,
-          breakEndTime: entry.breakEndTime || null,
+          breakfastStartTime: entry.breakfastStartTime || null,
+          breakfastEndTime: entry.breakfastEndTime || null,
+          lunchStartTime: entry.lunchStartTime || null,
+          lunchEndTime: entry.lunchEndTime || null,
+          dinnerStartTime: entry.dinnerStartTime || null,
+          dinnerEndTime: entry.dinnerEndTime || null,
           isActive: entry.isActive ?? true,
         })),
       });

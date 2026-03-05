@@ -7,8 +7,11 @@ async function main() {
   console.log('🧪 Starting test setup script...');
 
   // 1. Delete all existing users to start fresh
-  console.log('🧹 Cleaning up users...');
+  console.log('🧹 Cleaning up users and organizations...');
   await prisma.user.deleteMany({});
+  await prisma.restaurantOrganization.deleteMany({});
+  // Cascading deletes should handle the rest, but let's be safe if needed
+  // However, with organizations owning restaurants, deleting users/orgs is a good start.
 
   const testPasswordHash = await bcrypt.hash('asdf', 12);
 
@@ -24,93 +27,93 @@ async function main() {
   });
   console.log('✅ Created Super Admin: adminP / asdf');
 
-  // 3. Find or Create "La Casona de Pedro"
-  let restaurant = await prisma.restaurant.findUnique({
-    where: { slug: 'la-casona-de-pedro' }
+  // 3. Find default plan
+  const defaultPlan = await prisma.planConfig.findFirst({
+    where: { plan: 'profesional', isDefaultPlan: true }
+  }) || await prisma.planConfig.findFirst({
+    where: { plan: 'profesional' }
   });
 
-  if (!restaurant) {
-    console.log('🏠 Restaurant "La Casona de Pedro" not found, creating it...');
-    restaurant = await prisma.restaurant.create({
-      data: {
-        slug: 'la-casona-de-pedro',
-        name: 'La Casona de Pedro',
-        description: 'Tradición chilena en el corazón de Santiago.',
-        address: 'Av. Vitacura 1234, Vitacura, Santiago',
-        phone: '+56 2 2234 5678',
-        email: 'contacto@lacasona.cl',
-        defaultSlotDurationMinutes: 60,
-      }
-    });
-  } else {
-    console.log('🏠 Found existing restaurant "La Casona de Pedro".');
+  if (!defaultPlan) {
+    throw new Error('No PlanConfig found. Please run seed.js first.');
   }
 
-  // 4. Create Restaurant Owner and Admin for La Casona
+  // 4. Create Restaurant Owner and Organization
   const owner = await prisma.user.create({
     data: {
       email: 'ownerP',
       name: 'Owner',
       lastName: 'Platform',
       hashedPassword: testPasswordHash,
-      role: 'owner',
+      role: 'restaurant_owner',
     }
   });
 
-  await prisma.userRestaurant.create({
+  const organization = await prisma.restaurantOrganization.create({
     data: {
-      userId: owner.id,
-      restaurantId: restaurant.id,
-      role: 'owner'
+      name: 'La Casona Group',
+      ownerId: owner.id,
+      planConfigId: defaultPlan.id,
+      trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
     }
   });
-  console.log('✅ Created Restaurant Owner: ownerP / asdf');
 
-  const staff = await prisma.user.create({
+  await prisma.subscription.create({
+    data: {
+      organizationId: organization.id,
+      plan: defaultPlan.plan,
+      status: 'trial',
+    }
+  });
+  console.log('✅ Created Restaurant Owner and Organization: ownerP / asdf');
+
+  // 5. Create Restaurant "La Casona de Pedro"
+  const restaurant = await prisma.restaurant.create({
+    data: {
+      organizationId: organization.id,
+      slug: 'la-casona-de-pedro',
+      name: 'La Casona de Pedro',
+      description: 'Tradición chilena en el corazón de Santiago.',
+      address: 'Av. Vitacura 1234, Vitacura, Santiago',
+      phone: '+56 2 2234 5678',
+      email: 'contacto@lacasona.cl',
+      defaultSlotDurationMinutes: 60,
+    }
+  });
+  console.log('🏠 Created restaurant "La Casona de Pedro".');
+
+  // 6. Create Restaurant Manager for La Casona
+  const manager = await prisma.user.create({
     data: {
       email: 'staff@test.com',
       name: 'Staff',
       lastName: 'LaCasona',
       hashedPassword: testPasswordHash,
-      role: 'admin',
+      role: 'restaurant_manager',
     }
   });
 
-  await prisma.userRestaurant.create({
+  const orgManager = await prisma.organizationManager.create({
     data: {
-      userId: staff.id,
-      restaurantId: restaurant.id,
-      role: 'admin'
+      organizationId: organization.id,
+      userId: manager.id,
     }
   });
-  console.log('✅ Created Restaurant Admin: staff@test.com / asdf');
 
-  // 5. Clear availability for La Casona (Delete reservations and blocked slots)
-  console.log('🔓 Clearing reservations and blocked slots for La Casona...');
-  await prisma.reservation.deleteMany({
-    where: { restaurantId: restaurant.id }
+  await prisma.managerRestaurantAssignment.create({
+    data: {
+      organizationManagerId: orgManager.id,
+      restaurantId: restaurant.id,
+    }
   });
-  await prisma.blockedSlot.deleteMany({
-    where: { restaurantId: restaurant.id }
-  });
+  console.log('✅ Created Restaurant Manager: staff@test.com / asdf');
 
-  // 6. Ensure active schedule for all days
+  // 7. Ensure active schedule for all days
   console.log('📅 Updating schedule for La Casona (Open every day 12:00-23:00)...');
   const days = [0, 1, 2, 3, 4, 5, 6];
   for (const day of days) {
-    await prisma.schedule.upsert({
-      where: {
-        restaurantId_dayOfWeek: {
-          restaurantId: restaurant.id,
-          dayOfWeek: day
-        }
-      },
-      update: {
-        openTime: '12:00',
-        closeTime: '23:00',
-        isActive: true
-      },
-      create: {
+    await prisma.schedule.create({
+      data: {
         restaurantId: restaurant.id,
         dayOfWeek: day,
         openTime: '12:00',
@@ -120,47 +123,35 @@ async function main() {
     });
   }
 
-  // 7. Ensure at least one zone and some tables exist
-  let zone = await prisma.zone.findFirst({
-    where: { restaurantId: restaurant.id, isActive: true }
-  });
-
-  if (!zone) {
-    console.log('🛋️ Creating a default zone "Terraza"...');
-    zone = await prisma.zone.create({
-      data: {
-        restaurantId: restaurant.id,
-        name: 'Terraza',
-        sortOrder: 0,
-        isActive: true
-      }
-    });
-  }
-
-  const tableCount = await prisma.restaurantTable.count({
-    where: { zoneId: zone.id, isActive: true }
-  });
-
-  if (tableCount === 0) {
-    console.log('🪑 Creating 5 default tables for "Terraza"...');
-    const tableData = [
-      { zoneId: zone.id, label: 'T1', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zone.id, label: 'T2', minCapacity: 2, maxCapacity: 4 },
-      { zoneId: zone.id, label: 'T3', minCapacity: 4, maxCapacity: 6 },
-      { zoneId: zone.id, label: 'T4', minCapacity: 4, maxCapacity: 6 },
-      { zoneId: zone.id, label: 'T5', minCapacity: 6, maxCapacity: 10 },
-    ];
-    for (const data of tableData) {
-      await prisma.restaurantTable.create({ data });
+  // 8. Create a default zone and tables
+  console.log('🛋️ Creating a default zone "Terraza"...');
+  const zone = await prisma.zone.create({
+    data: {
+      restaurantId: restaurant.id,
+      name: 'Terraza',
+      sortOrder: 0,
+      isActive: true
     }
+  });
+
+  console.log('🪑 Creating 5 default tables for "Terraza"...');
+  const tableData = [
+    { zoneId: zone.id, label: 'T1', minCapacity: 2, maxCapacity: 4 },
+    { zoneId: zone.id, label: 'T2', minCapacity: 2, maxCapacity: 4 },
+    { zoneId: zone.id, label: 'T3', minCapacity: 4, maxCapacity: 6 },
+    { zoneId: zone.id, label: 'T4', minCapacity: 4, maxCapacity: 6 },
+    { zoneId: zone.id, label: 'T5', minCapacity: 6, maxCapacity: 10 },
+  ];
+  for (const data of tableData) {
+    await prisma.restaurantTable.create({ data });
   }
 
   console.log('\n✨ Test setup completed successfully!');
   console.log('--------------------------------------------------');
   console.log('Credentials Summary:');
-  console.log('Super Admin:      adminP / asdf');
-  console.log('Restaurant Owner: ownerP / asdf');
-  console.log('Restaurant Admin: staff@test.com / asdf');
+  console.log('Super Admin:        adminP / asdf');
+  console.log('Restaurant Owner:   ownerP / asdf');
+  console.log('Restaurant Manager: staff@test.com / asdf');
   console.log('--------------------------------------------------');
 }
 
