@@ -102,35 +102,29 @@ app.get("/api/redirect-to-billing", (req, res) => {
 // Public plans for landing page (no auth)
 app.get("/api/public/plans", async (req, res, next) => {
   try {
-    const configs = await prisma.planConfig.findMany({
-      where: { plan: { in: ["basico", "profesional", "premium"] } },
-      orderBy: { plan: "asc" },
+    const plans = await prisma.plan.findMany({
+      where: { isDefault: true },
+      orderBy: { productSKU: "asc" },
       select: {
-        plan: true,
-        displayName: true,
+        productSKU: true,
+        name: true,
         description: true,
         priceCLP: true,
+        priceUSD: true,
+        priceEUR: true,
         billingFrequency: true,
         billingFrequencyType: true,
-        maxLocations: true,
-        maxZones: true,
+        maxRestaurants: true,
+        maxZonesPerRestaurant: true,
         maxTables: true,
         maxTeamMembers: true,
-        smsConfirmations: true,
-        smsReminders: true,
-        whatsappConfirmations: true,
-        whatsappReminders: true,
-        whatsappModificationAlerts: true,
-        menuPdf: true,
-        advancedBookingSettings: true,
-        brandingRemoval: true,
-        analyticsWeekly: true,
-        analyticsMonthly: true,
-        crossLocationDashboard: true,
+        whatsappFeatures: true,
+        googleReserveIntegration: true,
+        multipleMenu: true,
         prioritySupport: true,
       },
     });
-    res.json(configs);
+    res.json(plans);
   } catch (error) {
     next(error);
   }

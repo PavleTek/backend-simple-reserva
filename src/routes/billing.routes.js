@@ -30,20 +30,28 @@ router.get('/subscription', async (req, res, next) => {
     const status = trialing ? 'trial' : inGrace ? 'grace' : (sub ? 'active' : 'expired');
     const cancelAtEndDate = sub?.status === 'cancelled' && sub?.endDate ? sub.endDate.toISOString() : null;
 
-    let plan = (sub?.plan && planService.VALID_PLANS.includes(sub.plan)) ? sub.plan : null;
+    let plan = sub?.plan || null;
     if (!plan && trialing) {
       const trialSub = await prisma.subscription.findFirst({
         where: { organizationId, status: 'trial' },
-        select: { plan: true },
+        include: { plan: true },
       });
-      plan = (trialSub?.plan && planService.VALID_PLANS.includes(trialSub.plan)) ? trialSub.plan : 'basico';
+      plan = trialSub?.plan || null;
     }
-    if (!plan) plan = 'basico';
+    
+    // Fallback to org's default plan if still null
+    if (!plan) {
+      const orgWithPlan = await prisma.restaurantOrganization.findUnique({
+        where: { id: organizationId },
+        include: { plan: true }
+      });
+      plan = orgWithPlan?.plan || null;
+    }
 
     const planConfig = hasAccess ? await planService.resolvePlanConfigForRestaurant(restaurantId, true) : null;
 
     res.json({
-      plan,
+      plan: plan?.productSKU || 'plan-basico',
       status,
       trialEndsAt: org?.trialEndsAt?.toISOString() ?? null,
       cancelAtEndDate,
@@ -52,49 +60,24 @@ router.get('/subscription', async (req, res, next) => {
       hasAccess,
       canActivate: !hasAccess || inGrace || trialing,
       planConfig: planConfig ? {
-        displayName: planConfig.displayName,
+        name: planConfig.name,
         description: planConfig.description,
         priceCLP: planConfig.priceCLP,
         billingFrequency: planConfig.billingFrequency,
         billingFrequencyType: planConfig.billingFrequencyType,
-        maxLocations: planConfig.maxLocations,
-        maxZones: planConfig.maxZones,
+        maxRestaurants: planConfig.maxRestaurants,
+        maxZonesPerRestaurant: planConfig.maxZonesPerRestaurant,
         maxTables: planConfig.maxTables,
         maxTeamMembers: planConfig.maxTeamMembers,
-        analyticsWeekly: planConfig.analyticsWeekly,
-        analyticsMonthly: planConfig.analyticsMonthly,
-        menuPdf: planConfig.menuPdf,
-        brandingRemoval: planConfig.brandingRemoval,
+        multipleMenu: planConfig.multipleMenu,
+        whatsappFeatures: planConfig.whatsappFeatures,
+        googleReserveIntegration: planConfig.googleReserveIntegration,
+        prioritySupport: planConfig.prioritySupport,
       } : null,
-      allPlans: await Promise.all(
-        planService.VALID_PLANS.map(async (p) => {
-          const cfg = await planService.getPlanConfig(p);
-          return cfg ? {
-            plan: p,
-            displayName: cfg.displayName,
-            description: cfg.description,
-            priceCLP: cfg.priceCLP,
-            billingFrequency: cfg.billingFrequency,
-            billingFrequencyType: cfg.billingFrequencyType,
-            maxLocations: cfg.maxLocations,
-            maxZones: cfg.maxZones,
-            maxTables: cfg.maxTables,
-            maxTeamMembers: cfg.maxTeamMembers,
-            smsConfirmations: cfg.smsConfirmations,
-            smsReminders: cfg.smsReminders,
-            whatsappConfirmations: cfg.whatsappConfirmations,
-            whatsappReminders: cfg.whatsappReminders,
-            whatsappModificationAlerts: cfg.whatsappModificationAlerts,
-            analyticsWeekly: cfg.analyticsWeekly,
-            analyticsMonthly: cfg.analyticsMonthly,
-            menuPdf: cfg.menuPdf,
-            advancedBookingSettings: cfg.advancedBookingSettings,
-            brandingRemoval: cfg.brandingRemoval,
-            crossLocationDashboard: cfg.crossLocationDashboard,
-            prioritySupport: cfg.prioritySupport,
-          } : null;
-        })
-      ).then((arr) => arr.filter(Boolean)),
+      allPlans: await prisma.plan.findMany({
+        where: { isDefault: true },
+        orderBy: { productSKU: 'asc' }
+      }),
     });
   } catch (error) {
     next(error);
@@ -111,7 +94,7 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const organizationId = restaurant.organizationId;
 
-    const plan = req.body?.plan && planService.VALID_PLANS.includes(req.body.plan) ? req.body.plan : 'profesional';
+    const planSKU = req.body?.plan || 'plan-profesional';
     const mercadopagoService = require('../services/mercadopagoService');
 
     const user = await prisma.user.findUnique({
@@ -130,7 +113,7 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       req.user.id,
       backUrl,
       user?.email,
-      plan
+      planSKU
     );
 
     res.json({ checkoutUrl: result?.init_point ?? result?.initPoint ?? null });
@@ -192,6 +175,7 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
     const sub = await prisma.subscription.findFirst({
       where: { organizationId, status: 'active' },
       orderBy: { startDate: 'desc' },
+      include: { plan: true }
     });
     if (!sub?.mercadopagoPreapprovalId) {
       res.status(400).json({ error: 'No hay suscripción activa para cancelar.' });
@@ -199,7 +183,8 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
     }
     const mercadopagoService = require('../services/mercadopagoService');
     await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
-    const config = await planService.getPlanConfig(sub.plan);
+    
+    const config = sub.plan;
     const mpFreq = planService.toMercadoPagoFrequency(config?.billingFrequency ?? 1, config?.billingFrequencyType ?? 'months');
     const billingDays = mpFreq.frequency_type === 'months' ? mpFreq.frequency * 30 : mpFreq.frequency;
     const periodEnd = new Date(Date.now() + billingDays * 24 * 60 * 60 * 1000);

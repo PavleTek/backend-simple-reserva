@@ -232,10 +232,11 @@ const register = async (req, res) => {
       });
 
       // 2. Find default plan
-      const defaultPlan = await tx.planConfig.findFirst({
-        where: { plan: plan || 'profesional', isDefaultPlan: true }
-      }) || await tx.planConfig.findFirst({
-        where: { plan: 'profesional' }
+      const planSKU = plan || 'plan-profesional';
+      const defaultPlan = await tx.plan.findFirst({
+        where: { productSKU: planSKU, isDefault: true }
+      }) || await tx.plan.findFirst({
+        where: { isDefault: true }
       });
 
       if (!defaultPlan) {
@@ -247,7 +248,7 @@ const register = async (req, res) => {
         data: {
           name: `${restaurantName} Org`,
           ownerId: user.id,
-          planConfigId: defaultPlan.id,
+          planId: defaultPlan.id,
           trialEndsAt,
         }
       });
@@ -266,7 +267,7 @@ const register = async (req, res) => {
       await tx.subscription.create({
         data: {
           organizationId: organization.id,
-          plan: defaultPlan.plan,
+          planId: defaultPlan.id,
           status: 'trial'
         }
       });

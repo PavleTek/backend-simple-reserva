@@ -75,10 +75,10 @@ router.post(
 
       // Check plan feature (use restaurant's organization plan so managers get correct check)
       const config = await planService.resolvePlanConfigForRestaurant(restaurantId);
-      const hasMenuPdf = config && config.menuPdf === true;
-      if (!hasMenuPdf) {
+      const hasMultipleMenu = config && config.multipleMenu === true;
+      if (!hasMultipleMenu && menuType !== 'main') {
         return res.status(403).json({
-          error: 'Tu plan actual no incluye la gestión de menús PDF. Por favor, actualiza tu plan.',
+          error: 'Tu plan actual no incluye la gestión de múltiples menús. Por favor, actualiza tu plan.',
         });
       }
 

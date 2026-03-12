@@ -1,100 +1,79 @@
 /**
- * Plan resolution engine: resolves effective plan config from PlanConfig + PlanOverride.
+ * Plan resolution engine: resolves effective plan config from Plan.
  * Used for feature flags and limits. Cached for performance.
  */
 
 const prisma = require('../lib/prisma');
 
-// Fallback configs when PlanConfig table/client not available (run: npx prisma generate)
+// Fallback configs when Plan table/client not available (run: npx prisma generate)
 const FALLBACK_CONFIG = {
-  basico: {
-    plan: 'basico',
-    displayName: 'Básico',
+  'plan-basico': {
+    productSKU: 'plan-basico',
+    name: 'Básico',
     description: '1 local, ideal para empezar',
-    smsConfirmations: true,
-    smsReminders: true,
-    whatsappConfirmations: true,
-    whatsappReminders: true,
-    whatsappModificationAlerts: true,
-    menuPdf: false,
-    advancedBookingSettings: false,
-    brandingRemoval: false,
-    analyticsWeekly: false,
-    analyticsMonthly: false,
-    crossLocationDashboard: false,
-    prioritySupport: false,
-    maxLocations: 1,
-    maxZones: 3,
+    maxRestaurants: 1,
+    maxZonesPerRestaurant: 3,
     maxTables: 15,
     maxTeamMembers: 2,
+    whatsappFeatures: true,
+    googleReserveIntegration: false,
+    multipleMenu: false,
+    prioritySupport: false,
     priceCLP: 2990,
-    currency: 'CLP',
+    priceUSD: 3.99,
+    priceEUR: 3.49,
     billingFrequency: 1,
     billingFrequencyType: 'months',
   },
-  profesional: {
-    plan: 'profesional',
-    displayName: 'Profesional',
+  'plan-profesional': {
+    productSKU: 'plan-profesional',
+    name: 'Profesional',
     description: 'Hasta 3 locales para tu negocio en crecimiento',
-    smsConfirmations: true,
-    smsReminders: true,
-    whatsappConfirmations: true,
-    whatsappReminders: true,
-    whatsappModificationAlerts: true,
-    menuPdf: true,
-    advancedBookingSettings: true,
-    brandingRemoval: true,
-    analyticsWeekly: true,
-    analyticsMonthly: true,
-    crossLocationDashboard: true,
-    prioritySupport: false,
-    maxLocations: 3,
-    maxZones: null,
+    maxRestaurants: 3,
+    maxZonesPerRestaurant: null,
     maxTables: null,
     maxTeamMembers: 5,
+    whatsappFeatures: true,
+    googleReserveIntegration: true,
+    multipleMenu: true,
+    prioritySupport: false,
     priceCLP: 4990,
-    currency: 'CLP',
+    priceUSD: 6.99,
+    priceEUR: 5.99,
     billingFrequency: 1,
     billingFrequencyType: 'months',
   },
-  premium: {
-    plan: 'premium',
-    displayName: 'Premium',
+  'plan-premium': {
+    productSKU: 'plan-premium',
+    name: 'Premium',
     description: 'Hasta 20 locales para cadenas',
-    smsConfirmations: true,
-    smsReminders: true,
-    whatsappConfirmations: true,
-    whatsappReminders: true,
-    whatsappModificationAlerts: true,
-    menuPdf: true,
-    advancedBookingSettings: true,
-    brandingRemoval: true,
-    analyticsWeekly: true,
-    analyticsMonthly: true,
-    crossLocationDashboard: true,
-    prioritySupport: true,
-    maxLocations: 20,
-    maxZones: null,
+    maxRestaurants: 20,
+    maxZonesPerRestaurant: null,
     maxTables: null,
     maxTeamMembers: null,
+    whatsappFeatures: true,
+    googleReserveIntegration: true,
+    multipleMenu: true,
+    prioritySupport: true,
     priceCLP: 9990,
-    currency: 'CLP',
+    priceUSD: 12.99,
+    priceEUR: 10.99,
     billingFrequency: 1,
     billingFrequencyType: 'months',
   },
 };
 
-// In-memory cache: { planKey: PlanConfig } and { organizationId: { override, config } }
-const planConfigCache = new Map();
+// In-memory cache: { productSKU: Plan } and { organizationId: { config } }
+const planCache = new Map();
 const orgConfigCache = new Map();
 const CACHE_TTL_MS = 60 * 1000;
 
-const VALID_PLANS = ['basico', 'profesional', 'premium'];
+const VALID_PLANS = ['plan-basico', 'plan-profesional', 'plan-premium'];
 
 const UPGRADE_HINTS = {
-  basico: 'Actualiza a Profesional (hasta 3 locales) o Premium (hasta 20 locales) en Facturación.',
-  profesional: 'Actualiza a Premium (hasta 20 locales) en Facturación.',
-  premium: null, // no upgrade
+  'plan-basico': 'Actualiza a Profesional (hasta 3 locales) o Premium (hasta 20 locales) en Facturación.',
+  'plan-profesional': 'Actualiza a Premium (hasta 20 locales) en Facturación.',
+  'plan-premium': null, // no upgrade
 };
 
 /**
@@ -116,28 +95,27 @@ function toMercadoPagoFrequency(billingFrequency, billingFrequencyType) {
 }
 
 /**
- * Get plan config from DB (with cache). Falls back to FALLBACK_CONFIG if PlanConfig not in Prisma client.
+ * Get plan config from DB (with cache). Falls back to FALLBACK_CONFIG if Plan not in Prisma client.
  */
-async function getPlanConfig(planKey) {
-  if (!VALID_PLANS.includes(planKey)) return null;
-  const cached = planConfigCache.get(planKey);
+async function getPlanConfig(productSKU) {
+  const cached = planCache.get(productSKU);
   if (cached) return cached;
 
-  if (!prisma.planConfig) {
-    const fallback = FALLBACK_CONFIG[planKey];
-    if (fallback) planConfigCache.set(planKey, fallback);
+  if (!prisma.plan) {
+    const fallback = FALLBACK_CONFIG[productSKU];
+    if (fallback) planCache.set(productSKU, fallback);
     return fallback || null;
   }
 
   try {
-    const config = await prisma.planConfig.findUnique({
-      where: { plan: planKey },
+    const config = await prisma.plan.findUnique({
+      where: { productSKU },
     });
-    if (config) planConfigCache.set(planKey, config);
+    if (config) planCache.set(productSKU, config);
     return config;
   } catch (err) {
-    const fallback = FALLBACK_CONFIG[planKey];
-    if (fallback) planConfigCache.set(planKey, fallback);
+    const fallback = FALLBACK_CONFIG[productSKU];
+    if (fallback) planCache.set(productSKU, fallback);
     return fallback || null;
   }
 }
@@ -155,9 +133,10 @@ async function getOwnerPlan(ownerId) {
   const sub = await prisma.subscription.findFirst({
     where: {
       organizationId: org.id,
-      status: { in: ['active', 'trial', 'cancelled'] },
+      status: { in: ['active', 'trial', 'cancelled', 'grace'] },
     },
     orderBy: { startDate: 'desc' },
+    include: { plan: true }
   });
   if (!sub) return null;
 
@@ -165,7 +144,7 @@ async function getOwnerPlan(ownerId) {
     return null;
   }
 
-  return sub.plan && VALID_PLANS.includes(sub.plan) ? sub.plan : 'profesional';
+  return sub.plan;
 }
 
 /**
@@ -174,7 +153,7 @@ async function getOwnerPlan(ownerId) {
 async function getOwnerPlanIncludingTrial(ownerId) {
   const org = await prisma.restaurantOrganization.findUnique({
     where: { ownerId },
-    select: { id: true, trialEndsAt: true },
+    select: { id: true, trialEndsAt: true, plan: true },
   });
   if (!org) return null;
 
@@ -185,60 +164,18 @@ async function getOwnerPlanIncludingTrial(ownerId) {
       status: { in: ['trial', 'active', 'grace'] },
     },
     orderBy: { startDate: 'desc' },
-    select: { plan: true },
+    include: { plan: true },
   });
-  if (sub?.plan && VALID_PLANS.includes(sub.plan)) {
+  if (sub?.plan) {
     return sub.plan;
   }
 
   // Legacy/Trial: trialEndsAt en futuro
   if (org.trialEndsAt && org.trialEndsAt > new Date()) {
-    return 'basico';
+    return org.plan;
   }
 
   return getOwnerPlan(ownerId);
-}
-
-/**
- * Get PlanOverride for organization if exists and not expired.
- */
-async function getPlanOverride(organizationId) {
-  if (!prisma.planOverride) return null;
-  try {
-    const override = await prisma.planOverride.findUnique({
-      where: { organizationId },
-    });
-    if (!override) return null;
-    if (override.expiresAt && new Date() > override.expiresAt) return null;
-    return override;
-  } catch (err) {
-    return null;
-  }
-}
-
-/**
- * Merge plan config with override. Override fields take precedence when not null.
- */
-function mergeConfigWithOverride(config, override) {
-  if (!config) return null;
-  if (!override) return config;
-
-  const merged = { ...config };
-
-  if (override.priceCLP != null) merged.priceCLP = override.priceCLP;
-  if (override.menuPdf != null) merged.menuPdf = override.menuPdf;
-  if (override.advancedBookingSettings != null) merged.advancedBookingSettings = override.advancedBookingSettings;
-  if (override.brandingRemoval != null) merged.brandingRemoval = override.brandingRemoval;
-  if (override.analyticsWeekly != null) merged.analyticsWeekly = override.analyticsWeekly;
-  if (override.analyticsMonthly != null) merged.analyticsMonthly = override.analyticsMonthly;
-  if (override.crossLocationDashboard != null) merged.crossLocationDashboard = override.crossLocationDashboard;
-  if (override.prioritySupport != null) merged.prioritySupport = override.prioritySupport;
-  if (override.maxLocations != null) merged.maxLocations = override.maxLocations;
-  if (override.maxZones != null) merged.maxZones = override.maxZones;
-  if (override.maxTables != null) merged.maxTables = override.maxTables;
-  if (override.maxTeamMembers != null) merged.maxTeamMembers = override.maxTeamMembers;
-
-  return merged;
 }
 
 /**
@@ -247,7 +184,7 @@ function mergeConfigWithOverride(config, override) {
 async function resolvePlanConfig(ownerId, includeTrial = true) {
   const org = await prisma.restaurantOrganization.findUnique({
     where: { ownerId },
-    select: { id: true },
+    select: { id: true, plan: true },
   });
   if (!org) return null;
 
@@ -257,21 +194,17 @@ async function resolvePlanConfig(ownerId, includeTrial = true) {
     return cached.config;
   }
 
-  let planKey = includeTrial
+  let plan = includeTrial
     ? await getOwnerPlanIncludingTrial(ownerId)
     : await getOwnerPlan(ownerId);
 
   // Fallback a básico si tiene organización
-  if (!planKey) planKey = 'basico';
+  if (!plan) plan = org.plan;
 
-  const config = await getPlanConfig(planKey) || FALLBACK_CONFIG[planKey];
-  if (!config) return null;
+  if (!plan) return null;
 
-  const override = await getPlanOverride(org.id);
-  const resolved = mergeConfigWithOverride(config, override);
-
-  orgConfigCache.set(cacheKey, { ts: Date.now(), config: resolved });
-  return resolved;
+  orgConfigCache.set(cacheKey, { ts: Date.now(), config: plan });
+  return plan;
 }
 
 /**
@@ -327,10 +260,10 @@ async function canAddLocation(ownerId, includeTrial = true) {
     };
   }
 
-  const max = config.maxLocations;
-  const planName = config.displayName || config.plan;
+  const max = config.maxRestaurants;
+  const planName = config.name || config.productSKU;
   if (count >= max) {
-    const hint = UPGRADE_HINTS[config.plan];
+    const hint = UPGRADE_HINTS[config.productSKU];
     const reason = hint
       ? `Tu plan ${planName} no permite agregar más locales (máximo ${max} ${max === 1 ? 'local' : 'locales'}). ${hint}`
       : `Tu plan ${planName} no permite agregar más locales.`;
@@ -338,7 +271,7 @@ async function canAddLocation(ownerId, includeTrial = true) {
       allowed: false,
       reason,
       currentCount: count,
-      maxLocations: max,
+      maxRestaurants: max,
     };
   }
   return { allowed: true };
@@ -351,7 +284,7 @@ async function canAddZone(restaurantId, includeTrial = true) {
   const config = await resolvePlanConfigForRestaurant(restaurantId, includeTrial);
   if (!config) return { allowed: false, reason: 'Sin plan activo' };
 
-  const maxZones = config.maxZones;
+  const maxZones = config.maxZonesPerRestaurant;
   if (maxZones == null) return { allowed: true }; // unlimited
 
   const count = await prisma.zone.count({ where: { restaurantId } });
@@ -360,7 +293,7 @@ async function canAddZone(restaurantId, includeTrial = true) {
       allowed: false,
       reason: `Tu plan permite hasta ${maxZones} zonas. Actualiza a Profesional para agregar más.`,
       currentCount: count,
-      maxZones,
+      maxZonesPerRestaurant: maxZones,
     };
   }
   return { allowed: true };
@@ -419,7 +352,7 @@ async function canAddTeamMember(ownerId, restaurantId, includeTrial = true) {
 }
 
 /**
- * Invalidate cache (call when PlanConfig or PlanOverride changes).
+ * Invalidate cache (call when Plan changes).
  */
 function invalidateCache(organizationId) {
   if (organizationId) {
@@ -428,14 +361,13 @@ function invalidateCache(organizationId) {
   } else {
     orgConfigCache.clear();
   }
-  planConfigCache.clear();
+  planCache.clear();
 }
 
 module.exports = {
   getPlanConfig,
   getOwnerPlan,
   getOwnerPlanIncludingTrial,
-  getPlanOverride,
   resolvePlanConfig,
   resolvePlanConfigForRestaurant,
   hasFeature,

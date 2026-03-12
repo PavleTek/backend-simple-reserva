@@ -2,7 +2,7 @@
  * MercadoPago PreApproval para SimpleReserva.
  *
  * Modelo de la app:
- * - Planes: basico, profesional, premium. Precio cada 2 semanas (14 días).
+ * - Planes: basico, profesional, premium.
  * - Trial 14 días → luego pago. Suscripción activa = cobros recurrentes.
  *
  * MP API preapproval: frequency_type válidos = [days, months].
@@ -31,37 +31,26 @@ function getClient() {
 }
 
 /**
- * Obtiene el monto efectivo para un plan (base + PlanOverride del owner).
- */
-async function getEffectiveAmount(plan, ownerId) {
-  const config = await planService.getPlanConfig(plan);
-  const baseAmount = config?.priceCLP ?? 4990;
-  const override = ownerId ? await planService.getPlanOverride(ownerId) : null;
-  if (override?.priceCLP != null) {
-    return override.priceCLP;
-  }
-  return baseAmount;
-}
-
-/**
  * Crea preapproval en MP. Redirige al checkout para que el usuario pague.
  *
  * @param {string} organizationId
- * @param {string} ownerId - para aplicar PlanOverride
+ * @param {string} ownerId
  * @param {string} backUrl
  * @param {string} payerEmail
- * @param {string} plan - basico | profesional | premium
+ * @param {string} planSKU - plan-basico | plan-profesional | plan-premium
  */
-async function createSubscription(organizationId, ownerId, backUrl, payerEmail, plan = 'profesional') {
+async function createSubscription(organizationId, ownerId, backUrl, payerEmail, planSKU = 'plan-profesional') {
   const organization = await prisma.restaurantOrganization.findUnique({
     where: { id: organizationId },
     select: { name: true },
   });
   if (!organization) throw new Error('Organización no encontrada');
 
-  const planAmount = await getEffectiveAmount(plan, ownerId);
-  const config = await planService.getPlanConfig(plan);
-  const mpFreq = planService.toMercadoPagoFrequency(config?.billingFrequency ?? 1, config?.billingFrequencyType ?? 'months');
+  const config = await planService.getPlanConfig(planSKU);
+  if (!config) throw new Error(`Plan no encontrado: ${planSKU}`);
+
+  const planAmount = Number(config.priceCLP);
+  const mpFreq = planService.toMercadoPagoFrequency(config.billingFrequency, config.billingFrequencyType);
   let amount = Math.round(planAmount);
   if (amount < MIN_AMOUNT_CLP) {
     amount = MIN_AMOUNT_CLP;
@@ -87,17 +76,16 @@ async function createSubscription(organizationId, ownerId, backUrl, payerEmail, 
     throw new Error('Configura BACKEND_PUBLIC_URL en .env (ej: URL de ngrok)');
   }
 
-  const externalRef = `${organizationId}|${plan}`;
+  const externalRef = `${organizationId}|${planSKU}`;
   const endDate = new Date();
   endDate.setFullYear(endDate.getFullYear() + 2);
 
-  // Body: cobro quincenal. notification_url es OBLIGATORIO para suscripciones:
-  // MP no usa la URL del panel de webhooks, hay que pasarla en cada preapproval.
+  // Body: cobro recurrente. notification_url es OBLIGATORIO para suscripciones:
   const backendBase = (process.env.BACKEND_PUBLIC_URL || effectiveBackUrl).replace(/\/$/, '');
   const notificationUrl = `${backendBase}/api/webhooks/mercadopago`;
 
   const body = {
-    reason: `SimpleReserva ${plan} - ${organization.name}`,
+    reason: `SimpleReserva ${config.name} - ${organization.name}`,
     external_reference: externalRef,
     payer_email: emailForPayer,
     status: 'pending',
@@ -164,7 +152,7 @@ async function cancelSubscription(preapprovalId) {
   }
 }
 
-async function activateOrganizationSubscription(organizationId, preapprovalId, plan = 'profesional') {
+async function activateOrganizationSubscription(organizationId, preapprovalId, planSKU = 'plan-profesional') {
   const existing = await prisma.subscription.findFirst({
     where: { mercadopagoPreapprovalId: preapprovalId, status: 'active' },
   });
@@ -176,7 +164,11 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     throw new Error(`Organización no encontrada: ${organizationId}`);
   }
 
-  const validPlan = planService.VALID_PLANS.includes(plan) ? plan : 'profesional';
+  const plan = await prisma.plan.findUnique({ where: { productSKU: planSKU } });
+  if (!plan) {
+    console.error('[MercadoPago] activateOrganizationSubscription: plan no encontrado:', planSKU);
+    throw new Error(`Plan no encontrado: ${planSKU}`);
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.subscription.updateMany({
@@ -186,7 +178,7 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     await tx.subscription.create({
       data: {
         organizationId,
-        plan: validPlan,
+        planId: plan.id,
         status: 'active',
         mercadopagoPreapprovalId: preapprovalId,
       },
@@ -255,7 +247,7 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
   const externalRef = mpSub?.external_reference ? String(mpSub.external_reference) : '';
   const parts = externalRef.split('|');
   const refOrganizationId = parts[0];
-  const plan = parts[1] || 'profesional';
+  const planSKU = parts[1] || 'plan-profesional';
 
   if (refOrganizationId !== organizationId) {
     return { activated: false, reason: 'La suscripción no corresponde a esta organización' };
@@ -268,8 +260,8 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
     return { activated: false, reason: `Pago aún no autorizado (estado: ${status || 'desconocido'})` };
   }
 
-  await activateOrganizationSubscription(organizationId, preapprovalId, plan);
-  console.log('[MercadoPago] confirmSubscriptionFromPreapproval activated:', organizationId, plan);
+  await activateOrganizationSubscription(organizationId, preapprovalId, planSKU);
+  console.log('[MercadoPago] confirmSubscriptionFromPreapproval activated:', organizationId, planSKU);
   return { activated: true };
 }
 

@@ -4,10 +4,10 @@ const bcrypt = require('bcryptjs');
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🌱 Starting comprehensive database seeding with Organizations...');
+  console.log('🌱 Starting comprehensive database seeding...');
 
   const summary = {
-    PlanConfig: { created: 0, skipped: 0 },
+    Plan: { created: 0, skipped: 0 },
     EmailSender: { created: 0, skipped: 0 },
     Configuration: { created: 0, skipped: 0 },
     User: { created: 0, skipped: 0 },
@@ -23,97 +23,76 @@ async function main() {
     Subscription: { created: 0, skipped: 0 },
   };
 
-  // 0. Seed PlanConfig (basico, profesional, premium)
-  const planConfigs = [
+  // 0. Seed Plan (basico, profesional, premium)
+  const plans = [
     {
-      plan: 'basico',
-      displayName: 'Básico',
+      productSKU: 'plan-basico',
+      name: 'Básico',
       description: '1 local, ideal para empezar',
-      isDefaultPlan: true,
-      smsConfirmations: true,
-      smsReminders: true,
-      whatsappConfirmations: true,
-      whatsappReminders: true,
-      whatsappModificationAlerts: true,
-      menuPdf: false,
-      advancedBookingSettings: false,
-      brandingRemoval: false,
-      analyticsWeekly: false,
-      analyticsMonthly: false,
-      crossLocationDashboard: false,
-      prioritySupport: false,
-      maxLocations: 1,
-      maxZones: 3,
+      isDefault: true,
+      maxRestaurants: 1,
+      maxZonesPerRestaurant: 3,
       maxTables: 15,
       maxTeamMembers: 2,
+      whatsappFeatures: true,
+      googleReserveIntegration: false,
+      multipleMenu: false,
       priceCLP: 2990,
-      currency: 'CLP',
+      priceUSD: 3.99,
+      priceEUR: 3.49,
+      prioritySupport: false,
       billingFrequency: 1,
       billingFrequencyType: 'months',
     },
     {
-      plan: 'profesional',
-      displayName: 'Profesional',
+      productSKU: 'plan-profesional',
+      name: 'Profesional',
       description: 'Hasta 3 locales para tu negocio en crecimiento',
-      isDefaultPlan: true,
-      smsConfirmations: true,
-      smsReminders: true,
-      whatsappConfirmations: true,
-      whatsappReminders: true,
-      whatsappModificationAlerts: true,
-      menuPdf: true,
-      advancedBookingSettings: true,
-      brandingRemoval: true,
-      analyticsWeekly: true,
-      analyticsMonthly: true,
-      crossLocationDashboard: true,
-      prioritySupport: false,
-      maxLocations: 3,
-      maxZones: null,
+      isDefault: true,
+      maxRestaurants: 3,
+      maxZonesPerRestaurant: null,
       maxTables: null,
       maxTeamMembers: 5,
+      whatsappFeatures: true,
+      googleReserveIntegration: true,
+      multipleMenu: true,
       priceCLP: 4990,
-      currency: 'CLP',
+      priceUSD: 6.99,
+      priceEUR: 5.99,
+      prioritySupport: false,
       billingFrequency: 1,
       billingFrequencyType: 'months',
     },
     {
-      plan: 'premium',
-      displayName: 'Premium',
+      productSKU: 'plan-premium',
+      name: 'Premium',
       description: 'Hasta 20 locales para cadenas',
-      isDefaultPlan: true,
-      smsConfirmations: true,
-      smsReminders: true,
-      whatsappConfirmations: true,
-      whatsappReminders: true,
-      whatsappModificationAlerts: true,
-      menuPdf: true,
-      advancedBookingSettings: true,
-      brandingRemoval: true,
-      analyticsWeekly: true,
-      analyticsMonthly: true,
-      crossLocationDashboard: true,
-      prioritySupport: true,
-      maxLocations: 20,
-      maxZones: null,
+      isDefault: true,
+      maxRestaurants: 20,
+      maxZonesPerRestaurant: null,
       maxTables: null,
       maxTeamMembers: null,
+      whatsappFeatures: true,
+      googleReserveIntegration: true,
+      multipleMenu: true,
       priceCLP: 9990,
-      currency: 'CLP',
+      priceUSD: 12.99,
+      priceEUR: 10.99,
+      prioritySupport: true,
       billingFrequency: 1,
       billingFrequencyType: 'months',
     },
   ];
   
-  const planConfigMap = {};
-  for (const data of planConfigs) {
-    const pc = await prisma.planConfig.upsert({
-      where: { plan: data.plan },
+  const planMap = {};
+  for (const data of plans) {
+    const p = await prisma.plan.upsert({
+      where: { productSKU: data.productSKU },
       create: data,
       update: data,
     });
-    planConfigMap[data.plan] = pc;
-    summary.PlanConfig.created += 1;
+    planMap[data.productSKU] = p;
+    summary.Plan.created += 1;
   }
 
   // 1. Seed EmailSender
@@ -147,6 +126,7 @@ async function main() {
   const superAdmins = [
     { email: 'admin@simplereserva.com', name: 'Super', lastName: 'Admin', role: 'super_admin' },
     { email: 'pavle@simplereserva.com', name: 'Pavle', lastName: 'Admin', role: 'super_admin' },
+    { email: 'adminP', name: 'Admin', lastName: 'Platform', role: 'super_admin' }, // From test-setup
   ];
 
   for (const u of superAdmins) {
@@ -162,6 +142,7 @@ async function main() {
     { email: 'carlos@lacasona.cl', name: 'Carlos', lastName: 'Rodriguez', role: 'restaurant_owner', orgName: 'La Casona Group' },
     { email: 'maria@elporton.cl', name: 'Maria', lastName: 'Gomez', role: 'restaurant_owner', orgName: 'El Porton Enterprises' },
     { email: 'diego@sushiwave.cl', name: 'Diego', lastName: 'Perez', role: 'restaurant_owner', orgName: 'Sushi Wave Nikkei' },
+    { email: 'ownerP', name: 'Owner', lastName: 'Platform', role: 'restaurant_owner', orgName: 'Platform Test Group' }, // From test-setup
   ];
 
   const orgs = [];
@@ -184,7 +165,7 @@ async function main() {
       create: {
         name: o.orgName,
         ownerId: user.id,
-        planConfigId: planConfigMap.profesional.id,
+        planId: planMap['plan-profesional'].id,
         trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
       },
       update: { name: o.orgName },
@@ -200,7 +181,7 @@ async function main() {
       await prisma.subscription.create({
         data: {
           organizationId: org.id,
-          plan: 'profesional',
+          planId: planMap['plan-profesional'].id,
           status: 'trial',
         }
       });
@@ -257,6 +238,7 @@ async function main() {
   const managers = [
     { email: 'ana@lacasona.cl', name: 'Ana', lastName: 'Soto', role: 'restaurant_manager', orgId: orgs[0].id, restaurantSlugs: ['la-casona-de-pedro'] },
     { email: 'jose@elporton.cl', name: 'Jose', lastName: 'Muñoz', role: 'restaurant_manager', orgId: orgs[1].id, restaurantSlugs: ['el-porton-rojo'] },
+    { email: 'staff@test.com', name: 'Staff', lastName: 'Platform', role: 'restaurant_manager', orgId: orgs[3].id, restaurantSlugs: ['la-casona-de-pedro'] }, // From test-setup, assigned to La Casona
   ];
 
   for (const m of managers) {
@@ -296,24 +278,44 @@ async function main() {
   // 6. Seed Zones, Tables, Schedules, etc.
   for (const rest of restaurants) {
     // Check for existing zones to avoid duplicates
-    let zone = await prisma.zone.findFirst({
-      where: { restaurantId: rest.id, name: 'Salón Principal' }
-    });
-    if (!zone) {
-      zone = await prisma.zone.create({
-        data: { restaurantId: rest.id, name: 'Salón Principal', sortOrder: 0 }
+    const zoneNames = rest.slug === 'la-casona-de-pedro' ? ['Salón Principal', 'Terraza'] : ['Salón Principal'];
+    
+    for (const zoneName of zoneNames) {
+      let zone = await prisma.zone.findFirst({
+        where: { restaurantId: rest.id, name: zoneName }
       });
-      summary.Zone.created += 1;
-    }
+      if (!zone) {
+        zone = await prisma.zone.create({
+          data: { restaurantId: rest.id, name: zoneName, sortOrder: zoneName === 'Terraza' ? 1 : 0 }
+        });
+        summary.Zone.created += 1;
+      }
 
-    const existingTable = await prisma.restaurantTable.findFirst({
-      where: { zoneId: zone.id, label: 'M1' }
-    });
-    if (!existingTable) {
-      await prisma.restaurantTable.create({
-        data: { zoneId: zone.id, label: 'M1', minCapacity: 2, maxCapacity: 4 }
-      });
-      summary.RestaurantTable.created += 1;
+      // Add tables based on zone
+      const tablesToAdd = [];
+      if (zoneName === 'Salón Principal') {
+        tablesToAdd.push({ label: 'M1', minCapacity: 2, maxCapacity: 4 });
+      } else if (zoneName === 'Terraza') {
+        tablesToAdd.push(
+          { label: 'T1', minCapacity: 2, maxCapacity: 4 },
+          { label: 'T2', minCapacity: 2, maxCapacity: 4 },
+          { label: 'T3', minCapacity: 4, maxCapacity: 6 },
+          { label: 'T4', minCapacity: 4, maxCapacity: 6 },
+          { label: 'T5', minCapacity: 6, maxCapacity: 10 }
+        );
+      }
+
+      for (const t of tablesToAdd) {
+        const existingTable = await prisma.restaurantTable.findFirst({
+          where: { zoneId: zone.id, label: t.label }
+        });
+        if (!existingTable) {
+          await prisma.restaurantTable.create({
+            data: { zoneId: zone.id, ...t }
+          });
+          summary.RestaurantTable.created += 1;
+        }
+      }
     }
 
     for (let i = 0; i < 7; i++) {
@@ -330,23 +332,11 @@ async function main() {
           openTime: '12:00',
           closeTime: '23:00',
           isActive: true,
-          breakfastStartTime: null,
-          breakfastEndTime: null,
-          lunchStartTime: null,
-          lunchEndTime: null,
-          dinnerStartTime: null,
-          dinnerEndTime: null,
         },
         update: {
           openTime: '12:00',
           closeTime: '23:00',
           isActive: true,
-          breakfastStartTime: null,
-          breakfastEndTime: null,
-          lunchStartTime: null,
-          lunchEndTime: null,
-          dinnerStartTime: null,
-          dinnerEndTime: null,
         }
       });
       summary.Schedule.created += 1;

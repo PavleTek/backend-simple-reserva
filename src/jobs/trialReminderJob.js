@@ -52,7 +52,7 @@ async function runTrialReminders() {
 
     const ownerId = org.ownerId;
     const planConfig = ownerId ? await planService.resolvePlanConfig(ownerId, true) : null;
-    const priceStr = formatPriceCLP(planConfig?.biweeklyPriceCLP);
+    const priceStr = formatPriceCLP(planConfig?.priceCLP);
 
     const config = await prisma.configuration.findFirst();
     const fromSender = config?.recoveryEmailSenderId
@@ -72,8 +72,8 @@ async function runTrialReminders() {
     
     const body =
       daysLeft === 7
-        ? `Hola,\n\nTe quedan 7 días de prueba gratuita en SimpleReserva para ${restaurantName}.\n\n${reservationCount > 0 ? `Hasta ahora has recibido ${reservationCount} reservas. ` : ''}Activa tu suscripción antes de que termine la prueba para seguir recibiendo reservas sin interrupciones.\n\nPrecio: ${priceStr} cada 2 semanas. Sin contrato.\n\nActivar suscripción: ${panelUrl}\n\nSaludos,\nEl equipo de SimpleReserva`
-        : `Hola,\n\nTu prueba gratuita de SimpleReserva para ${restaurantName} termina en 2 días.\n\nActiva tu suscripción para no perder acceso a tu página de reservas:\n\n${panelUrl}\n\nPrecio: ${priceStr} cada 2 semanas. IVA incluido. Cancela cuando quieras.\n\nSaludos,\nEl equipo de SimpleReserva`;
+        ? `Hola,\n\nTe quedan 7 días de prueba gratuita en SimpleReserva para ${restaurantName}.\n\n${reservationCount > 0 ? `Hasta ahora has recibido ${reservationCount} reservas. ` : ''}Activa tu suscripción antes de que termine la prueba para seguir recibiendo reservas sin interrupciones.\n\nPrecio: ${priceStr} cada mes. Sin contrato.\n\nActivar suscripción: ${panelUrl}\n\nSaludos,\nEl equipo de SimpleReserva`
+        : `Hola,\n\nTu prueba gratuita de SimpleReserva para ${restaurantName} termina en 2 días.\n\nActiva tu suscripción para no perder acceso a tu página de reservas:\n\n${panelUrl}\n\nPrecio: ${priceStr} cada mes. IVA incluido. Cancela cuando quieras.\n\nSaludos,\nEl equipo de SimpleReserva`;
 
     const email = org.owner?.email;
     if (email) {

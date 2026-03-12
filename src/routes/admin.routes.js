@@ -156,120 +156,97 @@ router.get('/users', async (req, res, next) => {
   }
 });
 
-// ─── Plan Config (super admin) ───────────────────────────────────
+// ─── Plans (super admin) ───────────────────────────────────
 
 router.get('/plans', async (req, res, next) => {
   try {
-    const configs = await prisma.planConfig.findMany({
-      orderBy: { plan: 'asc' },
+    const plans = await prisma.plan.findMany({
+      orderBy: { productSKU: 'asc' },
     });
-    res.json(configs);
+    res.json(plans);
   } catch (error) {
     next(error);
   }
 });
 
-router.get('/plans/:plan', async (req, res, next) => {
+router.post('/plans', async (req, res, next) => {
   try {
-    const config = await prisma.planConfig.findUnique({
-      where: { plan: req.params.plan },
-    });
-    if (!config) throw new NotFoundError('Plan no encontrado');
-    res.json(config);
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.patch('/plans/:plan', async (req, res, next) => {
-  try {
-    const { plan } = req.params;
-    if (!planService.VALID_PLANS.includes(plan)) {
-      throw new ValidationError('Plan inválido');
-    }
-    const existing = await prisma.planConfig.findUnique({ where: { plan } });
-    if (!existing) throw new NotFoundError('Plan no encontrado');
-
     const allowed = [
-      'smsConfirmations', 'smsReminders', 'whatsappConfirmations', 'whatsappReminders',
-      'whatsappModificationAlerts', 'menuPdf', 'advancedBookingSettings', 'brandingRemoval',
-      'analyticsWeekly', 'analyticsMonthly', 'crossLocationDashboard', 'prioritySupport',
-      'maxLocations', 'maxZones', 'maxTables', 'maxTeamMembers',
-      'priceCLP', 'currency', 'billingFrequency', 'billingFrequencyType',
-      'displayName', 'description',
+      'productSKU', 'name', 'description', 'type', 'isDefault',
+      'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
+      'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
+      'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType'
     ];
     const data = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) data[key] = req.body[key];
     }
-    const config = await prisma.planConfig.update({
-      where: { plan },
+    
+    if (!data.productSKU || !data.name) {
+      throw new ValidationError('productSKU y name son obligatorios');
+    }
+
+    const plan = await prisma.plan.create({ data });
+    planService.invalidateCache();
+    res.status(201).json(plan);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/plans/:id', async (req, res, next) => {
+  try {
+    const plan = await prisma.plan.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!plan) throw new NotFoundError('Plan no encontrado');
+    res.json(plan);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/plans/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const existing = await prisma.plan.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundError('Plan no encontrado');
+
+    const allowed = [
+      'name', 'description', 'type', 'isDefault',
+      'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
+      'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
+      'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType'
+    ];
+    const data = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) data[key] = req.body[key];
+    }
+    const plan = await prisma.plan.update({
+      where: { id },
       data,
     });
     planService.invalidateCache();
-    res.json(config);
+    res.json(plan);
   } catch (error) {
     next(error);
   }
 });
 
-// ─── Plan Overrides (super admin) ─────────────────────────────────
-
-router.get('/plan-overrides', async (req, res, next) => {
+router.delete('/plans/:id', async (req, res, next) => {
   try {
-    const overrides = await prisma.planOverride.findMany({
-      include: { 
-        organization: { 
-          include: { 
-            owner: { select: { id: true, email: true, name: true, lastName: true } } 
-          } 
-        } 
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json(overrides);
-  } catch (error) {
-    next(error);
-  }
-});
+    const { id } = req.params;
+    const existing = await prisma.plan.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundError('Plan no encontrado');
+    
+    if (existing.isDefault) {
+      throw new ValidationError('No se puede eliminar un plan por defecto');
+    }
 
-router.post('/plan-overrides', async (req, res, next) => {
-  try {
-    const { organizationId, priceCLP, expiresAt, reason, ...featureLimits } = req.body;
-    if (!organizationId) throw new ValidationError('organizationId es requerido');
-
-    const override = await prisma.planOverride.upsert({
-      where: { organizationId },
-      update: {
-        ...(priceCLP !== undefined && { priceCLP }),
-        ...(expiresAt !== undefined && { expiresAt: expiresAt ? new Date(expiresAt) : null }),
-        ...(reason !== undefined && { reason }),
-        ...featureLimits,
-      },
-      create: {
-        organizationId,
-        priceCLP: priceCLP ?? null,
-        expiresAt: expiresAt ? new Date(expiresAt) : null,
-        reason: reason || null,
-        ...featureLimits,
-      },
-    });
-    planService.invalidateCache(organizationId);
-    res.status(201).json(override);
+    await prisma.plan.delete({ where: { id } });
+    planService.invalidateCache();
+    res.json({ message: 'Plan eliminado' });
   } catch (error) {
-    next(error);
-  }
-});
-
-router.delete('/plan-overrides/:organizationId', async (req, res, next) => {
-  try {
-    await prisma.planOverride.delete({
-      where: { organizationId: req.params.organizationId },
-    });
-    planService.invalidateCache(req.params.organizationId);
-    res.json({ message: 'Override eliminado' });
-  } catch (error) {
-    if (error.code === 'P2025') throw new NotFoundError('Override no encontrado');
     next(error);
   }
 });
@@ -410,7 +387,10 @@ router.get('/subscriptions', async (req, res, next) => {
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
-        include: { organization: { include: { restaurants: { select: { name: true } } } } },
+        include: { 
+          organization: { include: { restaurants: { select: { name: true } } } },
+          plan: true
+        },
       }),
       prisma.subscription.count(),
     ]);
@@ -423,17 +403,20 @@ router.get('/subscriptions', async (req, res, next) => {
 
 router.patch('/subscriptions/:id', async (req, res, next) => {
   try {
-    const { plan, status, endDate } = req.body;
+    const { planId, status, endDate } = req.body;
 
     const data = {};
-    if (plan !== undefined) data.plan = plan;
+    if (planId !== undefined) data.planId = planId;
     if (status !== undefined) data.status = status;
     if (endDate !== undefined) data.endDate = endDate ? new Date(endDate) : null;
 
     const subscription = await prisma.subscription.update({
       where: { id: req.params.id },
       data,
-      include: { organization: { select: { name: true } } },
+      include: { 
+        organization: { select: { name: true } },
+        plan: true
+      },
     });
 
     res.json(subscription);

@@ -149,7 +149,7 @@ async function sendReservationConfirmation(options) {
   if (restaurantId) {
     const planService = require('./planService');
     const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
-    if (config?.whatsappConfirmations) {
+    if (config?.whatsappFeatures) {
       waOk = await sendWhatsAppTwilio(to, body);
     }
   } else {
@@ -211,7 +211,7 @@ async function sendReservationReminder(options) {
   if (restaurantId) {
     const planService = require('./planService');
     const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
-    if (config?.whatsappReminders) {
+    if (config?.whatsappFeatures) {
       waOk = await sendWhatsAppTwilio(to, body);
     }
   } else {
@@ -270,7 +270,7 @@ async function sendModificationAlertToCustomer(options) {
   if (restaurantId) {
     const planService = require('./planService');
     const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
-    if (!config?.whatsappModificationAlerts) return false;
+    if (!config?.whatsappFeatures) return false;
   }
   return sendWhatsAppTwilio(to, body);
 }
