@@ -28,6 +28,7 @@ model User {
 
   ownedOrganization             RestaurantOrganization? @relation("OrgOwner")
   managedOrganizations          OrganizationManager[]
+  checkoutSessions              CheckoutSession[]
   
   @@index([role])
 }
@@ -49,6 +50,15 @@ model RestaurantOrganization {
   managers      OrganizationManager[]
   subscriptions Subscription[]
   reservationAnalytics ReservationAnalytics[]
+  paymentReceipts PaymentReceipt[]
+  checkoutSessions CheckoutSession[]
+
+  // Billing fields
+  billingType         String    @default("boleta")  // "boleta" | "factura"
+  billingTaxId        String?   // RUT or tax ID
+  billingBusinessName String?   // Company/business name
+  billingAddress      String?
+  billingEmail        String?   // Billing-specific email
 
   @@index([ownerId])
 }
@@ -242,12 +252,23 @@ model Subscription {
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
   createdAt     DateTime  @default(now())
 
+  paymentReceipts PaymentReceipt[]
+
   @@index([organizationId])
+}
+
+model EmailDomain {
+  id        String    @id @default(cuid())
+  domain    String    @unique
+  createdAt DateTime  @default(now())
+  senders   EmailSender[]
 }
 
 model EmailSender {
   id        String    @id @default(cuid())
   email     String    @unique
+  domainId  String?
+  domain    EmailDomain? @relation(fields: [domainId], references: [id], onDelete: Cascade)
   createdAt DateTime  @default(now())
 }
 
@@ -256,6 +277,7 @@ model Configuration {
   twoFactorEnabled      Boolean   @default(false)
   appName               String    @default("SimpleReserva")
   recoveryEmailSenderId String?
+  reservationEmailSenderId String?
   dashboardPollingIntervalSeconds Int @default(30)
   updatedAt             DateTime  @updatedAt
 }
@@ -291,6 +313,8 @@ model Plan {
 
   organizations            RestaurantOrganization[]
   subscriptions            Subscription[]
+  paymentReceipts          PaymentReceipt[]
+  checkoutSessions         CheckoutSession[]
 }
 
 // Booking analytics events - tracking user behavior on the booking page
@@ -324,4 +348,64 @@ model ReservationAnalytics {
   @@index([date])
   @@index([restaurantId, date])
   @@index([organizationId, date])
+}
+
+model PaymentReceipt {
+  id                    String    @id @default(cuid())
+  organizationId        String
+  organization          RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptionId        String?
+  subscription          Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  planId                String
+  plan                  Plan @relation(fields: [planId], references: [id])
+
+  amount                Decimal   @db.Decimal(10,2)
+  currency              String    // "CLP", "USD", "EUR"
+  paymentDate           DateTime
+
+  receiptType           String    // "boleta" | "factura"
+
+  clientName            String?
+  clientEmail           String?
+  clientTaxId           String?   // RUT (Chile) or equivalent
+  clientBusinessName    String?   // Company name, relevant for "factura"
+  clientAddress         String?
+
+  mercadopagoPaymentId  String?   @unique
+  mercadopagoStatus     String?   // "approved", "pending", etc.
+
+  legalReceiptSent      Boolean   @default(false)
+  legalReceiptSentAt    DateTime?
+  legalReceiptSentBy    String?   // admin user ID who marked it
+
+  notes                 String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([organizationId])
+  @@index([legalReceiptSent])
+  @@index([paymentDate])
+  @@index([receiptType])
+}
+
+model CheckoutSession {
+  id                        String    @id @default(cuid())
+  organizationId            String
+  organization              RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId                    String
+  user                      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId                    String
+  plan                      Plan @relation(fields: [planId], references: [id])
+
+  status                    String    @default("pending") // "pending" | "completed" | "expired" | "abandoned"
+  mercadopagoPreapprovalId  String?
+  checkoutUrl               String?
+
+  createdAt                 DateTime  @default(now())
+  expiresAt                 DateTime?
+  completedAt               DateTime?
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([status])
 }

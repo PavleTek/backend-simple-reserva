@@ -1,12 +1,14 @@
 /**
- * MercadoPago webhooks for subscription events.
+ * MercadoPago webhooks for subscription and payment events.
  * Configure webhook URL in MercadoPago dashboard: https://www.mercadopago.cl/developers/panel/app
  * Set MP_WEBHOOK_SECRET in .env (from Webhooks > Configure) to validate signatures.
  */
 
 const crypto = require('crypto');
 const express = require('express');
+const prisma = require('../lib/prisma');
 const { activateOrganizationSubscription, enterGracePeriod } = require('../services/mercadopagoService');
+const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 
 const router = express.Router();
 
@@ -54,17 +56,17 @@ router.post('/mercadopago', express.json(), async (req, res) => {
       return;
     }
 
-    const preapprovalId = dataId;
+    const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+    if (!accessToken) {
+      console.error('[Webhook] MercadoPago: MERCADOPAGO_ACCESS_TOKEN not set');
+      return;
+    }
+
+    const { MercadoPagoConfig, PreApproval, Payment } = require('mercadopago');
+    const client = new MercadoPagoConfig({ accessToken });
 
     if (type === 'subscription_preapproval') {
-      const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
-      if (!accessToken) {
-        console.error('[Webhook] MercadoPago: MERCADOPAGO_ACCESS_TOKEN not set');
-        return;
-      }
-
-      const { MercadoPagoConfig, PreApproval } = require('mercadopago');
-      const client = new MercadoPagoConfig({ accessToken });
+      const preapprovalId = dataId;
       const preApproval = new PreApproval(client);
       let mpSub;
       try {
@@ -93,8 +95,20 @@ router.post('/mercadopago', express.json(), async (req, res) => {
         try {
           await activateOrganizationSubscription(organizationId, preapprovalId, plan);
           console.log('[Webhook] MercadoPago subscription activated:', organizationId, plan);
+
+          // Mark CheckoutSession as completed
+          await prisma.checkoutSession.updateMany({
+            where: { 
+              mercadopagoPreapprovalId: preapprovalId,
+              organizationId,
+            },
+            data: { 
+              status: 'completed',
+              completedAt: new Date(),
+            },
+          });
         } catch (err) {
-          console.error('[Webhook] activateOrganizationSubscription failed:', err?.message ?? err);
+          console.error('[Webhook] activateOrganizationSubscription/CheckoutSession update failed:', err?.message ?? err);
         }
       } else if (status === 'payment_required') {
         // Pago fallido o método inválido → periodo de gracia para actualizar
@@ -104,6 +118,43 @@ router.post('/mercadopago', express.json(), async (req, res) => {
         await enterGracePeriod(organizationId);
       } else {
         console.log('[Webhook] MercadoPago status ignorado (no authorized/approved):', status);
+      }
+    } else if (type === 'payment') {
+      const paymentId = dataId;
+      const payment = new Payment(client);
+      let mpPayment;
+      try {
+        mpPayment = await payment.get({ id: paymentId });
+      } catch (err) {
+        console.error('[Webhook] MercadoPago get payment failed:', err?.message ?? err);
+        return;
+      }
+
+      const externalRef = mpPayment?.external_reference;
+      if (!externalRef) {
+        console.warn('[Webhook] MercadoPago: payment has no external_reference');
+        return;
+      }
+
+      const parts = String(externalRef).split('|');
+      const organizationId = parts[0];
+      const planSKU = parts[1] || 'profesional';
+
+      console.log('[Webhook] MercadoPago payment:', { 
+        id: paymentId, 
+        status: mpPayment.status, 
+        amount: mpPayment.transaction_amount,
+        organizationId,
+        planSKU
+      });
+
+      if (mpPayment.status === 'approved') {
+        try {
+          await createReceiptFromMPPayment(mpPayment, organizationId, planSKU);
+          console.log('[Webhook] MercadoPago receipt created for payment:', paymentId);
+        } catch (err) {
+          console.error('[Webhook] createReceiptFromMPPayment failed:', err?.message ?? err);
+        }
       }
     }
   } catch (err) {

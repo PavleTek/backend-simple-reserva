@@ -4,6 +4,7 @@ const { authenticateToken, authenticateRoles } = require('../middleware/authenti
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
+const paymentReceiptService = require('../services/paymentReceiptService');
 
 const router = express.Router();
 
@@ -425,6 +426,98 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
   }
 });
 
+// ─── Payment Receipts ─────────────────────────────────────────────
+
+router.get('/payment-receipts', async (req, res, next) => {
+  try {
+    const result = await paymentReceiptService.listReceipts(req.query, req.query);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/payment-receipts/:id', async (req, res, next) => {
+  try {
+    const { legalReceiptSent, notes } = req.body;
+    const data = {};
+    if (legalReceiptSent !== undefined) {
+      data.legalReceiptSent = legalReceiptSent;
+      if (legalReceiptSent) {
+        data.legalReceiptSentAt = new Date();
+        data.legalReceiptSentBy = req.user.id;
+      } else {
+        data.legalReceiptSentAt = null;
+        data.legalReceiptSentBy = null;
+      }
+    }
+    if (notes !== undefined) data.notes = notes;
+
+    const receipt = await prisma.paymentReceipt.update({
+      where: { id: req.params.id },
+      data,
+      include: {
+        organization: { select: { name: true } },
+        plan: { select: { name: true } },
+      },
+    });
+    res.json(receipt);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/payment-receipts/:id/toggle-sent', async (req, res, next) => {
+  try {
+    const existing = await prisma.paymentReceipt.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!existing) throw new NotFoundError('Comprobante no encontrado');
+
+    let receipt;
+    if (existing.legalReceiptSent) {
+      receipt = await paymentReceiptService.markLegalReceiptUnsent(req.params.id);
+    } else {
+      receipt = await paymentReceiptService.markLegalReceiptSent(req.params.id, req.user.id);
+    }
+    res.json(receipt);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Checkout Sessions ───────────────────────────────────────────
+
+router.get('/checkout-sessions', async (req, res, next) => {
+  try {
+    const { page, limit, skip } = parsePagination(req.query);
+    const { organizationId, status } = req.query;
+
+    const where = {};
+    if (organizationId) where.organizationId = organizationId;
+    if (status) where.status = status;
+
+    const [sessions, total] = await Promise.all([
+      prisma.checkoutSession.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          organization: { select: { name: true } },
+          user: { select: { email: true, name: true, lastName: true } },
+          plan: { select: { name: true } },
+        },
+      }),
+      prisma.checkoutSession.count({ where }),
+    ]);
+
+    res.json(paginatedResponse(sessions, total, page, limit));
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── Booking Analytics ───────────────────────────────────────────
 
 router.get('/booking-analytics', async (req, res, next) => {
@@ -696,6 +789,149 @@ router.get('/analytics', async (req, res, next) => {
 
 // ─── App Configuration ───────────────────────────────────────────
 
+// ─── Email Senders ───────────────────────────────────────────────
+
+router.get('/email-domains', async (req, res, next) => {
+  try {
+    const domains = await prisma.emailDomain.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { _count: { select: { senders: true } } },
+    });
+    res.json(domains);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/email-domains', async (req, res, next) => {
+  try {
+    const { domain } = req.body;
+
+    if (!domain || typeof domain !== 'string' || !domain.includes('.') || domain.includes('@')) {
+      throw new ValidationError('Dominio inválido');
+    }
+
+    const normalizedDomain = domain.toLowerCase().trim();
+
+    const existing = await prisma.emailDomain.findUnique({
+      where: { domain: normalizedDomain },
+    });
+
+    if (existing) {
+      throw new ValidationError('Este dominio ya está registrado');
+    }
+
+    const newDomain = await prisma.emailDomain.create({
+      data: { domain: normalizedDomain },
+    });
+
+    res.status(201).json(newDomain);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/email-domains/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    // Check if any sender in this domain is in use by config
+    const sendersInDomain = await prisma.emailSender.findMany({
+      where: { domainId: id },
+      select: { id: true },
+    });
+
+    const senderIds = sendersInDomain.map(s => s.id);
+    const config = await prisma.configuration.findFirst();
+
+    if (config && (senderIds.includes(config.recoveryEmailSenderId) || senderIds.includes(config.reservationEmailSenderId))) {
+      throw new ValidationError('No se puede eliminar el dominio porque uno de sus remitentes está en uso por la configuración del sistema');
+    }
+
+    // Cascade delete is handled by Prisma (onDelete: Cascade)
+    await prisma.emailDomain.delete({
+      where: { id },
+    });
+
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/email-senders', async (req, res, next) => {
+  try {
+    const senders = await prisma.emailSender.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(senders);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/email-senders', async (req, res, next) => {
+  try {
+    const { email } = req.body;
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      throw new ValidationError('Email inválido');
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const domainPart = normalizedEmail.split('@')[1];
+
+    // Find if the domain is authorized
+    const domain = await prisma.emailDomain.findUnique({
+      where: { domain: domainPart },
+    });
+
+    if (!domain) {
+      throw new ValidationError(`El dominio @${domainPart} no está autorizado. Agrégalo primero.`);
+    }
+
+    const existing = await prisma.emailSender.findUnique({
+      where: { email: normalizedEmail },
+    });
+
+    if (existing) {
+      throw new ValidationError('Este email ya está registrado como remitente');
+    }
+
+    const sender = await prisma.emailSender.create({
+      data: { 
+        email: normalizedEmail,
+        domainId: domain.id,
+      },
+    });
+
+    res.status(201).json(sender);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/email-senders/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const config = await prisma.configuration.findFirst();
+    if (config && (config.recoveryEmailSenderId === id || config.reservationEmailSenderId === id)) {
+      throw new ValidationError('No se puede eliminar un remitente que está en uso por la configuración del sistema');
+    }
+
+    await prisma.emailSender.delete({
+      where: { id },
+    });
+
+    res.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── App Configuration ───────────────────────────────────────────
+
 router.get('/config', async (req, res, next) => {
   try {
     const config = await prisma.configuration.findFirst();
@@ -707,12 +943,26 @@ router.get('/config', async (req, res, next) => {
 
 router.patch('/config', async (req, res, next) => {
   try {
-    const { dashboardPollingIntervalSeconds } = req.body;
+    const { 
+      dashboardPollingIntervalSeconds, 
+      recoveryEmailSenderId, 
+      reservationEmailSenderId 
+    } = req.body;
 
     if (dashboardPollingIntervalSeconds !== undefined) {
       if (typeof dashboardPollingIntervalSeconds !== 'number' || dashboardPollingIntervalSeconds < 5 || dashboardPollingIntervalSeconds > 300) {
         throw new ValidationError('El intervalo de sondeo debe ser un número entre 5 y 300 segundos');
       }
+    }
+
+    if (recoveryEmailSenderId) {
+      const sender = await prisma.emailSender.findUnique({ where: { id: recoveryEmailSenderId } });
+      if (!sender) throw new ValidationError('El remitente de recuperación no existe');
+    }
+
+    if (reservationEmailSenderId) {
+      const sender = await prisma.emailSender.findUnique({ where: { id: reservationEmailSenderId } });
+      if (!sender) throw new ValidationError('El remitente de reservas no existe');
     }
 
     const currentConfig = await prisma.configuration.findFirst();
@@ -724,6 +974,8 @@ router.patch('/config', async (req, res, next) => {
       where: { id: currentConfig.id },
       data: {
         ...(dashboardPollingIntervalSeconds !== undefined && { dashboardPollingIntervalSeconds }),
+        ...(recoveryEmailSenderId !== undefined && { recoveryEmailSenderId }),
+        ...(reservationEmailSenderId !== undefined && { reservationEmailSenderId }),
       },
     });
 

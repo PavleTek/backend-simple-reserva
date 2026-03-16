@@ -95,6 +95,27 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
     const organizationId = restaurant.organizationId;
 
     const planSKU = req.body?.plan || 'plan-profesional';
+
+    // Find plan
+    const plan = await prisma.plan.findUnique({
+      where: { productSKU: planSKU },
+    });
+    if (!plan) throw new Error(`Plan no encontrado: ${planSKU}`);
+
+    // Create CheckoutSession
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24);
+
+    const checkoutSession = await prisma.checkoutSession.create({
+      data: {
+        organizationId,
+        userId: req.user.id,
+        planId: plan.id,
+        status: 'pending',
+        expiresAt,
+      },
+    });
+
     const mercadopagoService = require('../services/mercadopagoService');
 
     const user = await prisma.user.findUnique({
@@ -116,7 +137,19 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       planSKU
     );
 
-    res.json({ checkoutUrl: result?.init_point ?? result?.initPoint ?? null });
+    const checkoutUrl = result?.init_point ?? result?.initPoint ?? null;
+    const preapprovalId = result?.id ?? null;
+
+    // Update CheckoutSession with MP info
+    await prisma.checkoutSession.update({
+      where: { id: checkoutSession.id },
+      data: {
+        mercadopagoPreapprovalId: preapprovalId,
+        checkoutUrl,
+      },
+    });
+
+    res.json({ checkoutUrl });
   } catch (error) {
     if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
       res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
@@ -151,6 +184,17 @@ router.post('/billing/confirm', authenticateRestaurantRoles(['restaurant_owner']
     const mercadopagoService = require('../services/mercadopagoService');
     const result = await mercadopagoService.confirmSubscriptionFromPreapproval(organizationId, preapprovalId);
     if (result.activated) {
+      // Mark CheckoutSession as completed
+      await prisma.checkoutSession.updateMany({
+        where: { 
+          mercadopagoPreapprovalId: preapprovalId,
+          organizationId,
+        },
+        data: { 
+          status: 'completed',
+          completedAt: new Date(),
+        },
+      });
       return res.json({ ok: true, message: 'Suscripción activada' });
     }
     return res.json({ ok: false, message: result.reason || 'Pago aún no autorizado' });

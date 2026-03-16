@@ -30,7 +30,7 @@ function normalizePhone(phone) {
 }
 
 function getBaseUrl() {
-  return process.env.BOOKING_BASE_URL || process.env.USER_FRONT_URL || 'http://localhost:5173';
+  return process.env.VITE_MAIN_FRONT_END_URL || process.env.BOOKING_BASE_URL || process.env.USER_FRONT_URL || 'http://localhost:5173';
 }
 
 async function sendSmsTwilio(to, body) {
@@ -372,10 +372,118 @@ async function sendPaymentFailureNotification(options) {
   }
 }
 
+/**
+ * Send reservation confirmation email to the customer.
+ * @param {Object} options
+ * @param {string} options.customerEmail - Customer email
+ * @param {string} options.restaurantName - Restaurant name
+ * @param {string} options.customerName - Customer name
+ * @param {Date|string} options.dateTime - Reservation date/time
+ * @param {number} options.partySize - Party size
+ * @param {string} options.secureToken - Self-service token
+ * @returns {Promise<boolean>}
+ */
+async function sendReservationConfirmationEmail(options) {
+  const { customerEmail, restaurantName, customerName, dateTime, partySize, secureToken } = options;
+  if (!customerEmail) return false;
+
+  const { buildReservationConfirmationHtml } = require('../templates/reservationConfirmationEmail');
+  const { sendEmail } = require('./emailService');
+  const prisma = require('../lib/prisma');
+
+  const config = await prisma.configuration.findFirst();
+  const fromSenderId = config?.reservationEmailSenderId || config?.recoveryEmailSenderId;
+  const fromSender = fromSenderId
+    ? (await prisma.emailSender.findUnique({ where: { id: fromSenderId } }))?.email
+    : null;
+  const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const viewUrl = `${baseUrl}/reservation/${secureToken}`;
+
+  const html = buildReservationConfirmationHtml({
+    restaurantName,
+    customerName,
+    dateTime,
+    partySize,
+    viewUrl,
+  });
+
+  try {
+    await sendEmail({
+      fromEmail,
+      toEmails: [customerEmail],
+      subject: `Confirmación de reserva: ${restaurantName}`,
+      content: html,
+      isHtml: true,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Notification] Confirmation email error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Send cancellation notification to restaurant owner/admin.
+ * @param {Object} options
+ */
+async function sendCancellationNotification(options) {
+  const { emails, restaurantName, customerName, customerPhone, dateTime, partySize, panelUrl } = options;
+  if (!emails || emails.length === 0) return false;
+
+  const dt = new Date(dateTime);
+  const dateStr = formatDateDisplay(dt);
+  const timeStr = formatTime(dt);
+
+  const subject = `Reserva Cancelada: ${customerName} en ${restaurantName}`;
+  const body = [
+    `Hola,`,
+    ``,
+    `La siguiente reserva ha sido cancelada por el cliente:`,
+    ``,
+    `Restaurante: ${restaurantName}`,
+    `Cliente: ${customerName}`,
+    `Teléfono: ${customerPhone}`,
+    `Fecha: ${dateStr}`,
+    `Hora: ${timeStr}`,
+    `Comensales: ${partySize}`,
+    ``,
+    `Puedes ver los detalles en tu panel: ${panelUrl}`,
+    ``,
+    `Saludos,`,
+    `El equipo de SimpleReserva`,
+  ].join('\n');
+
+  const { sendEmail } = require('./emailService');
+  const prisma = require('../lib/prisma');
+  const config = await prisma.configuration.findFirst();
+  const fromSender = config?.recoveryEmailSenderId
+    ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
+    : null;
+  const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  try {
+    await sendEmail({
+      fromEmail,
+      toEmails: emails,
+      subject,
+      content: body,
+      isHtml: false,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Notification] Cancellation email error:', err.message);
+    return false;
+  }
+}
+
 module.exports = {
   sendReservationConfirmation,
   sendReservationReminder,
   sendModificationAlertToCustomer,
   sendDailySummary,
   sendPaymentFailureNotification,
+  sendReservationConfirmationEmail,
+  sendCancellationNotification,
 };

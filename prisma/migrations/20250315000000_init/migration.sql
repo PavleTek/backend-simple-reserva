@@ -1,3 +1,6 @@
+-- CreateSchema
+CREATE SCHEMA IF NOT EXISTS "public";
+
 -- CreateTable
 CREATE TABLE "User" (
     "id" TEXT NOT NULL,
@@ -26,10 +29,15 @@ CREATE TABLE "RestaurantOrganization" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "ownerId" TEXT NOT NULL,
-    "planConfigId" TEXT NOT NULL,
+    "planId" TEXT NOT NULL,
     "trialEndsAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
+    "billingType" TEXT NOT NULL DEFAULT 'boleta',
+    "billingTaxId" TEXT,
+    "billingBusinessName" TEXT,
+    "billingAddress" TEXT,
+    "billingEmail" TEXT,
 
     CONSTRAINT "RestaurantOrganization_pkey" PRIMARY KEY ("id")
 );
@@ -73,6 +81,7 @@ CREATE TABLE "Restaurant" (
     "menuPdfUrl" TEXT,
     "timezone" TEXT,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "scheduleMode" TEXT NOT NULL DEFAULT 'continuous',
     "dataVersion" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -140,9 +149,13 @@ CREATE TABLE "Schedule" (
     "dayOfWeek" INTEGER NOT NULL,
     "openTime" TEXT NOT NULL,
     "closeTime" TEXT NOT NULL,
-    "breakStartTime" TEXT,
-    "breakEndTime" TEXT,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
+    "breakfastStartTime" TEXT,
+    "breakfastEndTime" TEXT,
+    "lunchStartTime" TEXT,
+    "lunchEndTime" TEXT,
+    "dinnerStartTime" TEXT,
+    "dinnerEndTime" TEXT,
 
     CONSTRAINT "Schedule_pkey" PRIMARY KEY ("id")
 );
@@ -183,7 +196,7 @@ CREATE TABLE "Reservation" (
 CREATE TABLE "Subscription" (
     "id" TEXT NOT NULL,
     "organizationId" TEXT NOT NULL,
-    "plan" TEXT NOT NULL DEFAULT 'profesional',
+    "planId" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'trial',
     "startDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "endDate" TIMESTAMP(3),
@@ -195,9 +208,19 @@ CREATE TABLE "Subscription" (
 );
 
 -- CreateTable
+CREATE TABLE "EmailDomain" (
+    "id" TEXT NOT NULL,
+    "domain" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "EmailDomain_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "EmailSender" (
     "id" TEXT NOT NULL,
     "email" TEXT NOT NULL,
+    "domainId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "EmailSender_pkey" PRIMARY KEY ("id")
@@ -209,6 +232,7 @@ CREATE TABLE "Configuration" (
     "twoFactorEnabled" BOOLEAN NOT NULL DEFAULT false,
     "appName" TEXT NOT NULL DEFAULT 'SimpleReserva',
     "recoveryEmailSenderId" TEXT,
+    "reservationEmailSenderId" TEXT,
     "dashboardPollingIntervalSeconds" INTEGER NOT NULL DEFAULT 30,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -216,36 +240,30 @@ CREATE TABLE "Configuration" (
 );
 
 -- CreateTable
-CREATE TABLE "PlanConfig" (
+CREATE TABLE "Plan" (
     "id" TEXT NOT NULL,
-    "plan" TEXT NOT NULL,
-    "isDefaultPlan" BOOLEAN NOT NULL DEFAULT true,
-    "smsConfirmations" BOOLEAN NOT NULL DEFAULT true,
-    "smsReminders" BOOLEAN NOT NULL DEFAULT true,
-    "whatsappConfirmations" BOOLEAN NOT NULL DEFAULT true,
-    "whatsappReminders" BOOLEAN NOT NULL DEFAULT true,
-    "whatsappModificationAlerts" BOOLEAN NOT NULL DEFAULT true,
-    "menuPdf" BOOLEAN NOT NULL DEFAULT false,
-    "advancedBookingSettings" BOOLEAN NOT NULL DEFAULT false,
-    "brandingRemoval" BOOLEAN NOT NULL DEFAULT false,
-    "analyticsWeekly" BOOLEAN NOT NULL DEFAULT false,
-    "analyticsMonthly" BOOLEAN NOT NULL DEFAULT false,
-    "crossLocationDashboard" BOOLEAN NOT NULL DEFAULT false,
-    "prioritySupport" BOOLEAN NOT NULL DEFAULT false,
-    "maxLocations" INTEGER NOT NULL,
-    "maxZones" INTEGER,
+    "productSKU" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "type" TEXT NOT NULL DEFAULT 'restaurant',
+    "isDefault" BOOLEAN NOT NULL DEFAULT true,
+    "maxRestaurants" INTEGER NOT NULL,
+    "maxZonesPerRestaurant" INTEGER,
     "maxTables" INTEGER,
     "maxTeamMembers" INTEGER,
-    "displayName" TEXT NOT NULL DEFAULT '',
-    "description" TEXT,
-    "priceCLP" INTEGER NOT NULL DEFAULT 0,
-    "currency" TEXT NOT NULL DEFAULT 'CLP',
+    "whatsappFeatures" BOOLEAN NOT NULL DEFAULT true,
+    "googleReserveIntegration" BOOLEAN NOT NULL DEFAULT false,
+    "multipleMenu" BOOLEAN NOT NULL DEFAULT false,
+    "prioritySupport" BOOLEAN NOT NULL DEFAULT false,
+    "priceCLP" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "priceUSD" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "priceEUR" DECIMAL(10,2) NOT NULL DEFAULT 0,
     "billingFrequency" INTEGER NOT NULL DEFAULT 1,
     "billingFrequencyType" TEXT NOT NULL DEFAULT 'months',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "PlanConfig_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "Plan_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -264,27 +282,59 @@ CREATE TABLE "BookingEvent" (
 );
 
 -- CreateTable
-CREATE TABLE "PlanOverride" (
+CREATE TABLE "ReservationAnalytics" (
     "id" TEXT NOT NULL,
-    "organizationId" TEXT NOT NULL,
-    "priceCLP" INTEGER,
-    "menuPdf" BOOLEAN,
-    "advancedBookingSettings" BOOLEAN,
-    "brandingRemoval" BOOLEAN,
-    "analyticsWeekly" BOOLEAN,
-    "analyticsMonthly" BOOLEAN,
-    "crossLocationDashboard" BOOLEAN,
-    "prioritySupport" BOOLEAN,
-    "maxLocations" INTEGER,
-    "maxZones" INTEGER,
-    "maxTables" INTEGER,
-    "maxTeamMembers" INTEGER,
-    "expiresAt" TIMESTAMP(3),
-    "reason" TEXT,
+    "date" DATE NOT NULL,
+    "restaurantId" TEXT,
+    "organizationId" TEXT,
+    "reservationCount" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "PlanOverride_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "ReservationAnalytics_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "PaymentReceipt" (
+    "id" TEXT NOT NULL,
+    "organizationId" TEXT NOT NULL,
+    "subscriptionId" TEXT,
+    "planId" TEXT NOT NULL,
+    "amount" DECIMAL(10,2) NOT NULL,
+    "currency" TEXT NOT NULL,
+    "paymentDate" TIMESTAMP(3) NOT NULL,
+    "receiptType" TEXT NOT NULL,
+    "clientName" TEXT,
+    "clientEmail" TEXT,
+    "clientTaxId" TEXT,
+    "clientBusinessName" TEXT,
+    "clientAddress" TEXT,
+    "mercadopagoPaymentId" TEXT,
+    "mercadopagoStatus" TEXT,
+    "legalReceiptSent" BOOLEAN NOT NULL DEFAULT false,
+    "legalReceiptSentAt" TIMESTAMP(3),
+    "legalReceiptSentBy" TEXT,
+    "notes" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "PaymentReceipt_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "CheckoutSession" (
+    "id" TEXT NOT NULL,
+    "organizationId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "planId" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'pending',
+    "mercadopagoPreapprovalId" TEXT,
+    "checkoutUrl" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "expiresAt" TIMESTAMP(3),
+    "completedAt" TIMESTAMP(3),
+
+    CONSTRAINT "CheckoutSession_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -363,10 +413,13 @@ CREATE INDEX "Reservation_secureToken_idx" ON "Reservation"("secureToken");
 CREATE INDEX "Subscription_organizationId_idx" ON "Subscription"("organizationId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "EmailDomain_domain_key" ON "EmailDomain"("domain");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "EmailSender_email_key" ON "EmailSender"("email");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "PlanConfig_plan_key" ON "PlanConfig"("plan");
+CREATE UNIQUE INDEX "Plan_productSKU_key" ON "Plan"("productSKU");
 
 -- CreateIndex
 CREATE INDEX "BookingEvent_restaurantId_eventName_timestamp_idx" ON "BookingEvent"("restaurantId", "eventName", "timestamp");
@@ -378,19 +431,43 @@ CREATE INDEX "BookingEvent_sessionId_idx" ON "BookingEvent"("sessionId");
 CREATE INDEX "BookingEvent_timestamp_idx" ON "BookingEvent"("timestamp");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "PlanOverride_organizationId_key" ON "PlanOverride"("organizationId");
+CREATE INDEX "ReservationAnalytics_date_idx" ON "ReservationAnalytics"("date");
 
 -- CreateIndex
-CREATE INDEX "PlanOverride_organizationId_idx" ON "PlanOverride"("organizationId");
+CREATE INDEX "ReservationAnalytics_restaurantId_date_idx" ON "ReservationAnalytics"("restaurantId", "date");
 
 -- CreateIndex
-CREATE INDEX "PlanOverride_expiresAt_idx" ON "PlanOverride"("expiresAt");
+CREATE INDEX "ReservationAnalytics_organizationId_date_idx" ON "ReservationAnalytics"("organizationId", "date");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "PaymentReceipt_mercadopagoPaymentId_key" ON "PaymentReceipt"("mercadopagoPaymentId");
+
+-- CreateIndex
+CREATE INDEX "PaymentReceipt_organizationId_idx" ON "PaymentReceipt"("organizationId");
+
+-- CreateIndex
+CREATE INDEX "PaymentReceipt_legalReceiptSent_idx" ON "PaymentReceipt"("legalReceiptSent");
+
+-- CreateIndex
+CREATE INDEX "PaymentReceipt_paymentDate_idx" ON "PaymentReceipt"("paymentDate");
+
+-- CreateIndex
+CREATE INDEX "PaymentReceipt_receiptType_idx" ON "PaymentReceipt"("receiptType");
+
+-- CreateIndex
+CREATE INDEX "CheckoutSession_organizationId_idx" ON "CheckoutSession"("organizationId");
+
+-- CreateIndex
+CREATE INDEX "CheckoutSession_userId_idx" ON "CheckoutSession"("userId");
+
+-- CreateIndex
+CREATE INDEX "CheckoutSession_status_idx" ON "CheckoutSession"("status");
 
 -- AddForeignKey
 ALTER TABLE "RestaurantOrganization" ADD CONSTRAINT "RestaurantOrganization_ownerId_fkey" FOREIGN KEY ("ownerId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "RestaurantOrganization" ADD CONSTRAINT "RestaurantOrganization_planConfigId_fkey" FOREIGN KEY ("planConfigId") REFERENCES "PlanConfig"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "RestaurantOrganization" ADD CONSTRAINT "RestaurantOrganization_planId_fkey" FOREIGN KEY ("planId") REFERENCES "Plan"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "OrganizationManager" ADD CONSTRAINT "OrganizationManager_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "RestaurantOrganization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -435,4 +512,31 @@ ALTER TABLE "Reservation" ADD CONSTRAINT "Reservation_tableId_fkey" FOREIGN KEY 
 ALTER TABLE "Subscription" ADD CONSTRAINT "Subscription_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "RestaurantOrganization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "PlanOverride" ADD CONSTRAINT "PlanOverride_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "RestaurantOrganization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "Subscription" ADD CONSTRAINT "Subscription_planId_fkey" FOREIGN KEY ("planId") REFERENCES "Plan"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "EmailSender" ADD CONSTRAINT "EmailSender_domainId_fkey" FOREIGN KEY ("domainId") REFERENCES "EmailDomain"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ReservationAnalytics" ADD CONSTRAINT "ReservationAnalytics_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "ReservationAnalytics" ADD CONSTRAINT "ReservationAnalytics_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "RestaurantOrganization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "PaymentReceipt" ADD CONSTRAINT "PaymentReceipt_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "RestaurantOrganization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "PaymentReceipt" ADD CONSTRAINT "PaymentReceipt_subscriptionId_fkey" FOREIGN KEY ("subscriptionId") REFERENCES "Subscription"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "PaymentReceipt" ADD CONSTRAINT "PaymentReceipt_planId_fkey" FOREIGN KEY ("planId") REFERENCES "Plan"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CheckoutSession" ADD CONSTRAINT "CheckoutSession_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "RestaurantOrganization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CheckoutSession" ADD CONSTRAINT "CheckoutSession_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CheckoutSession" ADD CONSTRAINT "CheckoutSession_planId_fkey" FOREIGN KEY ("planId") REFERENCES "Plan"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

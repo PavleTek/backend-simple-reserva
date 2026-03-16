@@ -2,7 +2,12 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const { isSlotInSchedule, generateTimeSlots } = require('../utils/scheduleUtils');
 const { NotFoundError, ValidationError } = require('../utils/errors');
-const { sendReservationConfirmation, sendCancellationNotification, sendModificationAlertToCustomer } = require('../services/notificationService');
+const { 
+  sendReservationConfirmation, 
+  sendCancellationNotification, 
+  sendModificationAlertToCustomer,
+  sendReservationConfirmationEmail 
+} = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
 const { getEffectiveTimezone, parseInTimezone, nowInTimezone } = require('../utils/timezone');
 const { incrementDataVersion } = require('../utils/dataVersion');
@@ -24,6 +29,8 @@ router.get('/token/:secureToken', async (req, res, next) => {
             id: true,
             name: true, 
             slug: true, 
+            address: true,
+            phone: true,
             timezone: true,
             organization: { include: { owner: { select: { country: true } } } }
           } 
@@ -430,6 +437,17 @@ router.post('/', async (req, res, next) => {
           secureToken: reservation.secureToken,
           restaurantId: restaurant.id,
         }).catch((err) => console.error('[Notification] Confirmation failed:', err));
+
+        if (customerEmail) {
+          sendReservationConfirmationEmail({
+            customerEmail,
+            restaurantName: reservation.restaurant.name,
+            customerName,
+            dateTime: reservation.dateTime,
+            partySize: size,
+            secureToken: reservation.secureToken,
+          }).catch((err) => console.error('[Notification] Email confirmation failed:', err));
+        }
       }
     });
 
@@ -471,7 +489,7 @@ router.get('/:slug/availability', async (req, res, next) => {
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
 
-    const access = await hasActiveAccess(restaurant.id);
+    const access = await hasActiveAccess(restaurant.organizationId);
     if (!access) {
       return res.json({ slots: [], reason: 'subscription_expired' });
     }
@@ -591,6 +609,7 @@ router.get('/:slug', async (req, res, next) => {
         advanceBookingLimitDays: true,
         minimumNoticeMinutes: true,
         timezone: true,
+        organizationId: true,
         organization: { include: { owner: { select: { country: true } } } },
         zones: {
           where: { isActive: true },
@@ -621,7 +640,7 @@ router.get('/:slug', async (req, res, next) => {
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const effectiveTimezone = getEffectiveTimezone(restaurant, ownerCountry);
 
-    const access = await hasActiveAccess(restaurant.id);
+    const access = await hasActiveAccess(restaurant.organizationId);
     const activeDays = [...new Set(restaurant.schedules.map((s) => s.dayOfWeek))];
     const { schedules, organization, ...rest } = restaurant;
     res.json({
