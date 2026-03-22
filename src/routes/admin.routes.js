@@ -5,6 +5,7 @@ const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
 const paymentReceiptService = require('../services/paymentReceiptService');
+const mercadopagoService = require('../services/mercadopagoService');
 
 const router = express.Router();
 
@@ -176,7 +177,8 @@ router.post('/plans', async (req, res, next) => {
       'productSKU', 'name', 'description', 'type', 'isDefault',
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
-      'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType'
+      'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
+      'freeTrialLength', 'freeTrialLengthUnit'
     ];
     const data = {};
     for (const key of allowed) {
@@ -189,7 +191,18 @@ router.post('/plans', async (req, res, next) => {
 
     const plan = await prisma.plan.create({ data });
     planService.invalidateCache();
-    res.status(201).json(plan);
+
+    // Sincronizar con MercadoPago
+    let mpSyncError = null;
+    try {
+      await mercadopagoService.syncPlanToMercadoPago(plan.id);
+    } catch (err) {
+      console.error('[MercadoPago] Error syncing plan on create:', err.message);
+      mpSyncError = err.message;
+    }
+
+    const finalPlan = await prisma.plan.findUnique({ where: { id: plan.id } });
+    res.status(201).json({ ...finalPlan, _mpSyncError: mpSyncError });
   } catch (error) {
     next(error);
   }
@@ -217,7 +230,8 @@ router.patch('/plans/:id', async (req, res, next) => {
       'name', 'description', 'type', 'isDefault',
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
-      'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType'
+      'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
+      'freeTrialLength', 'freeTrialLengthUnit'
     ];
     const data = {};
     for (const key of allowed) {
@@ -228,7 +242,22 @@ router.patch('/plans/:id', async (req, res, next) => {
       data,
     });
     planService.invalidateCache();
-    res.json(plan);
+
+    // Sincronizar con MercadoPago si los campos relevantes cambiaron
+    let mpSyncError = null;
+    const needsSync = ['name', 'priceCLP', 'billingFrequency', 'billingFrequencyType'].some(k => req.body[k] !== undefined);
+    
+    if (needsSync) {
+      try {
+        await mercadopagoService.syncPlanToMercadoPago(plan.id);
+      } catch (err) {
+        console.error('[MercadoPago] Error syncing plan on update:', err.message);
+        mpSyncError = err.message;
+      }
+    }
+
+    const finalPlan = await prisma.plan.findUnique({ where: { id: plan.id } });
+    res.json({ ...finalPlan, _mpSyncError: mpSyncError });
   } catch (error) {
     next(error);
   }
@@ -247,6 +276,46 @@ router.delete('/plans/:id', async (req, res, next) => {
     await prisma.plan.delete({ where: { id } });
     planService.invalidateCache();
     res.json({ message: 'Plan eliminado' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/plans/:id/sync-mp', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const plan = await prisma.plan.findUnique({ where: { id } });
+    if (!plan) throw new NotFoundError('Plan no encontrado');
+
+    const updatedPlan = await mercadopagoService.syncPlanToMercadoPago(id);
+    res.json(updatedPlan);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/plans/sync-all-mp', async (req, res, next) => {
+  try {
+    const plans = await prisma.plan.findMany({
+      where: { mercadopagoPreapprovalPlanId: null }
+    });
+
+    const results = {
+      total: plans.length,
+      synced: 0,
+      errors: []
+    };
+
+    for (const plan of plans) {
+      try {
+        await mercadopagoService.syncPlanToMercadoPago(plan.id);
+        results.synced++;
+      } catch (err) {
+        results.errors.push({ planId: plan.id, error: err.message });
+      }
+    }
+
+    res.json(results);
   } catch (error) {
     next(error);
   }

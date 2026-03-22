@@ -14,6 +14,7 @@ const router = express.Router();
 
 // GET para verificar que la URL del webhook es accesible (abre en navegador o curl)
 router.get('/mercadopago', (req, res) => {
+  console.log('[Webhook] GET request received - webhook URL is reachable');
   res.json({ ok: true, message: 'Webhook URL reachable. POST from MercadoPago will process events.' });
 });
 
@@ -37,14 +38,32 @@ function validateMPSignature(req, dataId) {
   return expected === hash;
 }
 
-router.post('/mercadopago', express.json(), async (req, res) => {
+router.post('/mercadopago', express.json({ 
+  verify: (req, res, buf) => {
+    // Log raw body before JSON parsing
+    console.log('[Webhook] ===== MercadoPago webhook received =====');
+    console.log('[Webhook] Method:', req.method);
+    console.log('[Webhook] URL:', req.url);
+    console.log('[Webhook] Headers:', {
+      'content-type': req.headers['content-type'],
+      'x-signature': req.headers['x-signature'] ? 'present' : 'missing',
+      'x-request-id': req.headers['x-request-id'] ? 'present' : 'missing',
+      'user-agent': req.headers['user-agent'],
+    });
+    console.log('[Webhook] Raw body (before parsing):', buf.toString('utf8'));
+    console.log('[Webhook] =========================================');
+  }
+}), async (req, res, next) => {
+  // Log parsed body
+  console.log('[Webhook] Parsed body:', JSON.stringify(req.body, null, 2));
+
   res.status(200).send('OK');
 
   try {
     const { type, data } = req.body || {};
     const dataId = data?.id != null ? String(data.id) : null;
 
-    console.log('[Webhook] MercadoPago received:', { type, dataId });
+    console.log('[Webhook] MercadoPago parsed:', { type, dataId });
 
     if (!dataId) {
       console.warn('[Webhook] MercadoPago: missing data.id');
@@ -159,7 +178,16 @@ router.post('/mercadopago', express.json(), async (req, res) => {
     }
   } catch (err) {
     console.error('[Webhook] MercadoPago error:', err?.message ?? err);
+    console.error('[Webhook] Error stack:', err?.stack);
   }
+}, (err, req, res, next) => {
+  // Error handler for JSON parsing errors
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    console.error('[Webhook] JSON parsing error:', err.message);
+    console.error('[Webhook] This usually means MercadoPago sent invalid JSON or wrong content-type');
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
+  next(err);
 });
 
 module.exports = router;

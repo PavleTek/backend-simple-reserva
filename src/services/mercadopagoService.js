@@ -23,11 +23,95 @@ function getClient() {
     throw new Error('MERCADOPAGO_ACCESS_TOKEN no configurado');
   }
   if (!preApprovalClient) {
-    const { MercadoPagoConfig, PreApproval } = require('mercadopago');
+const { MercadoPagoConfig, PreApproval, PreApprovalPlan } = require('mercadopago');
     const client = new MercadoPagoConfig({ accessToken });
     preApprovalClient = new PreApproval(client);
+    preApprovalPlanClient = new PreApprovalPlan(client);
   }
-  return preApprovalClient;
+  return { preApprovalClient, preApprovalPlanClient };
+}
+
+/**
+ * Crea preapproval_plan en MP.
+ */
+async function createMPPreapprovalPlan(plan) {
+  const { preApprovalPlanClient } = getClient();
+  const mpFreq = planService.toMercadoPagoFrequency(plan.billingFrequency, plan.billingFrequencyType);
+  
+  let backUrl = (process.env.BACKEND_PUBLIC_URL || process.env.APP_URL || 'https://www.google.com').trim();
+  
+  // MercadoPago preapproval_plan API often rejects localhost URLs.
+  // Since this is just a default back_url for the plan, we use a placeholder if it's localhost.
+  if (backUrl.includes('localhost') || backUrl.includes('127.0.0.1')) {
+    console.log(`[MercadoPago] Plan back_url is localhost (${backUrl}), using placeholder for MP API compatibility.`);
+    backUrl = 'https://www.google.com'; 
+  }
+
+  const body = {
+    reason: plan.name,
+    auto_recurring: {
+      frequency: mpFreq.frequency,
+      frequency_type: mpFreq.frequency_type,
+      transaction_amount: Math.round(Number(plan.priceCLP)),
+      currency_id: CURRENCY,
+    },
+    back_url: backUrl,
+  };
+
+  console.log('[MercadoPago] Creating PreApprovalPlan:', JSON.stringify(body, null, 2));
+
+  return await preApprovalPlanClient.create({ body });
+}
+
+/**
+ * Actualiza preapproval_plan en MP.
+ */
+async function updateMPPreapprovalPlan(mpPlanId, plan) {
+  const { preApprovalPlanClient } = getClient();
+  const mpFreq = planService.toMercadoPagoFrequency(plan.billingFrequency, plan.billingFrequencyType);
+
+  const body = {
+    reason: plan.name,
+    auto_recurring: {
+      frequency: mpFreq.frequency,
+      frequency_type: mpFreq.frequency_type,
+      transaction_amount: Math.round(Number(plan.priceCLP)),
+    },
+  };
+
+  return await preApprovalPlanClient.update({ id: mpPlanId, body });
+}
+
+/**
+ * Sincroniza un plan de la DB con MercadoPago.
+ */
+async function syncPlanToMercadoPago(planId) {
+  const plan = await prisma.plan.findUnique({ where: { id: planId } });
+  if (!plan) throw new Error('Plan no encontrado');
+
+  let result;
+  if (plan.mercadopagoPreapprovalPlanId) {
+    try {
+      result = await updateMPPreapprovalPlan(plan.mercadopagoPreapprovalPlanId, plan);
+    } catch (err) {
+      console.error('[MercadoPago] syncPlanToMercadoPago update failed, attempting create:', err.message);
+      // Si falla el update (ej: plan borrado en MP), intentamos crear uno nuevo
+      result = await createMPPreapprovalPlan(plan);
+    }
+  } else {
+    result = await createMPPreapprovalPlan(plan);
+  }
+
+  const updatedPlan = await prisma.plan.update({
+    where: { id: planId },
+    data: {
+      mercadopagoPreapprovalPlanId: result.id,
+      mercadopagoInitPoint: result.init_point || result.initPoint,
+      mercadopagoLastSyncAt: new Date(),
+    },
+  });
+
+  return updatedPlan;
 }
 
 /**
@@ -56,63 +140,71 @@ async function createSubscription(organizationId, ownerId, backUrl, payerEmail, 
     amount = MIN_AMOUNT_CLP;
   }
 
-  const isTestMode =
-    process.env.MERCADOPAGO_TEST_MODE === 'true' ||
-    (process.env.MERCADOPAGO_ACCESS_TOKEN || '').startsWith('TEST-');
-  const emailForPayer = isTestMode
-    ? (process.env.MP_TEST_PAYER_EMAIL || '').trim()
-    : (payerEmail || '').trim();
-
-  if (!emailForPayer) {
-    throw new Error(
-      isTestMode
-        ? 'Modo prueba: define MP_TEST_PAYER_EMAIL en .env (Usuario del Comprador de prueba)'
-        : 'payer_email es requerido'
-    );
+  let effectiveBackUrl = (backUrl || process.env.APP_URL || '').trim();
+  if (!effectiveBackUrl) {
+    throw new Error('back_url es requerido');
   }
 
-  const effectiveBackUrl = (backUrl || process.env.BACKEND_PUBLIC_URL || '').trim();
-  if (!effectiveBackUrl) {
-    throw new Error('Configura BACKEND_PUBLIC_URL en .env (ej: URL de ngrok)');
+  // MercadoPago rejects localhost URLs -- use a placeholder for local dev.
+  // The user will still return to the correct URL via the browser's redirect chain.
+  if (effectiveBackUrl.includes('localhost') || effectiveBackUrl.includes('127.0.0.1')) {
+    effectiveBackUrl = 'https://www.mercadopago.cl';
   }
 
   const externalRef = `${organizationId}|${planSKU}`;
-  const endDate = new Date();
-  endDate.setFullYear(endDate.getFullYear() + 2);
 
-  // Body: cobro recurrente. notification_url es OBLIGATORIO para suscripciones:
-  const backendBase = (process.env.BACKEND_PUBLIC_URL || effectiveBackUrl).replace(/\/$/, '');
+  const backendBase = (process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
   const notificationUrl = `${backendBase}/api/webhooks/mercadopago`;
+
+  const planInDb = await prisma.plan.findUnique({ where: { productSKU: planSKU } });
+  const hasTrial = planInDb?.freeTrialLength && planInDb.freeTrialLength > 0;
+
+  // MercadoPago requires start_date to be in the future. Set to 2 minutes from now for immediate charges.
+  // This ensures the first charge happens as soon as the subscription is authorized.
+  const startDate = new Date();
+  startDate.setMinutes(startDate.getMinutes() + 2);
+
+  const autoRecurring = {
+    frequency: mpFreq.frequency,
+    frequency_type: mpFreq.frequency_type,
+    transaction_amount: amount,
+    currency_id: CURRENCY,
+    ...(!hasTrial ? { start_date: startDate.toISOString() } : {}),
+    ...(hasTrial ? {
+      free_trial: {
+        frequency: planInDb.freeTrialLength,
+        frequency_type: planInDb.freeTrialLengthUnit || 'months',
+      },
+    } : {}),
+  };
 
   const body = {
     reason: `SimpleReserva ${config.name} - ${organization.name}`,
     external_reference: externalRef,
-    payer_email: emailForPayer,
+    payer_email: (payerEmail || '').trim(),
     status: 'pending',
-    auto_recurring: {
-      frequency: mpFreq.frequency,
-      frequency_type: mpFreq.frequency_type,
-      end_date: endDate.toISOString(),
-      transaction_amount: amount,
-      currency_id: CURRENCY,
-    },
+    auto_recurring: autoRecurring,
     back_url: effectiveBackUrl,
     notification_url: notificationUrl,
   };
 
   console.log('[MercadoPago] Request (sanitized):', {
-    payer_email: emailForPayer,
     amount,
     frequency: `${mpFreq.frequency} ${mpFreq.frequency_type}`,
     currency_id: CURRENCY,
     back_url: effectiveBackUrl.slice(0, 50) + '...',
     notification_url: notificationUrl,
     tokenPrefix: (process.env.MERCADOPAGO_ACCESS_TOKEN || '').slice(0, 15),
+    hasTrial,
+    start_date: !hasTrial ? startDate.toISOString() : 'N/A (has trial)',
   });
+  console.log('[MercadoPago] Full notification_url being sent to MP:', notificationUrl);
+  console.log('[MercadoPago] Start date for subscription:', !hasTrial ? startDate.toISOString() : 'N/A (has trial)');
+  console.log('[MercadoPago] NOTE: MP will send POST requests to this URL when events occur (payment authorized, subscription status changes, etc.)');
 
   try {
-    const client = getClient();
-    const result = await client.create({ body });
+    const { preApprovalClient } = getClient();
+    const result = await preApprovalClient.create({ body });
     return result;
   } catch (err) {
     const errBody = typeof err === 'object' && err !== null ? err : {};
@@ -124,12 +216,7 @@ async function createSubscription(organizationId, ownerId, backUrl, payerEmail, 
 
     let userMsg = msg;
     if (status === 500 || String(msg).toLowerCase().includes('internal')) {
-      userMsg =
-        'MercadoPago no disponible. Verifica MERCADOPAGO_ACCESS_TOKEN (debe ser del Vendedor de prueba) y MP_TEST_PAYER_EMAIL. Ver docs/MERCADOPAGO_TEST_SETUP.md';
-    } else if (String(msg).toLowerCase().includes('payer') || String(msg).toLowerCase().includes('email')) {
-      userMsg = 'Email inválido. En prueba: MP_TEST_PAYER_EMAIL = Usuario exacto del Comprador de prueba.';
-    } else if (String(msg).toLowerCase().includes('both') || String(msg).toLowerCase().includes('real or test')) {
-      userMsg = 'Token y comprador deben ser ambos de prueba. Usa token del Vendedor + MP_TEST_PAYER_EMAIL del Comprador.';
+      userMsg = 'MercadoPago no disponible. Verifica MERCADOPAGO_ACCESS_TOKEN.';
     }
 
     const e = new Error(userMsg);
@@ -140,8 +227,8 @@ async function createSubscription(organizationId, ownerId, backUrl, payerEmail, 
 
 async function cancelSubscription(preapprovalId) {
   try {
-    const client = getClient();
-    await client.update({
+    const { preApprovalClient } = getClient();
+    await preApprovalClient.update({
       id: preapprovalId,
       body: { status: 'cancelled' },
     });
@@ -235,10 +322,10 @@ async function enterGracePeriod(organizationId) {
  * Usado cuando el usuario vuelve de MP con preapproval_id en la URL.
  */
 async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId) {
-  const client = getClient();
+  const { preApprovalClient } = getClient();
   let mpSub;
   try {
-    mpSub = await client.get({ id: preapprovalId });
+    mpSub = await preApprovalClient.get({ id: preapprovalId });
   } catch (err) {
     console.error('[MercadoPago] confirmSubscriptionFromPreapproval get failed:', err?.message ?? err);
     throw new Error('No se pudo verificar el pago con MercadoPago');
@@ -272,4 +359,5 @@ module.exports = {
   deactivateOrganizationSubscription,
   enterGracePeriod,
   confirmSubscriptionFromPreapproval,
+  syncPlanToMercadoPago,
 };

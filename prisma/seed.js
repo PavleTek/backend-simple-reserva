@@ -1,5 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
+const mercadopagoService = require('./src/services/mercadopagoService');
 
 const prisma = new PrismaClient();
 
@@ -43,6 +44,8 @@ async function main() {
       prioritySupport: false,
       billingFrequency: 1,
       billingFrequencyType: 'months',
+      freeTrialLength: 1,
+      freeTrialLengthUnit: 'months',
     },
     {
       productSKU: 'plan-profesional',
@@ -93,6 +96,22 @@ async function main() {
     });
     planMap[data.productSKU] = p;
     summary.Plan.created += 1;
+  }
+
+  // 0.1 Sync Plans to MercadoPago
+  console.log('🔄 Syncing plans to MercadoPago...');
+  if (process.env.MERCADOPAGO_ACCESS_TOKEN) {
+    for (const sku in planMap) {
+      try {
+        const plan = planMap[sku];
+        await mercadopagoService.syncPlanToMercadoPago(plan.id);
+        console.log(`✅ Synced plan ${sku} to MercadoPago`);
+      } catch (err) {
+        console.error(`❌ Failed to sync plan ${sku} to MercadoPago:`, err.message);
+      }
+    }
+  } else {
+    console.log('⚠️ Skipping MercadoPago sync: MERCADOPAGO_ACCESS_TOKEN not set');
   }
 
   // 1. Seed EmailSender

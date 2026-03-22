@@ -308,6 +308,13 @@ model Plan {
   billingFrequency         Int      @default(1)
   billingFrequencyType     String   @default("months")
 
+  freeTrialLength          Int      @default(0)
+  freeTrialLengthUnit      String   @default("months")
+  
+  mercadopagoPreapprovalPlanId  String?   @unique
+  mercadopagoInitPoint          String?
+  mercadopagoLastSyncAt         DateTime?
+
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 

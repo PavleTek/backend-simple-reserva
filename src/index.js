@@ -39,20 +39,24 @@ const allowAnyOrigin = allowedOrigins.length === 0;
 
 const corsOptions = {
   origin: (origin, callback) => {
-    if (allowAnyOrigin) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-    if (!origin || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
+
+    // Allow any localhost port in development
     if (process.env.NODE_ENV !== "production" && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
-      return callback(null, true); // allow any localhost port in dev
+      return callback(null, true);
     }
+
     callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  exposedHeaders: ["Access-Control-Allow-Origin"],
   optionsSuccessStatus: 204,
 };
 
