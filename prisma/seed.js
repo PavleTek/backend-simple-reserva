@@ -1,6 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
-const mercadopagoService = require('./src/services/mercadopagoService');
+const mercadopagoService = require('../src/services/mercadopagoService');
 
 const prisma = new PrismaClient();
 
