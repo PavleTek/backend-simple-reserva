@@ -123,16 +123,9 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       select: { email: true },
     });
 
-    const appUrl = (process.env.APP_URL || (process.env.CORS_ORIGINS || '').split(',')[0]?.trim() || 'http://localhost:5174').trim();
-    const backendPublicUrl = (process.env.BACKEND_PUBLIC_URL || '').trim();
-    const backUrl = appUrl.includes('localhost') && backendPublicUrl
-      ? `${backendPublicUrl.replace(/\/$/, '')}/api/redirect-to-billing/${restaurantId}`
-      : `${appUrl.replace(/\/$/, '')}/billing?restaurantId=${restaurantId}`;
-
     const result = await mercadopagoService.createSubscription(
       organizationId,
       req.user.id,
-      backUrl,
       user?.email,
       planSKU
     );

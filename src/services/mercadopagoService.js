@@ -38,7 +38,7 @@ async function createMPPreapprovalPlan(plan) {
   const { preApprovalPlanClient } = getClient();
   const mpFreq = planService.toMercadoPagoFrequency(plan.billingFrequency, plan.billingFrequencyType);
   
-  let backUrl = (process.env.BACKEND_PUBLIC_URL || process.env.APP_URL || 'https://www.google.com').trim();
+  let backUrl = (process.env.BACKEND_PUBLIC_URL || process.env.FRONTEND_RESTAURANT_PORTAL_URL || 'https://www.google.com').trim();
   
   // MercadoPago preapproval_plan API often rejects localhost URLs.
   // Since this is just a default back_url for the plan, we use a placeholder if it's localhost.
@@ -119,11 +119,10 @@ async function syncPlanToMercadoPago(planId) {
  *
  * @param {string} organizationId
  * @param {string} ownerId
- * @param {string} backUrl
  * @param {string} payerEmail
  * @param {string} planSKU - plan-basico | plan-profesional | plan-premium
  */
-async function createSubscription(organizationId, ownerId, backUrl, payerEmail, planSKU = 'plan-profesional') {
+async function createSubscription(organizationId, ownerId, payerEmail, planSKU = 'plan-profesional') {
   const organization = await prisma.restaurantOrganization.findUnique({
     where: { id: organizationId },
     select: { name: true },
@@ -140,9 +139,9 @@ async function createSubscription(organizationId, ownerId, backUrl, payerEmail, 
     amount = MIN_AMOUNT_CLP;
   }
 
-  let effectiveBackUrl = (backUrl || process.env.APP_URL || '').trim();
+  let effectiveBackUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || '').trim();
   if (!effectiveBackUrl) {
-    throw new Error('back_url es requerido');
+    throw new Error('FRONTEND_RESTAURANT_PORTAL_URL is not set in .env');
   }
 
   // MercadoPago rejects localhost URLs -- use a placeholder for local dev.
@@ -153,6 +152,7 @@ async function createSubscription(organizationId, ownerId, backUrl, payerEmail, 
 
   const externalRef = `${organizationId}|${planSKU}`;
 
+  // Webhooks only: must be the public backend (never the restaurant frontend URL).
   const backendBase = (process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
   const notificationUrl = `${backendBase}/api/webhooks/mercadopago`;
 
@@ -192,7 +192,7 @@ async function createSubscription(organizationId, ownerId, backUrl, payerEmail, 
     amount,
     frequency: `${mpFreq.frequency} ${mpFreq.frequency_type}`,
     currency_id: CURRENCY,
-    back_url: effectiveBackUrl.slice(0, 50) + '...',
+    back_url: effectiveBackUrl,
     notification_url: notificationUrl,
     tokenPrefix: (process.env.MERCADOPAGO_ACCESS_TOKEN || '').slice(0, 15),
     hasTrial,
@@ -303,7 +303,7 @@ async function enterGracePeriod(organizationId) {
   });
     if (organization && organization.owner?.email) {
       const emails = [organization.owner.email];
-      const panelBase = (process.env.APP_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
+      const panelBase = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
       const panelUrl = `${panelBase}/billing?organizationId=${organizationId}`;
       const { sendPaymentFailureNotification } = require('./notificationService');
       await sendPaymentFailureNotification({

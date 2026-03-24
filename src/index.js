@@ -73,7 +73,7 @@ app.get("/", (req, res) => {
 app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
   const restaurantId = req.params.restaurantId;
   const preapprovalId = req.query.preapproval_id; // MP añade &preapproval_id=xxx (o ? si es la primera param)
-  const appUrl = (process.env.APP_URL || "http://localhost:5174").replace(/\/$/, "");
+  const appUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || "http://localhost:5175").replace(/\/$/, "");
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
   if (preapprovalId) params.set("preapprovalId", String(preapprovalId));
@@ -95,7 +95,7 @@ app.get("/api/redirect-to-billing", (req, res) => {
       restaurantId = restaurantId.split("?")[0].split("&")[0].trim();
     }
   }
-  const appUrl = (process.env.APP_URL || "http://localhost:5174").replace(/\/$/, "");
+  const appUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || "http://localhost:5175").replace(/\/$/, "");
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
   if (preapprovalId) params.set("preapprovalId", String(preapprovalId));
