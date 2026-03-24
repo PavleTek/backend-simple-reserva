@@ -34,19 +34,22 @@ const allowedOrigins = envOrigins
   .map((o) => o.trim())
   .filter(Boolean);
 
-// If no CORS_ORIGINS are defined, allow any origin; otherwise use the whitelist
+/** Empty / unset CORS_ORIGINS → do not restrict origins (reflect request Origin; works with credentials). */
 const allowAnyOrigin = allowedOrigins.length === 0;
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl)
+    // No Origin (same-origin, curl, some mobile stacks)
     if (!origin) return callback(null, true);
+
+    if (allowAnyOrigin) {
+      return callback(null, true);
+    }
 
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
-    // Allow any localhost port in development
     if (process.env.NODE_ENV !== "production" && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
       return callback(null, true);
     }
