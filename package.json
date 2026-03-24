@@ -9,6 +9,7 @@
     "build": "npx prisma generate",
     "migrate": "npx prisma migrate deploy",
     "seed": "node prisma/seed.js",
+    "db:deploy": "prisma migrate deploy && node prisma/seed.js",
     "postinstall": "npm run build"
   },
   "type": "commonjs",
@@ -30,11 +31,11 @@
     "resend": "^4.0.0",
     "speakeasy": "^2.0.0",
     "twilio": "^5.12.2",
-    "zod": "^3.25.3"
+    "zod": "^3.25.3",
+    "prisma": "^6.17.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10",
-    "prisma": "^6.17.0"
+    "nodemon": "^3.1.10"
   },
   "prisma": {
     "seed": "node prisma/seed.js"

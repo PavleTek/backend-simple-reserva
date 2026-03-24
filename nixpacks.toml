@@ -5,4 +5,5 @@ nixPkgs = ["nodejs_20"]
 cmds = ["npm install", "npx prisma generate"]
 
 [start]
+# railway.json overrides this on Railway; preDeploy runs migrate+seed before the app starts.
 cmd = "npx prisma migrate deploy && node src/index.js"
