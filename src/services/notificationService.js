@@ -30,7 +30,7 @@ function normalizePhone(phone) {
 }
 
 function getBaseUrl() {
-  return process.env.VITE_MAIN_FRONT_END_URL || process.env.BOOKING_BASE_URL || process.env.USER_FRONT_URL || 'http://localhost:5173';
+  return process.env.FRONTEND_LADNING_PAGE_URL || 'http://localhost:5174';
 }
 
 async function sendSmsTwilio(to, body) {

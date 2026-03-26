@@ -8,7 +8,7 @@ const prisma = require('../lib/prisma');
 const { sendDailySummary } = require('../services/notificationService');
 const { formatTime } = require('../utils/dateFormat');
 
-const PANEL_BASE_URL = process.env.RESTAURANT_PANEL_URL || process.env.BOOKING_BASE_URL || 'http://localhost:5175';
+const RESTAURANT_PORTAL_URL = process.env.FRONTEND_RESTAURANT_PORTAL_URL || 'http://localhost:5175';
 
 function getTodayRange() {
   const now = new Date();
@@ -49,7 +49,7 @@ async function runDailySummary() {
     const firstTime = rest.reservations[0]
       ? formatTime(new Date(rest.reservations[0].dateTime))
       : null;
-    const panelUrl = `${PANEL_BASE_URL.replace(/\/$/, '')}/reservations?date=${start.toISOString().split('T')[0]}`;
+    const panelUrl = `${RESTAURANT_PORTAL_URL.replace(/\/$/, '')}/reservations?date=${start.toISOString().split('T')[0]}`;
 
     const emails = new Set();
     if (rest.organization?.owner?.email) {

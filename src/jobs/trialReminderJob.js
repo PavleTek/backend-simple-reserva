@@ -9,7 +9,7 @@ const { sendEmail } = require('../services/emailService');
 const { isTrialing } = require('../services/subscriptionService');
 const planService = require('../services/planService');
 
-const PANEL_BASE_URL = process.env.APP_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175';
+const RESTAURANT_PORTAL_URL = process.env.FRONTEND_RESTAURANT_PORTAL_URL || 'http://localhost:5175';
 
 function formatPriceCLP(amount) {
   if (amount == null) return '$4,990 CLP';
@@ -60,7 +60,7 @@ async function runTrialReminders() {
       : null;
     const fromEmail = fromSender || 'noreply@simplereserva.com';
 
-    const panelUrl = `${PANEL_BASE_URL.replace(/\/$/, '')}/billing`;
+    const panelUrl = `${RESTAURANT_PORTAL_URL.replace(/\/$/, '')}/billing`;
     const subject =
       daysLeft === 7
         ? `Te quedan 7 días de prueba en SimpleReserva`

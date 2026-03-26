@@ -280,7 +280,7 @@ const register = async (req, res) => {
     const restaurants = await getRestaurantsForUser(result.user.id);
 
     try {
-      const panelUrl = (process.env.APP_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
+      const panelUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || 'http://localhost:5175').replace(/\/$/, '');
       const { sendWelcomeEmail } = require('../services/notificationService');
       await sendWelcomeEmail({
         email: result.user.email,

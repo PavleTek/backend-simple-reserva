@@ -5,8 +5,6 @@ const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = 
 const { ValidationError } = require('../utils/errors');
 const r2Service = require('../services/r2Service');
 const planService = require('../services/planService');
-const QRCode = require('qrcode');
-const { PDFDocument, rgb } = require('pdf-lib');
 
 const router = express.Router({ mergeParams: true });
 
@@ -172,77 +170,7 @@ router.delete(
   }
 );
 
-/**
- * GET /api/restaurant/:restaurantId/menus/:menuType/qr
- * Generate and return QR code (PNG or PDF)
- */
-router.get(
-  '/:menuType/qr',
-  authenticateToken,
-  authorizeRestaurant,
-  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
-  async (req, res, next) => {
-    try {
-      const { menuType } = req.params;
-      const { restaurantId } = req.activeRestaurant;
-      const format = req.query.format || 'png';
 
-      const restaurant = await prisma.restaurant.findUnique({
-        where: { id: restaurantId },
-        select: { slug: true, name: true },
-      });
 
-      if (!restaurant) {
-        throw new ValidationError('Restaurante no encontrado');
-      }
-
-      const appUrl = process.env.APP_URL || 'http://localhost:5174';
-      const publicUrl = `${appUrl}/r/${restaurant.slug}/menu/${menuType}`;
-
-      if (format === 'pdf') {
-        const qrBuffer = await QRCode.toBuffer(publicUrl, { width: 800, margin: 2 });
-        
-        const pdfDoc = await PDFDocument.create();
-        const page = pdfDoc.addPage([400, 500]);
-        const qrImage = await pdfDoc.embedPng(qrBuffer);
-        
-        const qrSize = 300;
-        page.drawImage(qrImage, {
-          x: 50,
-          y: 150,
-          width: qrSize,
-          height: qrSize,
-        });
-
-        page.drawText(restaurant.name, {
-          x: 50,
-          y: 100,
-          size: 20,
-          color: rgb(0, 0, 0),
-        });
-
-        page.drawText(`Menú: ${menuType}`, {
-          x: 50,
-          y: 70,
-          size: 14,
-          color: rgb(0.4, 0.4, 0.4),
-        });
-
-        const pdfBytes = await pdfDoc.save();
-        
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', `attachment; filename="qr-menu-${menuType}-${restaurant.slug}.pdf"`);
-        res.send(Buffer.from(pdfBytes));
-      } else {
-        const qrBuffer = await QRCode.toBuffer(publicUrl, { width: 400, margin: 2 });
-        res.setHeader('Content-Type', 'image/png');
-        res.setHeader('Content-Disposition', `attachment; filename="qr-menu-${menuType}-${restaurant.slug}.png"`);
-        res.send(qrBuffer);
-      }
-    } catch (error) {
-      next(error);
-    }
-  }
-);
 
 module.exports = router;
