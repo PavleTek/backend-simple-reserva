@@ -112,6 +112,7 @@ model Restaurant {
   isActive                  Boolean   @default(true)
   scheduleMode              String    @default("continuous") // "continuous" | "service_periods"
   dataVersion               Int       @default(0)
+  onboardingCompletedAt     DateTime?
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
 

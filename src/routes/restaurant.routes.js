@@ -3,7 +3,7 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { sendReservationConfirmation, sendModificationAlertToCustomer } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations } = require('../services/subscriptionService');
-const { getRestaurant, updateRestaurant } = require('../controllers/restaurantController');
+const { getRestaurant, updateRestaurant, completeOnboarding } = require('../controllers/restaurantController');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { isSlotInSchedule, generateTimeSlots, resolveDuration } = require('../utils/scheduleUtils');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -49,6 +49,7 @@ router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager'
 
 router.get('/', getRestaurant);
 router.patch('/', authenticateRestaurantRoles(['restaurant_owner']), updateRestaurant);
+router.patch('/onboarding/complete', authenticateRestaurantRoles(['restaurant_owner']), completeOnboarding);
 
 router.get('/duration-rules', async (req, res, next) => {
   try {
