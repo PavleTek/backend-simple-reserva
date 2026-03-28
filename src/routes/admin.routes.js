@@ -6,6 +6,7 @@ const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
 const paymentReceiptService = require('../services/paymentReceiptService');
 const mercadopagoService = require('../services/mercadopagoService');
+const whatsappService = require('../services/whatsappService');
 
 const router = express.Router();
 
@@ -1049,6 +1050,213 @@ router.patch('/config', async (req, res, next) => {
     });
 
     res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── WhatsApp (Meta Cloud API) ───────────────────────────────────
+
+router.get('/whatsapp/config', async (req, res, next) => {
+  try {
+    const config = await prisma.configuration.findFirst();
+    if (!config) {
+      throw new NotFoundError('Configuración no encontrada');
+    }
+    res.json({
+      whatsappAuthToken: whatsappService.maskToken(config.whatsappAuthToken),
+      whatsappSendingPhoneNumberId: config.whatsappSendingPhoneNumberId,
+      whatsappBusinessAccountId: config.whatsappBusinessAccountId,
+      whatsappApiVersion: config.whatsappApiVersion || 'v21.0',
+      whatsappTemplateLanguage: config.whatsappTemplateLanguage || 'es',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/whatsapp/config', async (req, res, next) => {
+  try {
+    const {
+      whatsappAuthToken,
+      whatsappSendingPhoneNumberId,
+      whatsappBusinessAccountId,
+      whatsappApiVersion,
+      whatsappTemplateLanguage,
+    } = req.body;
+
+    const currentConfig = await prisma.configuration.findFirst();
+    if (!currentConfig) {
+      throw new NotFoundError('Configuración no encontrada');
+    }
+
+    const data = {};
+    if (whatsappAuthToken !== undefined) {
+      if (typeof whatsappAuthToken !== 'string') {
+        throw new ValidationError('whatsappAuthToken debe ser texto');
+      }
+      data.whatsappAuthToken = whatsappAuthToken.trim() === '' ? null : whatsappAuthToken.trim();
+    }
+    if (whatsappSendingPhoneNumberId !== undefined) {
+      if (whatsappSendingPhoneNumberId !== null && typeof whatsappSendingPhoneNumberId !== 'string') {
+        throw new ValidationError('whatsappSendingPhoneNumberId debe ser texto');
+      }
+      data.whatsappSendingPhoneNumberId =
+        whatsappSendingPhoneNumberId == null || String(whatsappSendingPhoneNumberId).trim() === ''
+          ? null
+          : String(whatsappSendingPhoneNumberId).trim();
+    }
+    if (whatsappBusinessAccountId !== undefined) {
+      if (whatsappBusinessAccountId !== null && typeof whatsappBusinessAccountId !== 'string') {
+        throw new ValidationError('whatsappBusinessAccountId debe ser texto');
+      }
+      data.whatsappBusinessAccountId =
+        whatsappBusinessAccountId == null || String(whatsappBusinessAccountId).trim() === ''
+          ? null
+          : String(whatsappBusinessAccountId).trim();
+    }
+    if (whatsappApiVersion !== undefined) {
+      if (typeof whatsappApiVersion !== 'string' || !/^v\d+\.\d+(\.\d+)?$/.test(whatsappApiVersion.trim())) {
+        throw new ValidationError('whatsappApiVersion debe ser como v21.0');
+      }
+      data.whatsappApiVersion = whatsappApiVersion.trim();
+    }
+    if (whatsappTemplateLanguage !== undefined) {
+      if (typeof whatsappTemplateLanguage !== 'string' || whatsappTemplateLanguage.trim().length < 2) {
+        throw new ValidationError('whatsappTemplateLanguage inválido');
+      }
+      data.whatsappTemplateLanguage = whatsappTemplateLanguage.trim();
+    }
+
+    const updated = await prisma.configuration.update({
+      where: { id: currentConfig.id },
+      data,
+    });
+
+    res.json({
+      whatsappAuthToken: whatsappService.maskToken(updated.whatsappAuthToken),
+      whatsappSendingPhoneNumberId: updated.whatsappSendingPhoneNumberId,
+      whatsappBusinessAccountId: updated.whatsappBusinessAccountId,
+      whatsappApiVersion: updated.whatsappApiVersion || 'v21.0',
+      whatsappTemplateLanguage: updated.whatsappTemplateLanguage || 'es',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/whatsapp/test-connection', async (req, res, next) => {
+  try {
+    const result = await whatsappService.testWhatsAppConnection();
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/whatsapp/templates', async (req, res, next) => {
+  try {
+    const rows = await prisma.whatsAppTemplate.findMany({
+      orderBy: [{ name: 'asc' }, { language: 'asc' }],
+      select: {
+        id: true,
+        metaId: true,
+        name: true,
+        language: true,
+        category: true,
+        status: true,
+        bodyText: true,
+        lastSyncedAt: true,
+        updatedAt: true,
+      },
+    });
+    res.json(rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/whatsapp/templates', async (req, res, next) => {
+  try {
+    const { name, category, language, bodyText, headerText, footerText } = req.body;
+
+    if (!name || typeof name !== 'string' || !/^[a-z0-9_]+$/.test(name.trim())) {
+      throw new ValidationError('El nombre debe ser snake_case (solo letras minúsculas, números y guiones bajos)');
+    }
+    const validCategories = ['UTILITY', 'MARKETING', 'AUTHENTICATION'];
+    if (!category || !validCategories.includes(String(category).toUpperCase())) {
+      throw new ValidationError(`Categoría inválida. Opciones: ${validCategories.join(', ')}`);
+    }
+    if (!language || typeof language !== 'string' || language.trim().length < 2) {
+      throw new ValidationError('Idioma inválido (ej. es, es_LA, en_US)');
+    }
+    if (!bodyText || typeof bodyText !== 'string' || bodyText.trim().length === 0) {
+      throw new ValidationError('El texto del cuerpo es obligatorio');
+    }
+
+    const result = await whatsappService.createTemplateOnMeta({
+      name: name.trim(),
+      category: String(category).toUpperCase(),
+      language: language.trim(),
+      bodyText: bodyText.trim(),
+      headerText: headerText || null,
+      footerText: footerText || null,
+    });
+
+    if (!result.ok) {
+      throw new ValidationError(result.error || 'Error al crear la plantilla en Meta');
+    }
+
+    // Save to local DB immediately (status will be PENDING from Meta)
+    const now = new Date();
+    const saved = await prisma.whatsAppTemplate.upsert({
+      where: { name_language: { name: name.trim(), language: language.trim() } },
+      create: {
+        metaId: result.metaId || null,
+        name: name.trim(),
+        language: language.trim(),
+        category: String(category).toUpperCase(),
+        status: result.status || 'PENDING',
+        bodyText: bodyText.trim(),
+        componentsJson: null,
+        lastSyncedAt: now,
+      },
+      update: {
+        metaId: result.metaId || undefined,
+        category: String(category).toUpperCase(),
+        status: result.status || 'PENDING',
+        bodyText: bodyText.trim(),
+        lastSyncedAt: now,
+      },
+    });
+
+    res.status(201).json(saved);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/whatsapp/templates/sync', async (req, res, next) => {
+  try {
+    const result = await whatsappService.syncTemplatesFromMeta();
+    if (!result.ok) {
+      throw new ValidationError(result.error || 'Error al sincronizar plantillas');
+    }
+    const rows = await prisma.whatsAppTemplate.findMany({
+      orderBy: [{ name: 'asc' }, { language: 'asc' }],
+      select: {
+        id: true,
+        metaId: true,
+        name: true,
+        language: true,
+        category: true,
+        status: true,
+        bodyText: true,
+        lastSyncedAt: true,
+        updatedAt: true,
+      },
+    });
+    res.json(rows);
   } catch (error) {
     next(error);
   }

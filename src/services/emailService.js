@@ -122,13 +122,24 @@ async function sendEmail(options) {
 
   const normalizedFromEmail = fromEmail.toLowerCase().trim();
 
+  console.log('[Email] sendEmail: lookup sender in DB', { fromEmail: normalizedFromEmail });
+
   const emailSender = await prisma.emailSender.findUnique({
     where: { email: normalizedFromEmail },
   });
 
   if (!emailSender) {
+    console.error('[Email] sendEmail: sender not found in emailSender table — add it via Admin or set reservationEmailSenderId in Configuration', {
+      fromEmail: normalizedFromEmail,
+    });
     throw new Error(`Email sender ${fromEmail} not found in database. Please add it first.`);
   }
+
+  console.log('[Email] sendEmail: sending via Resend', {
+    from: normalizedFromEmail,
+    to: Array.isArray(toEmails) ? toEmails : [toEmails],
+    subject,
+  });
 
   const normalizedOptions = {
     ...options,
@@ -141,11 +152,18 @@ async function sendEmail(options) {
 
   try {
     const result = await sendViaResend(normalizedOptions);
+    console.log('[Email] sendEmail: Resend accepted', {
+      to: Array.isArray(toEmails) ? toEmails : [toEmails],
+      subject,
+      resendId: result?.data?.id || result?.id || '(no id)',
+    });
     return result;
   } catch (error) {
-    console.error("[sendEmail] Error details:", {
+    console.error("[Email] sendEmail: Resend error", {
       message: error.message,
       statusCode: error?.statusCode,
+      from: normalizedFromEmail,
+      to: Array.isArray(toEmails) ? toEmails : [toEmails],
     });
     throw error;
   }

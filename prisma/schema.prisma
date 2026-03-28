@@ -280,6 +280,30 @@ model Configuration {
   reservationEmailSenderId String?
   dashboardPollingIntervalSeconds Int @default(30)
   updatedAt             DateTime  @updatedAt
+
+  // WhatsApp Business Cloud API (Meta) — optional; env vars are fallback
+  whatsappAuthToken              String?
+  whatsappSendingPhoneNumberId   String?
+  whatsappBusinessAccountId      String?
+  whatsappApiVersion             String?   @default("v21.0")
+  whatsappTemplateLanguage       String?   @default("es")
+}
+
+model WhatsAppTemplate {
+  id             String    @id @default(cuid())
+  metaId         String?   @unique
+  name           String
+  language       String    @default("es")
+  category       String?
+  status         String?
+  bodyText       String?
+  componentsJson Json?
+  lastSyncedAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([name, language])
+  @@index([status])
 }
 
 // Plan configuration - super admin editable, single source of truth for plan features/limits/pricing

@@ -1,11 +1,14 @@
 /**
- * Reservation confirmations and reminders via SMS and WhatsApp (Twilio).
- * Optional: if TWILIO_* env vars are not set, no message is sent.
- * WhatsApp uses Twilio WhatsApp API (TWILIO_WHATSAPP_FROM for sender).
+ * Reservation confirmations and reminders via SMS (Twilio) and WhatsApp (Meta Cloud API).
+ * SMS: optional if TWILIO_* env vars are not set.
+ * WhatsApp: optional if not configured (DB admin config or WHATSAPP_* env fallback); gated by Plan.whatsappFeatures.
  */
 
 const { formatTime, formatDateDisplay } = require('../utils/dateFormat');
 const { getEffectiveTimezone } = require('../utils/timezone');
+const {
+  sendHelloWorldWA,
+} = require('./whatsappService');
 
 /**
  * Normalizes phone to E.164 format for Twilio.
@@ -54,33 +57,6 @@ async function sendSmsTwilio(to, body) {
     return true;
   } catch (err) {
     console.error('[Notification] Twilio SMS error:', err.message);
-    return false;
-  }
-}
-
-async function sendWhatsAppTwilio(to, body) {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const fromWa = process.env.TWILIO_WHATSAPP_FROM;
-
-  if (!accountSid || !authToken || !fromWa) {
-    return false;
-  }
-
-  const toWa = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
-  const from = fromWa.startsWith('whatsapp:') ? fromWa : `whatsapp:${fromWa}`;
-
-  try {
-    const twilio = require('twilio');
-    const client = twilio(accountSid, authToken);
-    await client.messages.create({
-      body,
-      from,
-      to: toWa,
-    });
-    return true;
-  } catch (err) {
-    console.error('[Notification] Twilio WhatsApp error:', err.message);
     return false;
   }
 }
@@ -150,10 +126,28 @@ async function sendReservationConfirmation(options) {
     const planService = require('./planService');
     const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
     if (config?.whatsappFeatures) {
-      waOk = await sendWhatsAppTwilio(to, body);
+      console.log(
+        `[Notification] WhatsApp confirmation: sending hello_world (restaurantId=${restaurantId}, plan=${config.productSKU || config.name || 'n/a'})`
+      );
+      waOk = await sendHelloWorldWA(to);
+      if (!waOk) {
+        console.warn(
+          `[Notification] WhatsApp confirmation failed or skipped for restaurantId=${restaurantId} — see [WhatsApp] logs above for Meta error details`
+        );
+      }
+    } else {
+      console.log(
+        `[Notification] WhatsApp confirmation skipped: Plan.whatsappFeatures is false (restaurantId=${restaurantId})`
+      );
     }
   } else {
-    waOk = await sendWhatsAppTwilio(to, body);
+    console.log('[Notification] WhatsApp confirmation: sending hello_world (no restaurantId — plan check skipped)');
+    waOk = await sendHelloWorldWA(to);
+    if (!waOk) {
+      console.warn(
+        '[Notification] WhatsApp confirmation failed or skipped — see [WhatsApp] logs above'
+      );
+    }
   }
   return smsOk || waOk;
 }
@@ -212,10 +206,22 @@ async function sendReservationReminder(options) {
     const planService = require('./planService');
     const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
     if (config?.whatsappFeatures) {
-      waOk = await sendWhatsAppTwilio(to, body);
+      console.log(`[Notification] WhatsApp reminder: sending hello_world (restaurantId=${restaurantId})`);
+      waOk = await sendHelloWorldWA(to);
+      if (!waOk) {
+        console.warn(
+          `[Notification] WhatsApp reminder failed — see [WhatsApp] logs (restaurantId=${restaurantId})`
+        );
+      }
+    } else {
+      console.log(
+        `[Notification] WhatsApp reminder skipped: whatsappFeatures=false (restaurantId=${restaurantId})`
+      );
     }
   } else {
-    waOk = await sendWhatsAppTwilio(to, body);
+    console.log('[Notification] WhatsApp reminder: sending hello_world (no restaurantId)');
+    waOk = await sendHelloWorldWA(to);
+    if (!waOk) console.warn('[Notification] WhatsApp reminder failed — see [WhatsApp] logs');
   }
   return smsOk || waOk;
 }
@@ -255,24 +261,33 @@ async function sendModificationAlertToCustomer(options) {
     }
   }
 
-  let body;
-  if (type === 'cancelled') {
-    body = `SimpleReserva: Tu reserva en ${restaurantName} ha sido cancelada correctamente.`;
-  } else if (type === 'modified' && dateTime && partySize) {
-    const dt = new Date(dateTime);
-    const dateStr = formatDateDisplay(dt, timezone);
-    const timeStr = formatTime(dt, timezone);
-    body = `SimpleReserva: Tu reserva en ${restaurantName} ha sido actualizada. Nueva fecha: ${dateStr} a las ${timeStr} para ${partySize} persona(s).`;
-  } else {
-    return false;
-  }
-
   if (restaurantId) {
     const planService = require('./planService');
     const config = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
-    if (!config?.whatsappFeatures) return false;
+    if (!config?.whatsappFeatures) {
+      console.log(
+        `[Notification] WhatsApp modification alert skipped: whatsappFeatures=false (restaurantId=${restaurantId})`
+      );
+      return false;
+    }
   }
-  return sendWhatsAppTwilio(to, body);
+
+  if (type === 'cancelled') {
+    console.log(`[Notification] WhatsApp cancel alert: sending hello_world (type=cancelled)`);
+    const ok = await sendHelloWorldWA(to);
+    if (!ok) console.warn('[Notification] WhatsApp cancel alert failed — see [WhatsApp] logs');
+    return ok;
+  }
+  if (type === 'modified' && dateTime && partySize) {
+    console.log(`[Notification] WhatsApp modify alert: sending hello_world (type=modified)`);
+    const ok = await sendHelloWorldWA(to);
+    if (!ok) console.warn('[Notification] WhatsApp modify alert failed — see [WhatsApp] logs');
+    return ok;
+  }
+  console.warn('[Notification] WhatsApp modification alert: invalid type or missing dateTime/partySize', {
+    type,
+  });
+  return false;
 }
 
 /**
@@ -385,7 +400,16 @@ async function sendPaymentFailureNotification(options) {
  */
 async function sendReservationConfirmationEmail(options) {
   const { customerEmail, restaurantName, customerName, dateTime, partySize, secureToken } = options;
-  if (!customerEmail) return false;
+  if (!customerEmail) {
+    console.log('[Notification] sendReservationConfirmationEmail: skipped — no customerEmail');
+    return false;
+  }
+
+  console.log('[Notification] sendReservationConfirmationEmail: start', {
+    to: customerEmail,
+    restaurantName,
+    customerName,
+  });
 
   const { buildReservationConfirmationHtml } = require('../templates/reservationConfirmationEmail');
   const { sendEmail } = require('./emailService');
@@ -397,6 +421,12 @@ async function sendReservationConfirmationEmail(options) {
     ? (await prisma.emailSender.findUnique({ where: { id: fromSenderId } }))?.email
     : null;
   const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  console.log('[Notification] sendReservationConfirmationEmail: resolved sender', {
+    fromEmail,
+    fromSenderId: fromSenderId || '(none — will fall back to noreply)',
+    note: 'If fromEmail is not registered in emailSender table, send will fail',
+  });
 
   const baseUrl = getBaseUrl().replace(/\/$/, '');
   const viewUrl = `${baseUrl}/reservation/${secureToken}`;
@@ -410,16 +440,25 @@ async function sendReservationConfirmationEmail(options) {
   });
 
   try {
-    await sendEmail({
+    const result = await sendEmail({
       fromEmail,
       toEmails: [customerEmail],
       subject: `Confirmación de reserva: ${restaurantName}`,
       content: html,
       isHtml: true,
     });
+    console.log('[Notification] sendReservationConfirmationEmail: sent OK', {
+      to: customerEmail,
+      resendId: result?.data?.id || result?.id || '(no id)',
+    });
     return true;
   } catch (err) {
-    console.error('[Notification] Confirmation email error:', err.message);
+    console.error('[Notification] sendReservationConfirmationEmail: FAILED', {
+      to: customerEmail,
+      fromEmail,
+      message: err.message,
+      statusCode: err?.statusCode,
+    });
     return false;
   }
 }
