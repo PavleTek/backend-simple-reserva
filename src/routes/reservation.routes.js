@@ -1,12 +1,17 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
-const { isSlotInSchedule, generateTimeSlots } = require('../utils/scheduleUtils');
+const { isSlotInSchedule } = require('../utils/scheduleUtils');
+const {
+  getAvailabilitySlotsForRestaurant,
+  findNextAvailableDateForSlug,
+} = require('../services/availabilityService');
 const { NotFoundError, ValidationError } = require('../utils/errors');
-const { 
-  sendReservationConfirmation, 
-  sendCancellationNotification, 
+const {
+  sendReservationConfirmation,
+  sendCancellationNotification,
   sendModificationAlertToCustomer,
-  sendReservationConfirmationEmail 
+  sendReservationConfirmationEmail,
+  notifyRestaurantWaitlistEntry,
 } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
 const { getEffectiveTimezone, parseInTimezone, nowInTimezone } = require('../utils/timezone');
@@ -464,6 +469,95 @@ router.post('/', async (req, res, next) => {
 
 // ─── Public restaurant routes (slug-based) ──────────────────────
 
+router.get('/:slug/next-available', async (req, res, next) => {
+  try {
+    const { slug } = req.params;
+    const { date, partySize, zoneId } = req.query;
+
+    if (!date || !partySize) {
+      throw new ValidationError('Se requieren los parámetros date y partySize');
+    }
+
+    const size = parseInt(partySize, 10);
+    if (isNaN(size) || size < 1) {
+      throw new ValidationError('partySize debe ser un número positivo');
+    }
+
+    const found = await findNextAvailableDateForSlug(slug, {
+      fromDateStr: date,
+      partySize: size,
+      zoneId: zoneId || null,
+    });
+
+    if (!found.ok) {
+      throw new NotFoundError('Restaurante no encontrado');
+    }
+    if (found.reason === 'subscription_expired') {
+      return res.json({ nextDate: null, reason: 'subscription_expired' });
+    }
+    if (found.nextDate) {
+      return res.json({
+        nextDate: found.nextDate,
+        slotsCount: found.slotsCount,
+      });
+    }
+    return res.json({ nextDate: null, reason: found.reason || 'no_future_availability' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:slug/waitlist', async (req, res, next) => {
+  try {
+    const { slug } = req.params;
+    const { partySize, preferredDate, customerName, customerPhone, customerEmail, notes } = req.body || {};
+
+    const size = parseInt(partySize, 10);
+    if (isNaN(size) || size < 1) {
+      throw new ValidationError('partySize debe ser un número positivo');
+    }
+    const name = typeof customerName === 'string' ? customerName.trim() : '';
+    const phone = typeof customerPhone === 'string' ? customerPhone.trim() : '';
+    if (!name || name.length < 2) {
+      throw new ValidationError('Indica tu nombre');
+    }
+    if (!phone || phone.length < 8) {
+      throw new ValidationError('Indica un teléfono de contacto');
+    }
+
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { slug, isActive: true },
+      include: { organization: true },
+    });
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+    const access = await hasActiveAccess(restaurant.organizationId);
+    if (!access) {
+      throw new ValidationError('Este restaurante no acepta solicitudes en este momento');
+    }
+
+    const entry = await prisma.bookingWaitlistEntry.create({
+      data: {
+        restaurantId: restaurant.id,
+        partySize: size,
+        preferredDate: typeof preferredDate === 'string' && preferredDate ? preferredDate : null,
+        customerName: name,
+        customerPhone: phone,
+        customerEmail: typeof customerEmail === 'string' && customerEmail.trim() ? customerEmail.trim() : null,
+        notes: typeof notes === 'string' && notes.trim() ? notes.trim().slice(0, 500) : null,
+      },
+    });
+
+    notifyRestaurantWaitlistEntry(restaurant, entry).catch((err) =>
+      console.error('[Waitlist] notify error:', err.message)
+    );
+
+    res.status(201).json({ id: entry.id, message: 'Recibimos tu solicitud. El restaurante puede contactarte.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/:slug/availability', async (req, res, next) => {
   try {
     const { slug } = req.params;
@@ -494,100 +588,17 @@ router.get('/:slug/availability', async (req, res, next) => {
       return res.json({ slots: [], reason: 'subscription_expired' });
     }
 
-    const requestedDate = parseInTimezone(date, '00:00', timezone);
-    const dayOfWeek = requestedDate.getDay();
-
-    const schedule = await prisma.schedule.findFirst({
-      where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
-    });
-    if (!schedule) {
-      return res.json({ slots: [], reason: 'no_schedule' });
-    }
-
-    const tablesWhere = {
-      isActive: true,
-      minCapacity: { lte: size },
-      maxCapacity: { gte: size },
-      zone: zoneId
-        ? { id: zoneId, restaurantId: restaurant.id, isActive: true }
-        : { restaurantId: restaurant.id, isActive: true },
-    };
-    const tables = await prisma.restaurantTable.findMany({
-      where: tablesWhere,
-      orderBy: { maxCapacity: 'asc' },
+    const result = await getAvailabilitySlotsForRestaurant(restaurant, {
+      dateStr: date,
+      partySize: size,
+      zoneId: zoneId || null,
+      timezone,
     });
 
-    if (!tables.length) return res.json({ slots: [], reason: 'no_tables' });
-
-    const duration = restaurant.defaultSlotDurationMinutes;
-    const slotDefs = generateTimeSlots(schedule, duration, restaurant.scheduleMode);
-    const timeSlots = slotDefs.map(({ time, startMin }) => {
-      const start = parseInTimezone(date, time, timezone);
-      const end = new Date(start.getTime() + duration * 60000);
-      return { time, start, end };
-    });
-    if (timeSlots.length === 0) return res.json({ slots: [], reason: 'no_slots' });
-
-    const dayStart = parseInTimezone(date, '00:00', timezone);
-    const dayEnd = parseInTimezone(date, '23:59', timezone);
-
-    const [blockedSlots, existingReservations] = await Promise.all([
-      prisma.blockedSlot.findMany({
-        where: {
-          restaurantId: restaurant.id,
-          startDatetime: { lte: dayEnd },
-          endDatetime: { gte: dayStart },
-        },
-      }),
-      prisma.reservation.findMany({
-        where: {
-          restaurantId: restaurant.id,
-          tableId: { in: tables.map((t) => t.id) },
-          status: 'confirmed',
-          dateTime: { gte: dayStart, lte: dayEnd },
-        },
-      }),
-    ]);
-
-    const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-    const minNotice = restaurant.minimumNoticeMinutes ?? 60;
-    const now = nowInTimezone(timezone).toJSDate();
-    const todayLocal = nowInTimezone(timezone).toFormat('yyyy-MM-dd');
-    const isToday = date === todayLocal;
-    const minSlotTime = new Date(now.getTime() + minNotice * 60000);
-
-    const available = [];
-    for (const slot of timeSlots) {
-      if (isToday && slot.start < minSlotTime) continue;
-
-      const isBlocked = blockedSlots.some(
-        (bs) => slot.start < bs.endDatetime && slot.end > bs.startDatetime
-      );
-      if (isBlocked) continue;
-
-      let openTables = 0;
-      for (const table of tables) {
-        const booked = existingReservations.some((r) => {
-          if (r.tableId !== table.id) return false;
-          const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-          return slot.start < rEnd && slot.end > r.dateTime;
-        });
-        if (!booked) openTables++;
-      }
-
-      if (openTables > 0) {
-        available.push({ 
-          time: slot.time, 
-          available: true,
-          availableTables: openTables 
-        });
-      }
+    if (result.slots.length > 0) {
+      return res.json({ slots: result.slots });
     }
-
-    if (available.length === 0) {
-      return res.json({ slots: [], reason: 'no_availability' });
-    }
-    res.json({ slots: available });
+    return res.json({ slots: [], reason: result.reason || 'no_availability' });
   } catch (error) {
     next(error);
   }

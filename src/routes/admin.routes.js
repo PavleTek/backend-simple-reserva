@@ -6,6 +6,7 @@ const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
 const paymentReceiptService = require('../services/paymentReceiptService');
 const mercadopagoService = require('../services/mercadopagoService');
+const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 
 const router = express.Router();
 
@@ -162,9 +163,7 @@ router.get('/users', async (req, res, next) => {
 
 router.get('/plans', async (req, res, next) => {
   try {
-    const plans = await prisma.plan.findMany({
-      orderBy: { productSKU: 'asc' },
-    });
+    const plans = sortPlansByDisplayOrder(await prisma.plan.findMany());
     res.json(plans);
   } catch (error) {
     next(error);

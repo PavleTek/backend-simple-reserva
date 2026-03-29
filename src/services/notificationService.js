@@ -478,6 +478,26 @@ async function sendCancellationNotification(options) {
   }
 }
 
+/**
+ * Avisa al restaurante por WhatsApp (si TWILIO está configurado y hay teléfono válido).
+ */
+async function notifyRestaurantWaitlistEntry(restaurant, entry) {
+  const phone = normalizePhone(restaurant.phone);
+  if (!phone) {
+    console.log('[Waitlist] Restaurant has no valid phone, skipping alert');
+    return false;
+  }
+  const lines = [
+    `Nueva solicitud de lista de espera — ${restaurant.name}`,
+    `${entry.customerName} · ${entry.partySize} pax`,
+    `Tel: ${entry.customerPhone}`,
+  ];
+  if (entry.preferredDate) lines.push(`Fecha buscada: ${entry.preferredDate}`);
+  if (entry.customerEmail) lines.push(`Email: ${entry.customerEmail}`);
+  if (entry.notes) lines.push(`Nota: ${entry.notes}`);
+  return sendWhatsAppTwilio(phone, lines.join('\n'));
+}
+
 module.exports = {
   sendReservationConfirmation,
   sendReservationReminder,
@@ -486,4 +506,5 @@ module.exports = {
   sendPaymentFailureNotification,
   sendReservationConfirmationEmail,
   sendCancellationNotification,
+  notifyRestaurantWaitlistEntry,
 };
