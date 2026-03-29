@@ -25,6 +25,7 @@ const { startDailySummaryJob } = require("./jobs/dailySummaryJob");
 const { startTrialReminderJob } = require("./jobs/trialReminderJob");
 const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
 const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
+const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
 
 const app = express();
 
@@ -109,9 +110,8 @@ app.get("/api/redirect-to-billing", (req, res) => {
 // Public plans for landing page (no auth)
 app.get("/api/public/plans", async (req, res, next) => {
   try {
-    const plans = await prisma.plan.findMany({
+    const plans = sortPlansByDisplayOrder(await prisma.plan.findMany({
       where: { isDefault: true },
-      orderBy: { productSKU: "asc" },
       select: {
         productSKU: true,
         name: true,
@@ -130,7 +130,7 @@ app.get("/api/public/plans", async (req, res, next) => {
         multipleMenu: true,
         prioritySupport: true,
       },
-    });
+    }));
     res.json(plans);
   } catch (error) {
     next(error);

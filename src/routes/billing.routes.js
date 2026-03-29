@@ -3,6 +3,7 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { getActiveSubscription, hasActiveAccess, isTrialing, getOrganizationWithTrial } = require('../services/subscriptionService');
 const planService = require('../services/planService');
+const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 
 const router = express.Router({ mergeParams: true });
 
@@ -74,10 +75,9 @@ router.get('/subscription', async (req, res, next) => {
         googleReserveIntegration: planConfig.googleReserveIntegration,
         prioritySupport: planConfig.prioritySupport,
       } : null,
-      allPlans: await prisma.plan.findMany({
+      allPlans: sortPlansByDisplayOrder(await prisma.plan.findMany({
         where: { isDefault: true },
-        orderBy: { productSKU: 'asc' }
-      }),
+      })),
     });
   } catch (error) {
     next(error);

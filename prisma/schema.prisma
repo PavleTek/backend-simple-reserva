@@ -112,6 +112,7 @@ model Restaurant {
   isActive                  Boolean   @default(true)
   scheduleMode              String    @default("continuous") // "continuous" | "service_periods"
   dataVersion               Int       @default(0)
+  onboardingCompletedAt     DateTime?
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
 
@@ -123,9 +124,28 @@ model Restaurant {
   menus                     RestaurantMenu[]
   managerAssignments        ManagerRestaurantAssignment[]
   reservationAnalytics      ReservationAnalytics[]
+  waitlistEntries           BookingWaitlistEntry[]
 
   @@index([organizationId])
   @@index([isActive])
+}
+
+/// Lista de espera — cliente sin cupo deja datos para que el local contacte
+model BookingWaitlistEntry {
+  id             String     @id @default(cuid())
+  restaurantId   String
+  restaurant     Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  partySize      Int
+  preferredDate  String?
+  customerName   String
+  customerPhone  String
+  customerEmail  String?
+  notes          String?
+  status         String     @default("pending")
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@index([restaurantId, createdAt])
 }
 
 model RestaurantMenu {

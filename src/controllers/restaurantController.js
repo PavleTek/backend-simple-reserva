@@ -89,7 +89,20 @@ const updateRestaurant = async (req, res, next) => {
   }
 };
 
+const completeOnboarding = async (req, res, next) => {
+  try {
+    const restaurant = await prisma.restaurant.update({
+      where: { id: req.activeRestaurant.restaurantId },
+      data: { onboardingCompletedAt: new Date() },
+    });
+    res.json({ success: true, onboardingCompletedAt: restaurant.onboardingCompletedAt });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getRestaurant,
   updateRestaurant,
+  completeOnboarding,
 };

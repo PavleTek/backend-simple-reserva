@@ -3,7 +3,7 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { sendReservationConfirmation, sendModificationAlertToCustomer } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations } = require('../services/subscriptionService');
-const { getRestaurant, updateRestaurant } = require('../controllers/restaurantController');
+const { getRestaurant, updateRestaurant, completeOnboarding } = require('../controllers/restaurantController');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { isSlotInSchedule, generateTimeSlots, resolveDuration } = require('../utils/scheduleUtils');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -49,6 +49,7 @@ router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager'
 
 router.get('/', getRestaurant);
 router.patch('/', authenticateRestaurantRoles(['restaurant_owner']), updateRestaurant);
+router.patch('/onboarding/complete', authenticateRestaurantRoles(['restaurant_owner']), completeOnboarding);
 
 router.get('/duration-rules', async (req, res, next) => {
   try {
@@ -969,6 +970,99 @@ router.delete('/blocked-slots/:id', async (req, res, next) => {
     await prisma.blockedSlot.delete({ where: { id: req.params.id } });
 
     res.json({ message: 'Franja bloqueada eliminada' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Canal de reservas: embudo y fricción (solo este local) ───────
+
+router.get('/booking-insights', async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const { dateFrom, dateTo } = req.query;
+    const now = new Date();
+    const defaultTo = new Date(now);
+    const defaultFrom = new Date(now);
+    defaultFrom.setDate(defaultFrom.getDate() - 30);
+    const from = dateFrom ? new Date(dateFrom) : defaultFrom;
+    const to = dateTo ? new Date(dateTo) : defaultTo;
+    if (isNaN(from.getTime()) || isNaN(to.getTime()) || from >= to) {
+      throw new ValidationError('Rango de fechas inválido');
+    }
+    const where = {
+      restaurantId,
+      timestamp: { gte: from, lte: to },
+    };
+
+    const funnelSteps = [
+      'booking.page_view',
+      'booking.date_selected',
+      'booking.party_selected',
+      'booking.slots_loaded',
+      'booking.time_selected',
+      'booking.contact_view',
+      'booking.contact_submitted',
+      'booking.confirmed',
+    ];
+
+    const stepCounts = await Promise.all(
+      funnelSteps.map(async (eventName) => {
+        const sessions = await prisma.bookingEvent.findMany({
+          where: { ...where, eventName },
+          select: { sessionId: true },
+          distinct: ['sessionId'],
+        });
+        return { eventName, count: sessions.length };
+      }),
+    );
+
+    const funnel = funnelSteps.map((name, i) => {
+      const rec = stepCounts.find((r) => r.eventName === name);
+      const count = rec ? rec.count : 0;
+      const prevCount = i > 0 ? stepCounts[i - 1]?.count ?? 0 : count;
+      const dropOff = prevCount > 0 ? (1 - count / prevCount) * 100 : 0;
+      return { step: name, count, dropOffPercent: i > 0 ? Math.round(dropOff * 10) / 10 : 0 };
+    });
+
+    const pageViews = stepCounts.find((r) => r.eventName === 'booking.page_view')?.count ?? 0;
+    const noSlots = await prisma.bookingEvent.count({
+      where: { ...where, eventName: 'booking.no_slots_shown' },
+    });
+
+    const friction = {
+      noSlotsCount: noSlots,
+      noSlotsRatePercent: pageViews > 0 ? Math.round((noSlots / pageViews) * 1000) / 10 : 0,
+    };
+
+    const confirmed = stepCounts.find((r) => r.eventName === 'booking.confirmed')?.count ?? 0;
+    const funnelCompletionRate = pageViews > 0 ? Math.round((confirmed / pageViews) * 1000) / 10 : 0;
+
+    res.json({
+      dateRange: { from: from.toISOString(), to: to.toISOString() },
+      funnel,
+      funnelCompletionRate,
+      friction,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/waitlist-entries', async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const { page, limit, skip } = parsePagination(req.query);
+    const [entries, total] = await Promise.all([
+      prisma.bookingWaitlistEntry.findMany({
+        where: { restaurantId },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.bookingWaitlistEntry.count({ where: { restaurantId } }),
+    ]);
+    res.json(paginatedResponse(entries, total, page, limit));
   } catch (error) {
     next(error);
   }
