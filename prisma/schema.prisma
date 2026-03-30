@@ -40,7 +40,12 @@ model RestaurantOrganization {
   owner         User     @relation("OrgOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   
   planId        String
-  plan          Plan @relation(fields: [planId], references: [id])
+  plan          Plan @relation("OrgDefaultPlan", fields: [planId], references: [id])
+
+  // Plan personalizado asignado por el admin. Si está seteado, se ofrece además de los planes públicos.
+  // Permite tarifas, límites o condiciones especiales para un cliente específico.
+  customPlanId  String?
+  customPlan    Plan?    @relation("OrgCustomPlan", fields: [customPlanId], references: [id])
   
   trialEndsAt   DateTime?
   createdAt     DateTime @default(now())
@@ -61,6 +66,7 @@ model RestaurantOrganization {
   billingEmail        String?   // Billing-specific email
 
   @@index([ownerId])
+  @@index([customPlanId])
 }
 
 model OrganizationManager {
@@ -199,6 +205,7 @@ model RestaurantTable {
   label         String
   minCapacity   Int       @default(1)
   maxCapacity   Int
+  sortOrder     Int       @default(0)
   isActive      Boolean   @default(true)
   createdAt     DateTime  @default(now())
 
@@ -265,16 +272,20 @@ model Subscription {
   organization  RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   planId        String
   plan          Plan @relation(fields: [planId], references: [id])
-  status        String    @default("trial") // "trial", "active", "grace", "cancelled", "expired"
+  status        String    @default("trial") // "trial", "active", "grace", "cancelled", "expired", "scheduled"
   startDate     DateTime  @default(now())
   endDate       DateTime?
+  /// Fin del periodo de facturación actual (persistido al activar/renovar; alineado con computePeriodEnd)
+  currentPeriodEnd DateTime?
   gracePeriodEndsAt DateTime? // 7-day grace after payment failure; access until this date
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
   createdAt     DateTime  @default(now())
 
   paymentReceipts PaymentReceipt[]
 
+  @@unique([organizationId, mercadopagoPreapprovalId])
   @@index([organizationId])
+  @@index([currentPeriodEnd])
 }
 
 model EmailDomain {
@@ -362,7 +373,8 @@ model Plan {
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 
-  organizations            RestaurantOrganization[]
+  organizations            RestaurantOrganization[]  @relation("OrgDefaultPlan")
+  customOrganizations      RestaurantOrganization[]  @relation("OrgCustomPlan")
   subscriptions            Subscription[]
   paymentReceipts          PaymentReceipt[]
   checkoutSessions         CheckoutSession[]
@@ -451,6 +463,8 @@ model CheckoutSession {
   status                    String    @default("pending") // "pending" | "completed" | "expired" | "abandoned"
   mercadopagoPreapprovalId  String?
   checkoutUrl               String?
+  /// Si existe, al autorizar el nuevo preapproval se cancela esta suscripción en MP (cambio de plan inmediato sin perder acceso antes de pagar).
+  pendingChangeFromSubscriptionId String?
 
   createdAt                 DateTime  @default(now())
   expiresAt                 DateTime?
@@ -459,4 +473,26 @@ model CheckoutSession {
   @@index([organizationId])
   @@index([userId])
   @@index([status])
+  @@index([pendingChangeFromSubscriptionId])
+}
+
+/// Registro persistente de cada evento webhook recibido desde MercadoPago.
+/// Garantiza idempotencia (unique mpEventType+mpDataId) y permite debugging retroactivo.
+model WebhookEvent {
+  id               String    @id @default(cuid())
+  mpEventType      String    // "subscription_preapproval" | "payment" | etc.
+  mpDataId         String    // data.id del payload MP
+  mpStatus         String?   // estado real consultado a MP API tras recibir el evento
+  organizationId   String?   // extraído de external_reference (nullable si no se puede parsear)
+  externalRef      String?   // external_reference completo del preapproval/payment
+  processingStatus String    @default("received") // "received" | "processed" | "failed" | "skipped"
+  errorMessage     String?   // mensaje de error truncado si processingStatus = "failed"
+  rawHeaders       Json?     // metadata de headers: x-request-id, presencia de x-signature
+  processedAt      DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@unique([mpEventType, mpDataId])
+  @@index([organizationId])
+  @@index([createdAt])
+  @@index([processingStatus])
 }

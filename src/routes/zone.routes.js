@@ -19,7 +19,7 @@ router.get('/', async (req, res, next) => {
       include: {
         tables: {
           where: { isActive: true },
-          orderBy: { label: 'asc' },
+          orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
         },
       },
     });

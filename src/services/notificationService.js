@@ -299,6 +299,47 @@ async function sendModificationAlertToCustomer(options) {
  * @param {string|null} options.firstTime - First reservation time (e.g. "12:30")
  * @param {string} options.panelUrl - Link to view reservations
  */
+/**
+ * Email de bienvenida tras registro de restaurante (owner).
+ */
+async function sendWelcomeEmail({ email, restaurantName, panelUrl }) {
+  if (!email) return false;
+
+  const subject = `Bienvenido a SimpleReserva — ${restaurantName}`;
+  const body = [
+    `Hola,`,
+    ``,
+    `Tu cuenta para ${restaurantName} ya está lista.`,
+    ``,
+    `Entra al panel: ${panelUrl}`,
+    ``,
+    `Saludos,`,
+    `El equipo de SimpleReserva`,
+  ].join("\n");
+
+  const { sendEmail } = require("./emailService");
+  const prisma = require("../lib/prisma");
+  const config = await prisma.configuration.findFirst();
+  const fromSender = config?.recoveryEmailSenderId
+    ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
+    : null;
+  const fromEmail = fromSender || "noreply@simplereserva.com";
+
+  try {
+    await sendEmail({
+      fromEmail,
+      toEmails: [email],
+      subject,
+      content: body,
+      isHtml: false,
+    });
+    return true;
+  } catch (err) {
+    console.error("[Notification] Welcome email error:", err.message);
+    return false;
+  }
+}
+
 async function sendDailySummary(options) {
   const { email, restaurantName, count, firstTime, panelUrl } = options;
   if (!email) return false;
@@ -541,6 +582,7 @@ module.exports = {
   sendReservationConfirmation,
   sendReservationReminder,
   sendModificationAlertToCustomer,
+  sendWelcomeEmail,
   sendDailySummary,
   sendPaymentFailureNotification,
   sendReservationConfirmationEmail,

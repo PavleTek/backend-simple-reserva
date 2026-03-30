@@ -4,13 +4,14 @@
   "description": "SimpleReserva REST API backend",
   "main": "src/index.js",
   "scripts": {
-    "dev": "NODE_ENV=development nodemon src/index.js",
+    "dev": "npx prisma generate && NODE_ENV=development nodemon src/index.js",
     "start": "node src/index.js",
     "build": "npx prisma generate",
     "migrate": "npx prisma migrate deploy",
     "seed": "node prisma/seed.js",
     "db:deploy": "prisma migrate deploy && node prisma/seed.js",
-    "postinstall": "npm run build"
+    "postinstall": "npm run build",
+    "test": "node --test src/**/*.test.js"
   },
   "type": "commonjs",
   "dependencies": {

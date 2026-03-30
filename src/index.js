@@ -25,9 +25,20 @@ const { startDailySummaryJob } = require("./jobs/dailySummaryJob");
 const { startTrialReminderJob } = require("./jobs/trialReminderJob");
 const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
 const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
+const { startReconciliationJob } = require("./jobs/reconciliationJob");
 const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
 
 const app = express();
+
+// Detrás de ngrok/Railway/etc. llega X-Forwarded-For; express-rate-limit exige trust proxy.
+const shouldTrustProxy =
+  process.env.TRUST_PROXY === "true" ||
+  process.env.TRUST_PROXY === "1" ||
+  (process.env.BACKEND_PUBLIC_URL &&
+    /ngrok|railway\.app|vercel\.app|onrender\.com|fly\.dev/i.test(process.env.BACKEND_PUBLIC_URL));
+if (shouldTrustProxy) {
+  app.set("trust proxy", 1);
+}
 
 const envOrigins = process.env.CORS_ORIGINS || "";
 const allowedOrigins = envOrigins
@@ -59,7 +70,14 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  // Incluye ngrok-skip-browser-warning: el front lo envía vía axios/fetch al usar URL ngrok (evita página HTML de aviso).
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "ngrok-skip-browser-warning",
+  ],
   exposedHeaders: ["Access-Control-Allow-Origin"],
   optionsSuccessStatus: 204,
 };
@@ -170,4 +188,5 @@ app.listen(PORT, "0.0.0.0", () => {
   startTrialReminderJob();
   startTrialExpiryJob();
   startGracePeriodExpiryJob();
+  startReconciliationJob();
 });

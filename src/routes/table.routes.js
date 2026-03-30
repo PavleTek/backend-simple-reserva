@@ -3,6 +3,7 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
+const { incrementDataVersion } = require('../utils/dataVersion');
 
 const router = express.Router({ mergeParams: true });
 
@@ -22,7 +23,7 @@ router.get('/zone/:zoneId', async (req, res, next) => {
 
     const tables = await prisma.restaurantTable.findMany({
       where: { zoneId: req.params.zoneId, isActive: true },
-      orderBy: { label: 'asc' },
+      orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
     });
 
     res.json(tables);
@@ -52,16 +53,65 @@ router.post('/zone/:zoneId', async (req, res, next) => {
       throw new ValidationError('Se requiere label y maxCapacity');
     }
 
+    const lastInZone = await prisma.restaurantTable.findFirst({
+      where: { zoneId: req.params.zoneId, isActive: true },
+      orderBy: { sortOrder: 'desc' },
+      select: { sortOrder: true },
+    });
+    const nextSort = (lastInZone?.sortOrder ?? -1) + 1;
+
     const table = await prisma.restaurantTable.create({
       data: {
         zoneId: req.params.zoneId,
         label,
         minCapacity: minCapacity ?? 1,
         maxCapacity,
+        sortOrder: nextSort,
       },
     });
 
+    await incrementDataVersion(req.activeRestaurant.restaurantId);
     res.status(201).json(table);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put('/zone/:zoneId/reorder', async (req, res, next) => {
+  try {
+    const { tableIds } = req.body;
+    if (!Array.isArray(tableIds) || tableIds.length === 0) {
+      throw new ValidationError('Se requiere tableIds como array no vacío');
+    }
+    const zone = await prisma.zone.findUnique({
+      where: { id: req.params.zoneId },
+      include: {
+        tables: { where: { isActive: true }, select: { id: true } },
+      },
+    });
+
+    if (!zone || zone.restaurantId !== req.activeRestaurant.restaurantId) {
+      throw new NotFoundError('Zona no encontrada');
+    }
+
+    const activeIds = new Set(zone.tables.map((t) => t.id));
+    if (tableIds.length !== activeIds.size || !tableIds.every((id) => activeIds.has(id))) {
+      throw new ValidationError(
+        'La lista debe incluir exactamente una vez cada mesa activa de la zona',
+      );
+    }
+
+    await prisma.$transaction(
+      tableIds.map((id, index) =>
+        prisma.restaurantTable.update({
+          where: { id },
+          data: { sortOrder: index },
+        }),
+      ),
+    );
+
+    await incrementDataVersion(req.activeRestaurant.restaurantId);
+    res.json({ ok: true });
   } catch (error) {
     next(error);
   }

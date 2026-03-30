@@ -5,7 +5,6 @@ const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
 const paymentReceiptService = require('../services/paymentReceiptService');
-const mercadopagoService = require('../services/mercadopagoService');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const whatsappService = require('../services/whatsappService');
 
@@ -81,7 +80,8 @@ router.get('/restaurants/:id', async (req, res, next) => {
                   },
                 },
               }
-            }
+            },
+            customPlan: true,
           },
         },
         menus: true,
@@ -106,6 +106,58 @@ router.patch('/restaurants/:id', async (req, res, next) => {
     });
 
     res.json(restaurant);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Planes personalizados por organización ────────────────────────────────
+
+/**
+ * GET /admin/organizations/:organizationId/custom-plan
+ * Devuelve el plan personalizado asignado a la organización, si existe.
+ */
+router.get('/organizations/:organizationId/custom-plan', async (req, res, next) => {
+  try {
+    const { organizationId } = req.params;
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: organizationId },
+      include: { customPlan: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+    res.json({ customPlan: org.customPlan ?? null });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /admin/organizations/:organizationId/assign-plan
+ * Asigna un plan personalizado (no público) a una organización.
+ * Body: { planId: string } — ID del Plan en DB.
+ *       { planId: null }   — elimina el plan personalizado.
+ */
+router.post('/organizations/:organizationId/assign-plan', async (req, res, next) => {
+  try {
+    const { organizationId } = req.params;
+    const { planId } = req.body;
+
+    const org = await prisma.restaurantOrganization.findUnique({ where: { id: organizationId } });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    if (planId !== null && planId !== undefined) {
+      const plan = await prisma.plan.findUnique({ where: { id: planId } });
+      if (!plan) throw new NotFoundError('Plan no encontrado');
+    }
+
+    const updated = await prisma.restaurantOrganization.update({
+      where: { id: organizationId },
+      data: { customPlanId: planId ?? null },
+      include: { customPlan: true },
+    });
+
+    planService.invalidateCache(organizationId);
+    res.json({ customPlan: updated.customPlan ?? null });
   } catch (error) {
     next(error);
   }
@@ -192,17 +244,8 @@ router.post('/plans', async (req, res, next) => {
     const plan = await prisma.plan.create({ data });
     planService.invalidateCache();
 
-    // Sincronizar con MercadoPago
-    let mpSyncError = null;
-    try {
-      await mercadopagoService.syncPlanToMercadoPago(plan.id);
-    } catch (err) {
-      console.error('[MercadoPago] Error syncing plan on create:', err.message);
-      mpSyncError = err.message;
-    }
-
     const finalPlan = await prisma.plan.findUnique({ where: { id: plan.id } });
-    res.status(201).json({ ...finalPlan, _mpSyncError: mpSyncError });
+    res.status(201).json(finalPlan);
   } catch (error) {
     next(error);
   }
@@ -243,21 +286,8 @@ router.patch('/plans/:id', async (req, res, next) => {
     });
     planService.invalidateCache();
 
-    // Sincronizar con MercadoPago si los campos relevantes cambiaron
-    let mpSyncError = null;
-    const needsSync = ['name', 'priceCLP', 'billingFrequency', 'billingFrequencyType'].some(k => req.body[k] !== undefined);
-    
-    if (needsSync) {
-      try {
-        await mercadopagoService.syncPlanToMercadoPago(plan.id);
-      } catch (err) {
-        console.error('[MercadoPago] Error syncing plan on update:', err.message);
-        mpSyncError = err.message;
-      }
-    }
-
     const finalPlan = await prisma.plan.findUnique({ where: { id: plan.id } });
-    res.json({ ...finalPlan, _mpSyncError: mpSyncError });
+    res.json(finalPlan);
   } catch (error) {
     next(error);
   }
@@ -276,46 +306,6 @@ router.delete('/plans/:id', async (req, res, next) => {
     await prisma.plan.delete({ where: { id } });
     planService.invalidateCache();
     res.json({ message: 'Plan eliminado' });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/plans/:id/sync-mp', async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const plan = await prisma.plan.findUnique({ where: { id } });
-    if (!plan) throw new NotFoundError('Plan no encontrado');
-
-    const updatedPlan = await mercadopagoService.syncPlanToMercadoPago(id);
-    res.json(updatedPlan);
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/plans/sync-all-mp', async (req, res, next) => {
-  try {
-    const plans = await prisma.plan.findMany({
-      where: { mercadopagoPreapprovalPlanId: null }
-    });
-
-    const results = {
-      total: plans.length,
-      synced: 0,
-      errors: []
-    };
-
-    for (const plan of plans) {
-      try {
-        await mercadopagoService.syncPlanToMercadoPago(plan.id);
-        results.synced++;
-      } catch (err) {
-        results.errors.push({ planId: plan.id, error: err.message });
-      }
-    }
-
-    res.json(results);
   } catch (error) {
     next(error);
   }

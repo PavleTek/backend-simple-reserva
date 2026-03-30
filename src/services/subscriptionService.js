@@ -14,22 +14,38 @@ async function getOrganizationWithTrial(organizationId) {
 }
 
 async function getActiveSubscription(organizationId) {
+  const now = new Date();
   const sub = await prisma.subscription.findFirst({
     where: {
       organizationId,
       status: { in: ['active', 'cancelled', 'grace'] },
+      // Exclude future-dated subs (e.g., scheduled subs that got cancelled before starting)
+      startDate: { lte: now },
     },
     orderBy: { startDate: 'desc' },
+    include: { plan: true },
   });
   if (!sub) return null;
-  if (sub.endDate && new Date() > sub.endDate) return null;
+
   // Grace period: access until gracePeriodEndsAt
   if (sub.status === 'grace') {
-    if (sub.gracePeriodEndsAt && new Date() > sub.gracePeriodEndsAt) return null;
+    if (sub.gracePeriodEndsAt && now > sub.gracePeriodEndsAt) return null;
     return sub;
   }
-  if (sub.status === 'cancelled' && (!sub.endDate || new Date() <= sub.endDate)) return sub;
-  if (sub.status === 'active') return sub;
+
+  // Cancelled: only grants access if endDate is explicitly set and still in the future
+  if (sub.status === 'cancelled') {
+    if (!sub.endDate) return null;
+    if (now > sub.endDate) return null;
+    return sub;
+  }
+
+  // Active: grants access regardless (endDate on active subs is unusual but handled)
+  if (sub.status === 'active') {
+    if (sub.endDate && now > sub.endDate) return null;
+    return sub;
+  }
+
   return null;
 }
 

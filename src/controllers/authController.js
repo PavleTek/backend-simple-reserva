@@ -232,7 +232,7 @@ const register = async (req, res) => {
       });
 
       // 2. Find default plan
-      const planSKU = plan || 'plan-profesional';
+      const planSKU = plan || 'plan-basico';
       const defaultPlan = await tx.plan.findFirst({
         where: { productSKU: planSKU, isDefault: true }
       }) || await tx.plan.findFirst({

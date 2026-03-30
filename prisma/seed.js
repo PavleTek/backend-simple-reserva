@@ -1,6 +1,5 @@
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
-const mercadopagoService = require('../src/services/mercadopagoService');
 
 const prisma = new PrismaClient();
 
@@ -44,7 +43,7 @@ async function main() {
       prioritySupport: false,
       billingFrequency: 1,
       billingFrequencyType: 'months',
-      freeTrialLength: 1,
+      freeTrialLength: 0,
       freeTrialLengthUnit: 'months',
     },
     {
@@ -96,22 +95,6 @@ async function main() {
     });
     planMap[data.productSKU] = p;
     summary.Plan.created += 1;
-  }
-
-  // 0.1 Sync Plans to MercadoPago
-  console.log('🔄 Syncing plans to MercadoPago...');
-  if (process.env.MERCADOPAGO_ACCESS_TOKEN) {
-    for (const sku in planMap) {
-      try {
-        const plan = planMap[sku];
-        await mercadopagoService.syncPlanToMercadoPago(plan.id);
-        console.log(`✅ Synced plan ${sku} to MercadoPago`);
-      } catch (err) {
-        console.error(`❌ Failed to sync plan ${sku} to MercadoPago:`, err.message);
-      }
-    }
-  } else {
-    console.log('⚠️ Skipping MercadoPago sync: MERCADOPAGO_ACCESS_TOKEN not set');
   }
 
   // 1. Seed EmailSender
@@ -184,7 +167,7 @@ async function main() {
       create: {
         name: o.orgName,
         ownerId: user.id,
-        planId: planMap['plan-profesional'].id,
+        planId: planMap['plan-basico'].id,
         trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
       },
       update: { name: o.orgName },
@@ -200,7 +183,7 @@ async function main() {
       await prisma.subscription.create({
         data: {
           organizationId: org.id,
-          planId: planMap['plan-profesional'].id,
+          planId: planMap['plan-basico'].id,
           status: 'trial',
         }
       });
@@ -324,14 +307,16 @@ async function main() {
         );
       }
 
+      let sortOrder = 0;
       for (const t of tablesToAdd) {
         const existingTable = await prisma.restaurantTable.findFirst({
           where: { zoneId: zone.id, label: t.label }
         });
         if (!existingTable) {
           await prisma.restaurantTable.create({
-            data: { zoneId: zone.id, ...t }
+            data: { zoneId: zone.id, sortOrder, ...t }
           });
+          sortOrder += 1;
           summary.RestaurantTable.created += 1;
         }
       }

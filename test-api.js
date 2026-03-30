@@ -72,7 +72,7 @@ async function main() {
   let restId = null;
   try {
     const r = await request('POST', '/api/auth/login', {
-      body: { email: 'carlos@lacasona.cl', password: 'owner123' },
+      body: { email: 'carlos@lacasona.cl', password: 'asdf' },
     });
     if (r.status === 200 && r.data?.token) {
       restToken = r.data.token;
@@ -94,7 +94,7 @@ async function main() {
   let adminToken;
   try {
     const r = await request('POST', '/api/auth/login', {
-      body: { email: 'admin@simplereserva.com', password: 'admin123' },
+      body: { email: 'admin@simplereserva.com', password: 'asdf' },
     });
     if (r.status === 200 && r.data?.token) {
       adminToken = r.data.token;
@@ -188,12 +188,12 @@ async function main() {
       failed++;
     }
 
-    // 13. GET analytics
+    // 13. Webhook probe (misma ruta que usa Mercado Pago con POST)
     try {
-      const r = await request('GET', `${base}/analytics`, { token: restToken });
-      if (ok('GET /api/restaurant/:id/analytics', r)) passed++; else failed++;
+      const r = await request('GET', '/api/webhooks/mercadopago');
+      if (ok('GET /api/webhooks/mercadopago (probe)', r)) passed++; else failed++;
     } catch (e) {
-      console.log('✗ GET analytics -', e.message);
+      console.log('✗ GET webhook probe -', e.message);
       failed++;
     }
 
