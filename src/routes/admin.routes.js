@@ -757,6 +757,19 @@ router.get('/booking-analytics', async (req, res, next) => {
 
 // ─── Reservation Analytics ───────────────────────────────────────
 
+/** Días YYYY-MM-DD desde/hasta (inclusive), en UTC. */
+function enumerateUtcDaysInclusive(fromStr, toStr) {
+  const out = [];
+  const cur = new Date(`${fromStr}T00:00:00.000Z`);
+  const end = new Date(`${toStr}T00:00:00.000Z`);
+  if (cur > end) return out;
+  while (cur <= end) {
+    out.push(cur.toISOString().slice(0, 10));
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
 router.get('/reservation-analytics', async (req, res, next) => {
   try {
     const { dateFrom, dateTo, restaurantId } = req.query;
@@ -765,45 +778,124 @@ router.get('/reservation-analytics', async (req, res, next) => {
       return res.status(400).json({ error: 'dateFrom y dateTo son requeridos' });
     }
 
-    const from = new Date(dateFrom);
-    const to = new Date(dateTo);
-
-    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
-      return res.status(400).json({ error: 'Formato de fecha inválido' });
+    const fromStr = String(dateFrom).slice(0, 10);
+    const toStr = String(dateTo).slice(0, 10);
+    const fromParts = fromStr.split('-').map(Number);
+    const toParts = toStr.split('-').map(Number);
+    if (fromParts.length !== 3 || toParts.length !== 3 || fromParts.some(Number.isNaN) || toParts.some(Number.isNaN)) {
+      return res.status(400).json({ error: 'Formato de fecha inválido (usa YYYY-MM-DD)' });
     }
 
-    const where = {
-      date: { gte: from, lte: to },
+    // Límites en UTC para alinear con columnas @db.Date y rangos inclusivos
+    const from = new Date(Date.UTC(fromParts[0], fromParts[1] - 1, fromParts[2], 0, 0, 0, 0));
+    const to = new Date(Date.UTC(toParts[0], toParts[1] - 1, toParts[2], 23, 59, 59, 999));
+
+    if (isNaN(from.getTime()) || isNaN(to.getTime()) || from > to) {
+      return res.status(400).json({ error: 'Rango de fechas inválido' });
+    }
+
+    const dateFilter = { gte: from, lte: to };
+
+    const restaurantsPromise = prisma.restaurant.findMany({
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    });
+
+    // Serie diaria desde `Reservation` (fecha UTC del día de creación), alineada con el resumen y rankings.
+    const dailyRows = restaurantId
+      ? await prisma.$queryRaw`
+          SELECT (("createdAt" AT TIME ZONE 'UTC')::date)::text AS day, COUNT(*)::int AS cnt
+          FROM "Reservation"
+          WHERE "createdAt" >= ${from}
+            AND "createdAt" <= ${to}
+            AND "restaurantId" = ${String(restaurantId)}
+          GROUP BY 1
+          ORDER BY 1
+        `
+      : await prisma.$queryRaw`
+          SELECT (("createdAt" AT TIME ZONE 'UTC')::date)::text AS day, COUNT(*)::int AS cnt
+          FROM "Reservation"
+          WHERE "createdAt" >= ${from}
+            AND "createdAt" <= ${to}
+          GROUP BY 1
+          ORDER BY 1
+        `;
+
+    const countByDay = new Map(dailyRows.map((r) => [r.day, r.cnt]));
+    const dayKeys = enumerateUtcDaysInclusive(fromStr, toStr);
+    const filledSeries = dayKeys.map((d) => ({
+      date: d,
+      reservationCount: countByDay.get(d) ?? 0,
+    }));
+
+    const reservationWhere = {
+      createdAt: dateFilter,
+      ...(restaurantId ? { restaurantId: String(restaurantId) } : {}),
     };
 
-    if (restaurantId) {
-      where.restaurantId = restaurantId;
-    } else {
-      // If no restaurantId, we want the global aggregate rows
-      where.restaurantId = null;
-    }
-
-    const [data, restaurants] = await Promise.all([
-      prisma.reservationAnalytics.findMany({
-        where,
-        orderBy: { date: 'asc' },
-        select: {
-          date: true,
-          reservationCount: true,
-        },
+    const [byStatus, bySource, topGroups, agg, restaurants] = await Promise.all([
+      prisma.reservation.groupBy({
+        by: ['status'],
+        where: reservationWhere,
+        _count: { _all: true },
       }),
-      prisma.restaurant.findMany({
-        select: { id: true, name: true },
-        orderBy: { name: 'asc' },
+      prisma.reservation.groupBy({
+        by: ['source'],
+        where: reservationWhere,
+        _count: { _all: true },
       }),
+      restaurantId
+        ? Promise.resolve([])
+        : prisma.reservation.groupBy({
+            by: ['restaurantId'],
+            where: reservationWhere,
+            _count: { _all: true },
+            orderBy: { _count: { restaurantId: 'desc' } },
+            take: 15,
+          }),
+      prisma.reservation.aggregate({
+        where: reservationWhere,
+        _count: { _all: true },
+        _sum: { partySize: true },
+        _avg: { partySize: true },
+      }),
+      restaurantsPromise,
     ]);
 
+    const statusCounts = Object.fromEntries(byStatus.map((r) => [r.status, r._count._all]));
+    const sourceCounts = Object.fromEntries(bySource.map((r) => [r.source, r._count._all]));
+
+    let topRestaurants = [];
+    if (topGroups.length > 0) {
+      const ids = topGroups.map((g) => g.restaurantId);
+      const names = await prisma.restaurant.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, name: true },
+      });
+      const nameById = Object.fromEntries(names.map((n) => [n.id, n.name]));
+      const totalAll = agg._count._all;
+      topRestaurants = topGroups.map((g) => ({
+        restaurantId: g.restaurantId,
+        name: nameById[g.restaurantId] ?? g.restaurantId,
+        count: g._count._all,
+        sharePercent: totalAll > 0 ? Math.round((g._count._all / totalAll) * 1000) / 10 : 0,
+      }));
+    }
+
     res.json({
-      data: data.map(row => ({
-        date: row.date.toISOString().split('T')[0],
-        reservationCount: row.reservationCount,
-      })),
+      data: filledSeries,
       restaurants,
+      summary: {
+        totalReservations: agg._count._all,
+        totalCovers: agg._sum.partySize ?? 0,
+        avgPartySize:
+          agg._count._all > 0 && agg._avg.partySize != null
+            ? Math.round(agg._avg.partySize * 10) / 10
+            : null,
+        byStatus: statusCounts,
+        bySource: sourceCounts,
+      },
+      topRestaurants,
     });
   } catch (error) {
     next(error);
