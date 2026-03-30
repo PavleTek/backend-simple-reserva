@@ -17,6 +17,7 @@ const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require(
 const { getEffectiveTimezone, parseInTimezone, nowInTimezone } = require('../utils/timezone');
 const { incrementDataVersion } = require('../utils/dataVersion');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
+const { pickAutoTable } = require('../lib/tableAssignment');
 
 const router = express.Router();
 
@@ -127,8 +128,7 @@ router.patch('/token/:secureToken', async (req, res, next) => {
     };
     const tables = await prisma.restaurantTable.findMany({
       where: tablesWhere,
-      include: { zone: true },
-      orderBy: { maxCapacity: 'asc' },
+      include: { zone: { select: { id: true, sortOrder: true } } },
     });
     if (tables.length === 0) {
       throw new ValidationError('No hay mesas para este número de comensales');
@@ -161,18 +161,7 @@ router.patch('/token/:secureToken', async (req, res, next) => {
     }
 
     const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-    let selectedTable = null;
-    for (const table of tables) {
-      const booked = dayReservations.some((r) => {
-        if (r.tableId !== table.id) return false;
-        const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-        return dateTime < rEnd && slotEnd > r.dateTime;
-      });
-      if (!booked) {
-        selectedTable = table;
-        break;
-      }
-    }
+    const selectedTable = pickAutoTable(tables, size, dayReservations, dateTime, slotEnd, bufferMs, null);
     if (!selectedTable) {
       throw new ValidationError('No hay disponibilidad en este horario');
     }
@@ -366,8 +355,7 @@ router.post('/', async (req, res, next) => {
             maxCapacity: { gte: size },
             zone: { restaurantId: restaurant.id, isActive: true },
           },
-          include: { zone: { select: { id: true } } },
-          orderBy: { maxCapacity: 'asc' },
+          include: { zone: { select: { id: true, sortOrder: true } } },
         });
         if (tables.length === 0) {
           throw new ValidationError('No hay mesas disponibles para este número de comensales');
@@ -384,27 +372,10 @@ router.post('/', async (req, res, next) => {
           },
         });
 
-        const preferredTables = preferredZoneId
-          ? tables.filter((t) => t.zone.id === preferredZoneId)
-          : tables;
-        const fallbackTables = preferredZoneId
-          ? tables.filter((t) => t.zone.id !== preferredZoneId)
-          : [];
-        const tablesToTry = [...preferredTables, ...fallbackTables];
-
         const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-        let selectedTable = null;
-        for (const table of tablesToTry) {
-          const hasConflict = dayReservations.some((r) => {
-            if (r.tableId !== table.id) return false;
-            const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-            return dateTime < rEnd && slotEnd > r.dateTime;
-          });
-          if (!hasConflict) {
-            selectedTable = table;
-            break;
-          }
-        }
+        const zonePref =
+          typeof preferredZoneId === 'string' && preferredZoneId.trim() ? preferredZoneId.trim() : null;
+        const selectedTable = pickAutoTable(tables, size, dayReservations, dateTime, slotEnd, bufferMs, zonePref);
 
         if (!selectedTable) {
           throw new ValidationError('No hay mesas disponibles en este horario');

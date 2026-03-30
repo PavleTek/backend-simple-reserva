@@ -74,8 +74,12 @@ async function getAvailabilitySlotsForRestaurant(restaurant, { dateStr, partySiz
   const minSlotTime = new Date(now.getTime() + minNotice * 60000);
 
   const available = [];
+  const minSlotMinute = isToday ? Math.floor(minSlotTime.getTime() / 60000) : null;
   for (const slot of timeSlots) {
-    if (isToday && slot.start < minSlotTime) continue;
+    if (isToday && minSlotMinute != null) {
+      const slotMinute = Math.floor(slot.start.getTime() / 60000);
+      if (slotMinute < minSlotMinute) continue;
+    }
 
     const isBlocked = blockedSlots.some(
       (bs) => slot.start < bs.endDatetime && slot.end > bs.startDatetime

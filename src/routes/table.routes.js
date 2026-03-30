@@ -53,6 +53,11 @@ router.post('/zone/:zoneId', async (req, res, next) => {
       throw new ValidationError('Se requiere label y maxCapacity');
     }
 
+    const minC = minCapacity ?? 1;
+    if (minC > maxCapacity) {
+      throw new ValidationError('La capacidad mínima no puede ser mayor que la máxima.');
+    }
+
     const lastInZone = await prisma.restaurantTable.findFirst({
       where: { zoneId: req.params.zoneId, isActive: true },
       orderBy: { sortOrder: 'desc' },
@@ -64,7 +69,7 @@ router.post('/zone/:zoneId', async (req, res, next) => {
       data: {
         zoneId: req.params.zoneId,
         label,
-        minCapacity: minCapacity ?? 1,
+        minCapacity: minC,
         maxCapacity,
         sortOrder: nextSort,
       },
@@ -129,6 +134,12 @@ router.patch('/:id', async (req, res, next) => {
     }
 
     const { label, minCapacity, maxCapacity } = req.body;
+
+    const nextMin = minCapacity !== undefined ? minCapacity : table.minCapacity;
+    const nextMax = maxCapacity !== undefined ? maxCapacity : table.maxCapacity;
+    if (nextMin > nextMax) {
+      throw new ValidationError('La capacidad mínima no puede ser mayor que la máxima.');
+    }
 
     const updated = await prisma.restaurantTable.update({
       where: { id: req.params.id },

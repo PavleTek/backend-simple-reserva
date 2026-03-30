@@ -7,9 +7,10 @@ const { getRestaurant, updateRestaurant, completeOnboarding } = require('../cont
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { isSlotInSchedule, generateTimeSlots, resolveDuration } = require('../utils/scheduleUtils');
 const { NotFoundError, ValidationError } = require('../utils/errors');
-const { getEffectiveTimezone, parseInTimezone, nowInTimezone } = require('../utils/timezone');
+const { getEffectiveTimezone, parseInTimezone, nowInTimezone, formatInTimezone } = require('../utils/timezone');
 const { incrementDataVersion } = require('../utils/dataVersion');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
+const { pickAutoTable, sortFreeTablesForUi } = require('../lib/tableAssignment');
 
 const router = express.Router({ mergeParams: true });
 
@@ -234,11 +235,14 @@ router.get('/tables/status', async (req, res, next) => {
 router.get('/availability', async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
-    const { date, partySize } = req.query;
+    const { date, partySize, walkIn: walkInQuery } = req.query;
 
     if (!date || !partySize) {
       throw new ValidationError('Se requieren date y partySize');
     }
+
+    /** Walk-in desde el panel: próximo cupo desde ahora (sin antelación mínima de reserva web). */
+    const walkIn = walkInQuery === 'true' || walkInQuery === '1';
 
     const size = parseInt(partySize, 10);
     if (isNaN(size) || size < 1) {
@@ -317,11 +321,20 @@ router.get('/availability', async (req, res, next) => {
     const now = nowInTimezone(timezone).toJSDate();
     const todayLocal = nowInTimezone(timezone).toFormat('yyyy-MM-dd');
     const isToday = date === todayLocal;
-    const minSlotTime = new Date(now.getTime() + minNotice * 60000);
+    const minSlotTime = isToday
+      ? walkIn
+        ? now
+        : new Date(now.getTime() + minNotice * 60000)
+      : null;
 
     const available = [];
+    /** Comparar por minuto para evitar desfaces de ms entre slot y now+aviso */
+    const minSlotMinute = isToday && minSlotTime ? Math.floor(minSlotTime.getTime() / 60000) : null;
     for (const slot of timeSlots) {
-      if (isToday && slot.start < minSlotTime) continue;
+      if (isToday && minSlotMinute != null) {
+        const slotMinute = Math.floor(slot.start.getTime() / 60000);
+        if (slotMinute < minSlotMinute) continue;
+      }
 
       const isBlocked = blockedSlots.some(
         (bs) => slot.start < bs.endDatetime && slot.end > bs.startDatetime
@@ -343,7 +356,26 @@ router.get('/availability', async (req, res, next) => {
       }
     }
 
-    res.json({ slots: available, reason: available.length === 0 ? 'no_availability' : undefined });
+    const meta = {
+      minNoticeMinutes: minNotice,
+      timezone,
+      isToday,
+      walkIn,
+      /** Primera hora local (HH:mm) a la que aplica el aviso mínimo hoy; null si walk-in o no es hoy */
+      earliestBookableTimeLocal:
+        isToday && !walkIn && minSlotTime
+          ? formatInTimezone(minSlotTime, timezone, 'HH:mm')
+          : null,
+      /** Paso entre cupos (min), igual que duration usada para la grilla */
+      slotStepMinutes: duration,
+    };
+
+    res.json({
+      slots: available,
+      durationMinutes: duration,
+      meta,
+      reason: available.length === 0 ? 'no_availability' : undefined,
+    });
   } catch (error) {
     next(error);
   }
@@ -397,8 +429,7 @@ router.get('/available-tables', async (req, res, next) => {
         maxCapacity: { gte: size },
         zone: { restaurantId, isActive: true },
       },
-      include: { zone: { select: { id: true, name: true } } },
-      orderBy: { maxCapacity: 'asc' },
+      include: { zone: { select: { id: true, name: true, sortOrder: true } } },
     });
 
     if (tables.length === 0) {
@@ -432,7 +463,7 @@ router.get('/available-tables', async (req, res, next) => {
     const isBlocked = blockedSlots.length > 0;
 
     const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-    const available = [];
+    const freeTables = [];
     for (const table of tables) {
       if (isBlocked) continue;
       const booked = existingReservations.some((r) => {
@@ -440,14 +471,15 @@ router.get('/available-tables', async (req, res, next) => {
         const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
         return dateTime < rEnd && slotEnd > r.dateTime;
       });
-      if (!booked) {
-        available.push({
-          id: table.id,
-          label: table.label,
-          zoneName: table.zone.name,
-        });
-      }
+      if (!booked) freeTables.push(table);
     }
+
+    const ordered = sortFreeTablesForUi(freeTables, size, null);
+    const available = ordered.map((table) => ({
+      id: table.id,
+      label: table.label,
+      zoneName: table.zone.name,
+    }));
 
     res.json({ tables: available });
   } catch (error) {
@@ -528,10 +560,23 @@ router.post('/reservations', async (req, res, next) => {
       customerEmail,
       notes,
       tableId,
+      walkIn,
     } = req.body;
 
-    if (!date || !time || !partySize || !customerName || !customerPhone) {
-      throw new ValidationError('Se requiere date, time, partySize, customerName y customerPhone');
+    const isWalkIn = walkIn === true;
+
+    if (!date || !time || !partySize) {
+      throw new ValidationError('Se requiere date, time y partySize');
+    }
+
+    let name = typeof customerName === 'string' ? customerName.trim() : '';
+    let phone = typeof customerPhone === 'string' ? customerPhone.trim() : '';
+
+    if (isWalkIn) {
+      if (!name) name = 'Walk-in';
+      if (!phone) phone = '—';
+    } else if (!name || !phone) {
+      throw new ValidationError('Se requiere customerName y customerPhone');
     }
 
     const size = parseInt(partySize);
@@ -613,8 +658,7 @@ router.post('/reservations', async (req, res, next) => {
         } else {
           const tables = await tx.restaurantTable.findMany({
             where: tablesWhere,
-            include: { zone: { select: { id: true } } },
-            orderBy: { maxCapacity: 'asc' },
+            include: { zone: { select: { id: true, sortOrder: true } } },
           });
           if (tables.length === 0) {
             throw new ValidationError('No hay mesas disponibles para este número de comensales');
@@ -632,17 +676,7 @@ router.post('/reservations', async (req, res, next) => {
           });
 
           const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-          for (const table of tables) {
-            const hasConflict = dayReservations.some((r) => {
-              if (r.tableId !== table.id) return false;
-              const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-              return dateTime < rEnd && slotEnd > r.dateTime;
-            });
-            if (!hasConflict) {
-              selectedTable = table;
-              break;
-            }
-          }
+          selectedTable = pickAutoTable(tables, size, dayReservations, dateTime, slotEnd, bufferMs, null);
 
           if (!selectedTable) {
             throw new ValidationError('No hay mesas disponibles en este horario');
@@ -653,8 +687,8 @@ router.post('/reservations', async (req, res, next) => {
           data: {
             restaurantId,
             tableId: selectedTable.id,
-            customerName: customerName.trim(),
-            customerPhone: customerPhone.trim(),
+            customerName: name,
+            customerPhone: phone,
             customerEmail: customerEmail?.trim() || null,
             partySize: size,
             dateTime,
@@ -671,18 +705,20 @@ router.post('/reservations', async (req, res, next) => {
       { isolationLevel: 'Serializable' }
     );
 
-    canSendConfirmations(restaurantId).then((ok) => {
-      if (ok) {
-        sendReservationConfirmation({
-          customerPhone: customerPhone.trim(),
-          restaurantName: restaurant.name,
-          dateTime: reservation.dateTime,
-          partySize: size,
-          secureToken: reservation.secureToken,
-          restaurantId,
-        }).catch((err) => console.error('[Notification] Confirmation failed:', err));
-      }
-    });
+    if (!isWalkIn) {
+      canSendConfirmations(restaurantId).then((ok) => {
+        if (ok) {
+          sendReservationConfirmation({
+            customerPhone: phone,
+            restaurantName: restaurant.name,
+            dateTime: reservation.dateTime,
+            partySize: size,
+            secureToken: reservation.secureToken,
+            restaurantId,
+          }).catch((err) => console.error('[Notification] Confirmation failed:', err));
+        }
+      });
+    }
 
     incrementDataVersion(restaurantId).catch(console.error);
 
@@ -816,8 +852,7 @@ router.patch('/reservations/:id', async (req, res, next) => {
           } else {
             const tables = await tx.restaurantTable.findMany({
               where: tablesWhere,
-              include: { zone: { select: { id: true } } },
-              orderBy: { maxCapacity: 'asc' },
+              include: { zone: { select: { id: true, sortOrder: true } } },
             });
             if (tables.length === 0) {
               throw new ValidationError('No hay mesas disponibles para este número de comensales');
@@ -836,17 +871,7 @@ router.patch('/reservations/:id', async (req, res, next) => {
             });
 
             const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-            for (const table of tables) {
-              const hasConflict = dayReservations.some((r) => {
-                if (r.tableId !== table.id) return false;
-                const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-                return dateTime < rEnd && slotEnd > r.dateTime;
-              });
-              if (!hasConflict) {
-                selectedTable = table;
-                break;
-              }
-            }
+            selectedTable = pickAutoTable(tables, size, dayReservations, dateTime, slotEnd, bufferMs, null);
 
             if (!selectedTable) {
               throw new ValidationError('No hay mesas disponibles en este horario');
