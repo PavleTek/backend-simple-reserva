@@ -1,9 +1,12 @@
 const express = require("express");
 const path = require("path");
 const cors = require("cors");
+const helmet = require("helmet");
 const dotenv = require("dotenv");
 
 dotenv.config();
+
+const logger = require("./lib/logger");
 
 const prisma = require("./lib/prisma");
 const authRouter = require("./routes/auth.routes");
@@ -29,6 +32,14 @@ const { startReconciliationJob } = require("./jobs/reconciliationJob");
 const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
 
 const app = express();
+
+// API JSON: sin CSP estricta; endurece headers comunes (X-Frame-Options, etc.)
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 
 // Detrás de ngrok/Railway/etc. llega X-Forwarded-For; express-rate-limit exige trust proxy.
 const shouldTrustProxy =
@@ -182,7 +193,7 @@ app.use(errorHandler);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`SimpleReserva API running on port ${PORT}`);
+  logger.info({ port: PORT }, "SimpleReserva API running");
   startReminderJob();
   startDailySummaryJob();
   startTrialReminderJob();

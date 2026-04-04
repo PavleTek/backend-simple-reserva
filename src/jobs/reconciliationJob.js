@@ -16,6 +16,7 @@
 
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 const {
   activateOrganizationSubscription,
   scheduleOrganizationSubscription,
@@ -31,7 +32,7 @@ function sleep(ms) {
 async function runReconciliation() {
   const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
   if (!accessToken) {
-    console.warn('[Reconciliation] MERCADOPAGO_ACCESS_TOKEN no configurado, saltando reconciliacion.');
+    logger.warn('[Reconciliation] MERCADOPAGO_ACCESS_TOKEN no configurado, saltando reconciliacion');
     return;
   }
 
@@ -309,19 +310,19 @@ async function runReconciliation() {
     }
   }
 
-  console.log('[Reconciliation] Reconciliacion completada:', new Date().toISOString());
+  logger.info({ at: new Date().toISOString() }, '[Reconciliation] completed');
 }
 
 function startReconciliationJob() {
   const schedule = process.env.RECONCILIATION_CRON || '0 */6 * * *'; // cada 6 horas
   cron.schedule(schedule, () => {
     runReconciliation().catch((err) => {
-      console.error('[Reconciliation] Job failed unexpectedly:', err?.message);
+      logger.error({ err }, '[Reconciliation] job failed');
     });
   }, {
     timezone: process.env.TZ || 'America/Santiago',
   });
-  console.log(`[ReconciliationJob] Scheduled: ${schedule}`);
+  logger.info({ schedule }, '[ReconciliationJob] scheduled');
 }
 
 module.exports = { startReconciliationJob, runReconciliation };

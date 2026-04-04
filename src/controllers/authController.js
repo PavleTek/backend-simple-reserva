@@ -12,6 +12,7 @@ const {
 } = require('../utils/twoFactor');
 const { sendEmail } = require('../services/emailService');
 const { SUPPORTED_COUNTRIES } = require('../utils/timezone');
+const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 
 function stripUser(user, lastLoginOverride) {
   return {
@@ -180,6 +181,12 @@ const register = async (req, res) => {
 
     if (!email || !password || !restaurantName) {
       res.status(400).json({ error: 'Se requiere email, contraseña y nombre del restaurante' });
+      return;
+    }
+
+    const passwordError = getPasswordPolicyError(password);
+    if (passwordError) {
+      res.status(400).json({ error: passwordError });
       return;
     }
 
@@ -449,6 +456,12 @@ const updatePassword = async (req, res) => {
 
     if (!password) {
       res.status(400).json({ error: 'La contraseña es obligatoria' });
+      return;
+    }
+
+    const passwordError = getPasswordPolicyError(password);
+    if (passwordError) {
+      res.status(400).json({ error: passwordError });
       return;
     }
 
@@ -1103,6 +1116,12 @@ const verifyPasswordReset = async (req, res) => {
 
     if (!isValid) {
       res.status(401).json({ error: 'Código de restablecimiento inválido' });
+      return;
+    }
+
+    const newPwdError = getPasswordPolicyError(newPassword);
+    if (newPwdError) {
+      res.status(400).json({ error: newPwdError });
       return;
     }
 

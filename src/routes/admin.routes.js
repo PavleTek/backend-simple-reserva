@@ -391,6 +391,12 @@ router.put('/users/:id/password', async (req, res, next) => {
       return res.status(400).json({ error: 'La contraseña es obligatoria' });
     }
 
+    const { getPasswordPolicyError } = require('../utils/passwordPolicy');
+    const pwdErr = getPasswordPolicyError(password);
+    if (pwdErr) {
+      return res.status(400).json({ error: pwdErr });
+    }
+
     const hashedPassword = await hashPassword(password);
 
     await prisma.user.update({

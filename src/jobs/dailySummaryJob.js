@@ -5,6 +5,7 @@
 
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 const { sendDailySummary } = require('../services/notificationService');
 const { formatTime } = require('../utils/dateFormat');
 
@@ -73,9 +74,9 @@ async function runDailySummary() {
     }
   }
 
-  console.log(`[DailySummaryJob] Sent ${sent} daily summaries`);
+  logger.info({ sent }, '[DailySummaryJob] daily summaries sent');
   } catch (err) {
-    console.error('[DailySummaryJob] Error running daily summaries:', err);
+    logger.error({ err }, '[DailySummaryJob] failed');
   }
 }
 
@@ -84,7 +85,7 @@ function startDailySummaryJob() {
   cron.schedule(schedule, runDailySummary, {
     timezone: process.env.TZ || 'America/Santiago',
   });
-  console.log(`[DailySummaryJob] Scheduled: ${schedule} (${process.env.TZ || 'America/Santiago'})`);
+  logger.info({ schedule, tz: process.env.TZ || 'America/Santiago' }, '[DailySummaryJob] scheduled');
 }
 
 module.exports = { startDailySummaryJob, runDailySummary };
