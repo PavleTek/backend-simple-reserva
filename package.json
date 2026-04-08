@@ -11,7 +11,12 @@
     "seed": "node prisma/seed.js",
     "db:deploy": "prisma migrate deploy && node prisma/seed.js",
     "postinstall": "npm run build",
-    "test": "node --test src/**/*.test.js"
+    "test": "node --test src/**/*.test.js",
+    "cy:seed": "node cypress/scripts/seed.js",
+    "cy:run": "npx cypress run",
+    "cy:open": "npx cypress open",
+    "cy:test": "npm run cy:seed && npx cypress run",
+    "cy:test:open": "npm run cy:seed && npx cypress open"
   },
   "type": "commonjs",
   "dependencies": {
@@ -36,7 +41,8 @@
     "prisma": "^6.17.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.10"
+    "nodemon": "^3.1.10",
+    "cypress": "^14.3.0"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
