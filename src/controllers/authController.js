@@ -332,7 +332,7 @@ const addRestaurant = async (req, res) => {
       return;
     }
 
-    const { name, slug: providedSlug, address, phone, email } = req.body;
+    const { name, slug: providedSlug, address, googlePlaceId, shortAddress, latitude, longitude, phone, email } = req.body;
     if (!name || !name.trim()) {
       res.status(400).json({ error: 'El nombre del restaurante es obligatorio' });
       return;
@@ -359,6 +359,10 @@ const addRestaurant = async (req, res) => {
         name: name.trim(),
         slug,
         address: address?.trim() || null,
+        shortAddress: shortAddress?.trim() || null,
+        googlePlaceId: googlePlaceId?.trim() || null,
+        latitude: latitude !== undefined && latitude !== null ? parseFloat(latitude) : null,
+        longitude: longitude !== undefined && longitude !== null ? parseFloat(longitude) : null,
         phone: phone?.trim() || null,
         email: email?.trim() || null,
         timezone: null,

@@ -106,6 +106,10 @@ model Restaurant {
   description               String?
   logoUrl                   String?
   address                   String?
+  shortAddress              String?
+  googlePlaceId             String?
+  latitude                  Float?
+  longitude                 Float?
   phone                     String?
   email                     String?
   defaultSlotDurationMinutes Int      @default(60)

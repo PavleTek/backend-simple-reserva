@@ -34,7 +34,7 @@ const getRestaurant = async (req, res, next) => {
 
 const updateRestaurant = async (req, res, next) => {
   try {
-    const { name, description, address, phone, email, slug, defaultSlotDurationMinutes, bufferMinutesBetweenReservations, advanceBookingLimitDays, minimumNoticeMinutes, noShowGracePeriodMinutes, logoUrl, timezone, scheduleMode } = req.body;
+    const { name, description, address, shortAddress, googlePlaceId, latitude, longitude, phone, email, slug, defaultSlotDurationMinutes, bufferMinutesBetweenReservations, advanceBookingLimitDays, minimumNoticeMinutes, noShowGracePeriodMinutes, logoUrl, timezone, scheduleMode } = req.body;
 
     if (slug) {
       const existing = await prisma.restaurant.findUnique({
@@ -59,6 +59,10 @@ const updateRestaurant = async (req, res, next) => {
         ...(name !== undefined && { name }),
         ...(description !== undefined && { description }),
         ...(address !== undefined && { address }),
+        ...(shortAddress !== undefined && { shortAddress: shortAddress || null }),
+        ...(googlePlaceId !== undefined && { googlePlaceId: googlePlaceId || null }),
+        ...(latitude !== undefined && { latitude: latitude !== null ? parseFloat(latitude) : null }),
+        ...(longitude !== undefined && { longitude: longitude !== null ? parseFloat(longitude) : null }),
         ...(phone !== undefined && { phone }),
         ...(email !== undefined && { email }),
         ...(slug !== undefined && { slug }),
