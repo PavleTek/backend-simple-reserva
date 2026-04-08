@@ -5,6 +5,7 @@
 
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 const { sendEmail } = require('../services/emailService');
 const { isTrialing } = require('../services/subscriptionService');
 const planService = require('../services/planService');
@@ -87,13 +88,13 @@ async function runTrialReminders() {
         });
         sent++;
       } catch (err) {
-        console.error(`[TrialReminderJob] Failed to send to ${email}:`, err);
+        logger.error({ err, email }, '[TrialReminderJob] send failed');
       }
     }
   }
 
   if (sent > 0) {
-    console.log(`[TrialReminderJob] Sent ${sent} trial reminders`);
+    logger.info({ sent }, '[TrialReminderJob] trial reminders sent');
   }
 }
 
@@ -102,7 +103,7 @@ function startTrialReminderJob() {
   cron.schedule(schedule, runTrialReminders, {
     timezone: process.env.TZ || 'America/Santiago',
   });
-  console.log(`[TrialReminderJob] Scheduled: ${schedule}`);
+  logger.info({ schedule }, '[TrialReminderJob] scheduled');
 }
 
 module.exports = { startTrialReminderJob, runTrialReminders };

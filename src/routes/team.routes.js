@@ -80,6 +80,12 @@ router.post(
         throw new ValidationError('Se requiere email y contraseña temporal');
       }
 
+      const { getPasswordPolicyError } = require('../utils/passwordPolicy');
+      const tempPwdErr = getPasswordPolicyError(temporaryPassword);
+      if (tempPwdErr) {
+        throw new ValidationError(tempPwdErr);
+      }
+
       const restaurant = await prisma.restaurant.findUnique({
         where: { id: restaurantId },
         select: { organizationId: true }

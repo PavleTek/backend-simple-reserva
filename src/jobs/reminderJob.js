@@ -5,6 +5,7 @@
 
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 const { sendReservationReminder } = require('../services/notificationService');
 const { canSendReminders } = require('../services/subscriptionService');
 
@@ -48,10 +49,10 @@ async function runReminders() {
   }
 
   if (reservations.length > 0) {
-    console.log(`[ReminderJob] Sent ${sent}/${reservations.length} reminders for tomorrow`);
+    logger.info({ sent, total: reservations.length }, '[ReminderJob] reminders sent for tomorrow');
   }
   } catch (err) {
-    console.error('[ReminderJob] Error running reminders:', err);
+    logger.error({ err }, '[ReminderJob] failed');
   }
 }
 
@@ -60,7 +61,7 @@ function startReminderJob() {
   cron.schedule(schedule, runReminders, {
     timezone: process.env.TZ || 'America/Santiago',
   });
-  console.log(`[ReminderJob] Scheduled reminder job: ${schedule} (${process.env.TZ || 'America/Santiago'})`);
+  logger.info({ schedule, tz: process.env.TZ || 'America/Santiago' }, '[ReminderJob] scheduled');
 }
 
 module.exports = { startReminderJob, runReminders };

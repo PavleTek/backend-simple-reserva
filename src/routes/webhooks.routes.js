@@ -52,7 +52,12 @@ function validateMPSignature(req, dataId) {
   const idForManifest = /^[a-zA-Z0-9]+$/.test(String(dataId)) ? String(dataId).toLowerCase() : String(dataId);
   const manifest = `id:${idForManifest};request-id:${xReqId};ts:${ts};`;
   const expected = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
-  return expected === hash;
+  const expBuf = Buffer.from(String(expected).trim(), 'hex');
+  const gotBuf = Buffer.from(String(hash).trim(), 'hex');
+  if (expBuf.length !== gotBuf.length || expBuf.length === 0) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expBuf, gotBuf);
 }
 
 router.post('/mercadopago', express.json({ 

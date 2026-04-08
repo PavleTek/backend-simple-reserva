@@ -5,19 +5,24 @@
 
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 
 async function runGracePeriodExpiry() {
-  const now = new Date();
-  const expired = await prisma.subscription.updateMany({
-    where: {
-      status: 'grace',
-      gracePeriodEndsAt: { lt: now, not: null },
-    },
-    data: { status: 'expired' },
-  });
+  try {
+    const now = new Date();
+    const expired = await prisma.subscription.updateMany({
+      where: {
+        status: 'grace',
+        gracePeriodEndsAt: { lt: now, not: null },
+      },
+      data: { status: 'expired' },
+    });
 
-  if (expired.count > 0) {
-    console.log(`[GracePeriodExpiryJob] Expired ${expired.count} grace period subscription(s)`);
+    if (expired.count > 0) {
+      logger.info({ count: expired.count }, '[GracePeriodExpiryJob] grace periods expired');
+    }
+  } catch (err) {
+    logger.error({ err }, '[GracePeriodExpiryJob] failed');
   }
 }
 
@@ -26,7 +31,7 @@ function startGracePeriodExpiryJob() {
   cron.schedule(schedule, runGracePeriodExpiry, {
     timezone: process.env.TZ || 'America/Santiago',
   });
-  console.log(`[GracePeriodExpiryJob] Scheduled: ${schedule}`);
+  logger.info({ schedule }, '[GracePeriodExpiryJob] scheduled');
 }
 
 module.exports = { startGracePeriodExpiryJob, runGracePeriodExpiry };

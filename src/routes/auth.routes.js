@@ -1,6 +1,23 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const { authenticateToken } = require('../middleware/authentication');
+
+const loginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de inicio de sesión. Intenta de nuevo en un minuto.' },
+});
+
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados registros desde esta IP. Intenta de nuevo en una hora.' },
+});
 const {
   login,
   register,
@@ -22,8 +39,8 @@ const {
   verifyPasswordReset
 } = require('../controllers/authController');
 
-router.post('/login', login);
-router.post('/register', register);
+router.post('/login', loginLimiter, login);
+router.post('/register', registerLimiter, register);
 router.post('/2fa/verify', verifyTwoFactor);
 router.post('/2fa/setup-mandatory', setupTwoFactorMandatory);
 router.post('/2fa/verify-setup-mandatory', verifyTwoFactorSetupMandatory);

@@ -5,21 +5,26 @@
 
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 
 async function runTrialExpiry() {
-  const now = new Date();
-  const expired = await prisma.subscription.updateMany({
-    where: {
-      status: 'trial',
-      organization: {
-        trialEndsAt: { lt: now, not: null },
+  try {
+    const now = new Date();
+    const expired = await prisma.subscription.updateMany({
+      where: {
+        status: 'trial',
+        organization: {
+          trialEndsAt: { lt: now, not: null },
+        },
       },
-    },
-    data: { status: 'expired' },
-  });
+      data: { status: 'expired' },
+    });
 
-  if (expired.count > 0) {
-    console.log(`[TrialExpiryJob] Expired ${expired.count} trial subscription(s)`);
+    if (expired.count > 0) {
+      logger.info({ count: expired.count }, '[TrialExpiryJob] trials expired');
+    }
+  } catch (err) {
+    logger.error({ err }, '[TrialExpiryJob] failed');
   }
 }
 
@@ -28,7 +33,7 @@ function startTrialExpiryJob() {
   cron.schedule(schedule, runTrialExpiry, {
     timezone: process.env.TZ || 'America/Santiago',
   });
-  console.log(`[TrialExpiryJob] Scheduled: ${schedule}`);
+  logger.info({ schedule }, '[TrialExpiryJob] scheduled');
 }
 
 module.exports = { startTrialExpiryJob, runTrialExpiry };
