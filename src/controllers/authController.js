@@ -23,7 +23,8 @@ function stripUser(user, lastLoginOverride) {
     role: user.role,
     country: user.country,
     lastLogin: lastLoginOverride || user.lastLogin,
-    createdAt: user.createdAt
+    createdAt: user.createdAt,
+    dashboardTourCompletedAt: user.dashboardTourCompletedAt ?? null,
   };
 }
 
@@ -163,6 +164,27 @@ const login = async (req, res) => {
     const restaurants = await getRestaurantsForUser(user.id);
     console.log('[AUTH] Login success', { userId: user.id, email: user.email, restaurantsCount: restaurants.length });
 
+    // Block managers whose organization has no active subscription
+    const isOwnerOfAnything = restaurants.some(r => r.role === 'restaurant_owner');
+    if (!isOwnerOfAnything && user.role !== 'super_admin' && restaurants.length > 0) {
+      const managerOrgs = await prisma.organizationManager.findMany({
+        where: { userId: user.id },
+        select: { organizationId: true },
+      });
+      const orgIds = managerOrgs.map(m => m.organizationId);
+      const activeSubCount = await prisma.subscription.count({
+        where: { organizationId: { in: orgIds }, isActiveSubscription: true },
+      });
+      if (activeSubCount === 0) {
+        console.log('[AUTH] Login blocked: manager org has no active subscription', { userId: user.id });
+        return res.status(403).json({
+          error: 'inactive_organization',
+          message: 'La organización a la que perteneces no tiene una suscripción activa. Contacta al administrador de la cuenta.',
+          contactEmail: process.env.CONTACT_EMAIL || 'soporte@simplereserva.com',
+        });
+      }
+    }
+
     res.status(200).json({
       message: 'Inicio de sesión exitoso',
       user: userWithoutPassword,
@@ -275,7 +297,8 @@ const register = async (req, res) => {
         data: {
           organizationId: organization.id,
           planId: defaultPlan.id,
-          status: 'trial'
+          status: 'trial',
+          isActiveSubscription: true,
         }
       });
 
@@ -328,7 +351,7 @@ const addRestaurant = async (req, res) => {
       where: { ownerId: userId },
     });
     if (!org) {
-      res.status(403).json({ error: 'Solo los propietarios pueden agregar nuevas ubicaciones' });
+      res.status(403).json({ error: 'Solo los propietarios pueden agregar nuevos locales' });
       return;
     }
 
@@ -372,7 +395,7 @@ const addRestaurant = async (req, res) => {
     const restaurants = await getRestaurantsForUser(userId);
 
     res.status(201).json({
-      message: 'Ubicación agregada',
+      message: 'Local agregado',
       restaurant: {
         id: result.id,
         name: result.name,
@@ -394,6 +417,27 @@ const getProfile = async (req, res) => {
     const restaurants = req.user.role === 'super_admin'
       ? []
       : await getRestaurantsForUser(req.user.id);
+
+    // Kick out managers whose organization has gone inactive since they logged in
+    const isOwnerOfAnything = restaurants.some(r => r.role === 'restaurant_owner');
+    if (req.user.role !== 'super_admin' && !isOwnerOfAnything && restaurants.length > 0) {
+      const managerOrgs = await prisma.organizationManager.findMany({
+        where: { userId: req.user.id },
+        select: { organizationId: true },
+      });
+      const orgIds = managerOrgs.map(m => m.organizationId);
+      const activeSubCount = await prisma.subscription.count({
+        where: { organizationId: { in: orgIds }, isActiveSubscription: true },
+      });
+      if (activeSubCount === 0) {
+        return res.status(403).json({
+          error: 'inactive_organization',
+          message: 'La organización a la que perteneces no tiene una suscripción activa. Contacta al administrador de la cuenta.',
+          contactEmail: process.env.CONTACT_EMAIL || 'soporte@simplereserva.com',
+        });
+      }
+    }
+
     res.status(200).json({
       message: 'Perfil obtenido correctamente',
       user: req.user,
@@ -1197,6 +1241,19 @@ const getRestaurantsTodaySummary = async (req, res) => {
   }
 };
 
+const completeDashboardTour = async (req, res) => {
+  try {
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { dashboardTourCompletedAt: new Date() },
+    });
+    res.json({ success: true, dashboardTourCompletedAt: updated.dashboardTourCompletedAt });
+  } catch (error) {
+    console.error('Complete dashboard tour error:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
 module.exports = {
   login,
   register,
@@ -1205,6 +1262,7 @@ module.exports = {
   getProfile,
   updateProfile,
   updatePassword,
+  completeDashboardTour,
   verifyTwoFactor,
   setupTwoFactor,
   setupTwoFactorMandatory,

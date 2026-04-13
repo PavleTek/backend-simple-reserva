@@ -122,6 +122,7 @@ async function getPlanConfig(productSKU) {
 
 /**
  * Get owner's plan from their organization subscription.
+ * Uses isActiveSubscription as the sole access indicator.
  */
 async function getOwnerPlan(ownerId) {
   const org = await prisma.restaurantOrganization.findUnique({
@@ -133,49 +134,34 @@ async function getOwnerPlan(ownerId) {
   const sub = await prisma.subscription.findFirst({
     where: {
       organizationId: org.id,
-      status: { in: ['active', 'trial', 'cancelled', 'grace'] },
-    },
-    orderBy: { startDate: 'desc' },
-    include: { plan: true }
-  });
-  if (!sub) return null;
-
-  if (sub.status === 'cancelled' && sub.endDate && new Date() > sub.endDate) {
-    return null;
-  }
-
-  return sub.plan;
-}
-
-/**
- * Get owner's plan when in trial.
- */
-async function getOwnerPlanIncludingTrial(ownerId) {
-  const org = await prisma.restaurantOrganization.findUnique({
-    where: { ownerId },
-    select: { id: true, trialEndsAt: true, plan: true },
-  });
-  if (!org) return null;
-
-  // Primero buscar subscription (trial o activa) para obtener el plan real
-  const sub = await prisma.subscription.findFirst({
-    where: {
-      organizationId: org.id,
-      status: { in: ['trial', 'active', 'grace'] },
+      isActiveSubscription: true,
     },
     orderBy: { startDate: 'desc' },
     include: { plan: true },
   });
-  if (sub?.plan) {
-    return sub.plan;
-  }
+  return sub?.plan ?? null;
+}
 
-  // Legacy/Trial: trialEndsAt en futuro
-  if (org.trialEndsAt && org.trialEndsAt > new Date()) {
-    return org.plan;
-  }
+/**
+ * Get owner's plan when in trial.
+ * Uses isActiveSubscription as the sole access indicator.
+ */
+async function getOwnerPlanIncludingTrial(ownerId) {
+  const org = await prisma.restaurantOrganization.findUnique({
+    where: { ownerId },
+    select: { id: true, plan: true },
+  });
+  if (!org) return null;
 
-  return getOwnerPlan(ownerId);
+  const sub = await prisma.subscription.findFirst({
+    where: {
+      organizationId: org.id,
+      isActiveSubscription: true,
+    },
+    orderBy: { startDate: 'desc' },
+    include: { plan: true },
+  });
+  return sub?.plan ?? null;
 }
 
 /**
@@ -256,7 +242,7 @@ async function canAddLocation(ownerId, includeTrial = true) {
   if (!config) {
     return {
       allowed: false,
-      reason: 'No tienes un plan activo. Ve a Facturación para activar tu suscripción y agregar ubicaciones.',
+      reason: 'No tienes un plan activo. Ve a Facturación para activar tu suscripción y agregar locales.',
     };
   }
 

@@ -464,7 +464,7 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
     }
     await prisma.subscription.update({
       where: { id: sub.id },
-      data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd },
+      data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd, gracePeriodEndsAt: periodEnd },
     });
     res.json({ message: 'Suscripción cancelada. Seguirás con acceso hasta el final del periodo actual.' });
   } catch (error) {
@@ -513,7 +513,7 @@ router.post('/billing/cancel-scheduled', authenticateRestaurantRoles(['restauran
 
     await prisma.subscription.update({
       where: { id: scheduledSub.id },
-      data: { status: 'cancelled' },
+      data: { status: 'cancelled', isActiveSubscription: false },
     });
 
     planService.invalidateCache(organizationId);
@@ -706,7 +706,7 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       }
       await prisma.subscription.update({
         where: { id: currentSub.id },
-        data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd },
+        data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd, gracePeriodEndsAt: periodEnd },
       });
       checkoutStartDateOpt = periodEnd;
     }

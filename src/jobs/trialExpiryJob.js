@@ -17,7 +17,7 @@ async function runTrialExpiry() {
           trialEndsAt: { lt: now, not: null },
         },
       },
-      data: { status: 'expired' },
+      data: { status: 'expired', isActiveSubscription: false },
     });
 
     if (expired.count > 0) {

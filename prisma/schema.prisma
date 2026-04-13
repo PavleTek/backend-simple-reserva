@@ -23,6 +23,7 @@ model User {
   twoFactorRecoveryCodeExpires  DateTime?
   passwordResetCode             String?
   passwordResetCodeExpires      DateTime?
+  dashboardTourCompletedAt      DateTime?
   createdAt                     DateTime  @default(now())
   updatedAt                     DateTime  @updatedAt
 
@@ -276,12 +277,15 @@ model Subscription {
   organization  RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   planId        String
   plan          Plan @relation(fields: [planId], references: [id])
-  status        String    @default("trial") // "trial", "active", "grace", "cancelled", "expired", "scheduled"
+  status        String    @default("trial") // "trial", "active", "grace", "cancelled", "cancelled_by_admin", "expired", "scheduled" — informational only
+  /// Single source of truth for feature access. Set to false only by expiry jobs (gracePeriodExpiryJob, trialExpiryJob).
+  isActiveSubscription Boolean @default(true)
   startDate     DateTime  @default(now())
   endDate       DateTime?
   /// Fin del periodo de facturación actual (persistido al activar/renovar; alineado con computePeriodEnd)
   currentPeriodEnd DateTime?
-  gracePeriodEndsAt DateTime? // 7-day grace after payment failure; access until this date
+  /// Access deadline: 7 days after payment failure, OR set equal to endDate on manual cancellation
+  gracePeriodEndsAt DateTime?
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
   createdAt     DateTime  @default(now())
 
@@ -290,6 +294,7 @@ model Subscription {
   @@unique([organizationId, mercadopagoPreapprovalId])
   @@index([organizationId])
   @@index([currentPeriodEnd])
+  @@index([isActiveSubscription])
 }
 
 model EmailDomain {

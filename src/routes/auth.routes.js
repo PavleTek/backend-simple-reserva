@@ -26,6 +26,7 @@ const {
   getProfile,
   updateProfile,
   updatePassword,
+  completeDashboardTour,
   verifyTwoFactor,
   setupTwoFactor,
   setupTwoFactorMandatory,
@@ -54,6 +55,7 @@ router.get('/restaurants/today-summary', authenticateToken, getRestaurantsTodayS
 router.get('/profile', authenticateToken, getProfile);
 router.put('/profile', authenticateToken, updateProfile);
 router.put('/profile/password', authenticateToken, updatePassword);
+router.patch('/dashboard-tour/complete', authenticateToken, completeDashboardTour);
 router.get('/2fa/status', authenticateToken, getTwoFactorStatus);
 router.post('/2fa/setup', authenticateToken, setupTwoFactor);
 router.post('/2fa/verify-setup', authenticateToken, verifyTwoFactorSetup);

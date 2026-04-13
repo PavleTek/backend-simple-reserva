@@ -15,11 +15,23 @@ async function runGracePeriodExpiry() {
         status: 'grace',
         gracePeriodEndsAt: { lt: now, not: null },
       },
-      data: { status: 'expired' },
+      data: { status: 'expired', isActiveSubscription: false },
     });
 
-    if (expired.count > 0) {
-      logger.info({ count: expired.count }, '[GracePeriodExpiryJob] grace periods expired');
+    // Also deactivate cancelled subs whose gracePeriodEndsAt (= endDate) has passed.
+    // These were cancelled by the user and gracePeriodEndsAt was set equal to endDate.
+    const cancelledExpired = await prisma.subscription.updateMany({
+      where: {
+        status: 'cancelled',
+        isActiveSubscription: true,
+        gracePeriodEndsAt: { lt: now, not: null },
+      },
+      data: { status: 'expired', isActiveSubscription: false },
+    });
+
+    const total = expired.count + cancelledExpired.count;
+    if (total > 0) {
+      logger.info({ grace: expired.count, cancelled: cancelledExpired.count }, '[GracePeriodExpiryJob] subscriptions expired');
     }
   } catch (err) {
     logger.error({ err }, '[GracePeriodExpiryJob] failed');

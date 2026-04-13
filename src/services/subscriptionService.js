@@ -1,7 +1,7 @@
 /**
- * Subscription enforcement - MVP: single plan, trial then paid.
- * Trial: 14 days, full access. Paid: $4,990 CLP every 2 weeks, full access.
- * Access = (in trial) OR (active paid subscription).
+ * Subscription enforcement.
+ * Access = isActiveSubscription === true on any Subscription row for the org.
+ * The status field is informational only; access is never derived from it.
  */
 
 const prisma = require('../lib/prisma');
@@ -13,61 +13,32 @@ async function getOrganizationWithTrial(organizationId) {
   });
 }
 
+/**
+ * Returns the active subscription for an organization, or null if none.
+ * Access is determined solely by isActiveSubscription — no status or date checks.
+ */
 async function getActiveSubscription(organizationId) {
-  const now = new Date();
   const sub = await prisma.subscription.findFirst({
     where: {
       organizationId,
-      status: { in: ['active', 'cancelled', 'grace'] },
-      // Exclude future-dated subs (e.g., scheduled subs that got cancelled before starting)
-      startDate: { lte: now },
+      isActiveSubscription: true,
     },
     orderBy: { startDate: 'desc' },
     include: { plan: true },
   });
-  if (!sub) return null;
-
-  // Grace period: access until gracePeriodEndsAt
-  if (sub.status === 'grace') {
-    if (sub.gracePeriodEndsAt && now > sub.gracePeriodEndsAt) return null;
-    return sub;
-  }
-
-  // Cancelled: only grants access if endDate is explicitly set and still in the future
-  if (sub.status === 'cancelled') {
-    if (!sub.endDate) return null;
-    if (now > sub.endDate) return null;
-    return sub;
-  }
-
-  // Active: grants access regardless (endDate on active subs is unusual but handled)
-  if (sub.status === 'active') {
-    if (sub.endDate && now > sub.endDate) return null;
-    return sub;
-  }
-
-  return null;
+  return sub ?? null;
 }
 
 /**
- * Check if organization has active access (trial or paid).
+ * Check if organization has active access.
  */
 async function hasActiveAccess(organizationId) {
-  const organization = await getOrganizationWithTrial(organizationId);
-  if (!organization) return false;
-
-  // In trial: trialEndsAt is set and in the future
-  if (organization.trialEndsAt && new Date() < organization.trialEndsAt) {
-    return true;
-  }
-
-  // Paid: active subscription
   const sub = await getActiveSubscription(organizationId);
   return !!sub;
 }
 
 /**
- * Check if organization is in trial period.
+ * Check if organization is in trial period (informational — for UI/emails).
  */
 async function isTrialing(organizationId) {
   const organization = await getOrganizationWithTrial(organizationId);

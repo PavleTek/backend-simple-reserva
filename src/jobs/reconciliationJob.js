@@ -204,7 +204,7 @@ async function runReconciliation() {
       } else if (mpStatus === 'cancelled' || mpStatus === 'expired') {
         await prisma.subscription.update({
           where: { id: sSub.id },
-          data: { status: 'cancelled' },
+          data: { status: 'cancelled', isActiveSubscription: false },
         });
         console.log(`[Reconciliation] Scheduled sub ${sSub.id} cancelled (MP status=${mpStatus})`);
       }

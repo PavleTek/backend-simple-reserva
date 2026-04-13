@@ -469,21 +469,74 @@ router.get('/subscriptions', async (req, res, next) => {
 
 router.patch('/subscriptions/:id', async (req, res, next) => {
   try {
-    const { planId, status, endDate } = req.body;
+    const { planId, status, endDate, isActiveSubscription } = req.body;
 
-    const data = {};
-    if (planId !== undefined) data.planId = planId;
-    if (status !== undefined) data.status = status;
-    if (endDate !== undefined) data.endDate = endDate ? new Date(endDate) : null;
-
-    const subscription = await prisma.subscription.update({
+    const existing = await prisma.subscription.findUnique({
       where: { id: req.params.id },
-      data,
-      include: { 
-        organization: { select: { name: true } },
-        plan: true
-      },
+      select: { planId: true, organizationId: true, mercadopagoPreapprovalId: true },
     });
+    if (!existing) throw new NotFoundError('Suscripción no encontrada');
+
+    if (planId !== undefined) {
+      const plan = await prisma.plan.findUnique({ where: { id: planId } });
+      if (!plan) throw new NotFoundError('Plan no encontrado');
+    }
+
+    const subData = {};
+    if (planId !== undefined) subData.planId = planId;
+    if (status !== undefined) subData.status = status;
+    if (endDate !== undefined) subData.endDate = endDate ? new Date(endDate) : null;
+    if (isActiveSubscription !== undefined) subData.isActiveSubscription = Boolean(isActiveSubscription);
+
+    // When admin deactivates a subscription, cancel on MP immediately and set all dates to now
+    if (isActiveSubscription === false) {
+      const now = new Date();
+      subData.status = 'cancelled_by_admin';
+      subData.endDate = now;
+      subData.gracePeriodEndsAt = now;
+      subData.isActiveSubscription = false;
+
+      if (existing.mercadopagoPreapprovalId) {
+        try {
+          const mercadopagoService = require('../services/mercadopagoService');
+          await mercadopagoService.cancelSubscription(existing.mercadopagoPreapprovalId);
+          console.log('[Admin] MP preapproval cancelled:', existing.mercadopagoPreapprovalId);
+        } catch (err) {
+          // Don't block the admin action — preapproval may already be cancelled
+          console.warn('[Admin] Could not cancel MP preapproval (continuing):', err?.message);
+        }
+      }
+    }
+
+    const isPlanChanging = planId !== undefined && planId !== existing.planId;
+
+    const subscription = await prisma.$transaction(async (tx) => {
+      const updated = await tx.subscription.update({
+        where: { id: req.params.id },
+        data: subData,
+        include: {
+          organization: { select: { name: true } },
+          plan: true,
+        },
+      });
+
+      const orgUpdateData = {};
+      if (isPlanChanging) orgUpdateData.planId = planId;
+      if (isActiveSubscription === false) orgUpdateData.trialEndsAt = null;
+
+      if (Object.keys(orgUpdateData).length > 0) {
+        await tx.restaurantOrganization.update({
+          where: { id: existing.organizationId },
+          data: orgUpdateData,
+        });
+      }
+
+      return updated;
+    });
+
+    if (isPlanChanging || isActiveSubscription === false) {
+      planService.invalidateCache(existing.organizationId);
+    }
 
     res.json(subscription);
   } catch (error) {

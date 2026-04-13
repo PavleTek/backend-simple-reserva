@@ -228,7 +228,7 @@ router.patch(
       });
 
       if (targetRestaurants.length !== restaurantIds.length) {
-        throw new ForbiddenError('No tienes acceso a una o más ubicaciones seleccionadas');
+        throw new ForbiddenError('No tienes acceso a uno o más locales seleccionados');
       }
 
       await prisma.$transaction(async (tx) => {

@@ -327,7 +327,7 @@ async function scheduleOrganizationSubscription(organizationId, preapprovalId, p
 
   await prisma.subscription.updateMany({
     where: { organizationId, status: 'scheduled' },
-    data: { status: 'cancelled', mercadopagoPreapprovalId: null },
+    data: { status: 'cancelled', mercadopagoPreapprovalId: null, isActiveSubscription: false },
   });
 
   await prisma.subscription.create({
@@ -335,6 +335,7 @@ async function scheduleOrganizationSubscription(organizationId, preapprovalId, p
       organizationId,
       planId: plan.id,
       status: 'scheduled',
+      isActiveSubscription: false,
       startDate: scheduledStartDate,
       mercadopagoPreapprovalId: preapprovalId,
     },
@@ -433,13 +434,14 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     // Cancelar suscripciones previas (trial, active, scheduled) para evitar duplicados
     await tx.subscription.updateMany({
       where: { organizationId, status: { in: ['trial', 'active', 'scheduled'] } },
-      data: { status: 'cancelled' },
+      data: { status: 'cancelled', isActiveSubscription: false },
     });
     await tx.subscription.create({
       data: {
         organizationId,
         planId: plan.id,
         status: 'active',
+        isActiveSubscription: true,
         mercadopagoPreapprovalId: preapprovalId,
         startDate: activatedAt,
         currentPeriodEnd: nextPeriodEnd,
@@ -457,7 +459,7 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
 async function deactivateOrganizationSubscription(organizationId) {
   await prisma.subscription.updateMany({
     where: { organizationId },
-    data: { status: 'expired', endDate: new Date() },
+    data: { status: 'expired', isActiveSubscription: false, endDate: new Date() },
   });
 }
 
@@ -472,7 +474,7 @@ async function enterGracePeriod(organizationId, options = {}) {
   graceEnd.setDate(graceEnd.getDate() + 7);
   await prisma.subscription.updateMany({
     where: { organizationId, status: 'active' },
-    data: { status: 'grace', gracePeriodEndsAt: graceEnd },
+    data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
   });
   if (scheduledPreapprovalId) {
     await prisma.subscription.updateMany({
@@ -481,7 +483,7 @@ async function enterGracePeriod(organizationId, options = {}) {
         status: 'scheduled',
         mercadopagoPreapprovalId: scheduledPreapprovalId,
       },
-      data: { status: 'grace', gracePeriodEndsAt: graceEnd },
+      data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
     });
   }
 

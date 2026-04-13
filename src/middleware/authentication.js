@@ -35,6 +35,7 @@ const authenticateToken = async (req, res, next) => {
       role: user.role,
       lastLogin: user.lastLogin,
       createdAt: user.createdAt,
+      dashboardTourCompletedAt: user.dashboardTourCompletedAt,
     };
 
     next();
@@ -77,6 +78,7 @@ const optionalAuth = async (req, res, next) => {
         role: user.role,
         lastLogin: user.lastLogin,
         createdAt: user.createdAt,
+        dashboardTourCompletedAt: user.dashboardTourCompletedAt,
       };
     }
 
