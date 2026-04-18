@@ -1,6 +1,3 @@
--- CreateSchema
-CREATE SCHEMA IF NOT EXISTS "public";
-
 -- CreateTable
 CREATE TABLE "User" (
     "id" TEXT NOT NULL,
@@ -18,6 +15,7 @@ CREATE TABLE "User" (
     "twoFactorRecoveryCodeExpires" TIMESTAMP(3),
     "passwordResetCode" TEXT,
     "passwordResetCodeExpires" TIMESTAMP(3),
+    "dashboardTourCompletedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -30,6 +28,7 @@ CREATE TABLE "RestaurantOrganization" (
     "name" TEXT NOT NULL,
     "ownerId" TEXT NOT NULL,
     "planId" TEXT NOT NULL,
+    "customPlanId" TEXT,
     "trialEndsAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -71,6 +70,10 @@ CREATE TABLE "Restaurant" (
     "description" TEXT,
     "logoUrl" TEXT,
     "address" TEXT,
+    "shortAddress" TEXT,
+    "googlePlaceId" TEXT,
+    "latitude" DOUBLE PRECISION,
+    "longitude" DOUBLE PRECISION,
     "phone" TEXT,
     "email" TEXT,
     "defaultSlotDurationMinutes" INTEGER NOT NULL DEFAULT 60,
@@ -83,10 +86,28 @@ CREATE TABLE "Restaurant" (
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "scheduleMode" TEXT NOT NULL DEFAULT 'continuous',
     "dataVersion" INTEGER NOT NULL DEFAULT 0,
+    "onboardingCompletedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Restaurant_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "BookingWaitlistEntry" (
+    "id" TEXT NOT NULL,
+    "restaurantId" TEXT NOT NULL,
+    "partySize" INTEGER NOT NULL,
+    "preferredDate" TEXT,
+    "customerName" TEXT NOT NULL,
+    "customerPhone" TEXT NOT NULL,
+    "customerEmail" TEXT,
+    "notes" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'pending',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "BookingWaitlistEntry_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -136,6 +157,7 @@ CREATE TABLE "RestaurantTable" (
     "label" TEXT NOT NULL,
     "minCapacity" INTEGER NOT NULL DEFAULT 1,
     "maxCapacity" INTEGER NOT NULL,
+    "sortOrder" INTEGER NOT NULL DEFAULT 0,
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -198,8 +220,10 @@ CREATE TABLE "Subscription" (
     "organizationId" TEXT NOT NULL,
     "planId" TEXT NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'trial',
+    "isActiveSubscription" BOOLEAN NOT NULL DEFAULT true,
     "startDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "endDate" TIMESTAMP(3),
+    "currentPeriodEnd" TIMESTAMP(3),
     "gracePeriodEndsAt" TIMESTAMP(3),
     "mercadopagoPreapprovalId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -235,8 +259,30 @@ CREATE TABLE "Configuration" (
     "reservationEmailSenderId" TEXT,
     "dashboardPollingIntervalSeconds" INTEGER NOT NULL DEFAULT 30,
     "updatedAt" TIMESTAMP(3) NOT NULL,
+    "whatsappAuthToken" TEXT,
+    "whatsappSendingPhoneNumberId" TEXT,
+    "whatsappBusinessAccountId" TEXT,
+    "whatsappApiVersion" TEXT DEFAULT 'v21.0',
+    "whatsappTemplateLanguage" TEXT DEFAULT 'es',
 
     CONSTRAINT "Configuration_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "WhatsAppTemplate" (
+    "id" TEXT NOT NULL,
+    "metaId" TEXT,
+    "name" TEXT NOT NULL,
+    "language" TEXT NOT NULL DEFAULT 'es',
+    "category" TEXT,
+    "status" TEXT,
+    "bodyText" TEXT,
+    "componentsJson" JSONB,
+    "lastSyncedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "WhatsAppTemplate_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -260,6 +306,11 @@ CREATE TABLE "Plan" (
     "priceEUR" DECIMAL(10,2) NOT NULL DEFAULT 0,
     "billingFrequency" INTEGER NOT NULL DEFAULT 1,
     "billingFrequencyType" TEXT NOT NULL DEFAULT 'months',
+    "freeTrialLength" INTEGER NOT NULL DEFAULT 0,
+    "freeTrialLengthUnit" TEXT NOT NULL DEFAULT 'months',
+    "mercadopagoPreapprovalPlanId" TEXT,
+    "mercadopagoInitPoint" TEXT,
+    "mercadopagoLastSyncAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -330,11 +381,29 @@ CREATE TABLE "CheckoutSession" (
     "status" TEXT NOT NULL DEFAULT 'pending',
     "mercadopagoPreapprovalId" TEXT,
     "checkoutUrl" TEXT,
+    "pendingChangeFromSubscriptionId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "expiresAt" TIMESTAMP(3),
     "completedAt" TIMESTAMP(3),
 
     CONSTRAINT "CheckoutSession_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "WebhookEvent" (
+    "id" TEXT NOT NULL,
+    "mpEventType" TEXT NOT NULL,
+    "mpDataId" TEXT NOT NULL,
+    "mpStatus" TEXT,
+    "organizationId" TEXT,
+    "externalRef" TEXT,
+    "processingStatus" TEXT NOT NULL DEFAULT 'received',
+    "errorMessage" TEXT,
+    "rawHeaders" JSONB,
+    "processedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "WebhookEvent_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -348,6 +417,9 @@ CREATE UNIQUE INDEX "RestaurantOrganization_ownerId_key" ON "RestaurantOrganizat
 
 -- CreateIndex
 CREATE INDEX "RestaurantOrganization_ownerId_idx" ON "RestaurantOrganization"("ownerId");
+
+-- CreateIndex
+CREATE INDEX "RestaurantOrganization_customPlanId_idx" ON "RestaurantOrganization"("customPlanId");
 
 -- CreateIndex
 CREATE INDEX "OrganizationManager_organizationId_idx" ON "OrganizationManager"("organizationId");
@@ -375,6 +447,9 @@ CREATE INDEX "Restaurant_organizationId_idx" ON "Restaurant"("organizationId");
 
 -- CreateIndex
 CREATE INDEX "Restaurant_isActive_idx" ON "Restaurant"("isActive");
+
+-- CreateIndex
+CREATE INDEX "BookingWaitlistEntry_restaurantId_createdAt_idx" ON "BookingWaitlistEntry"("restaurantId", "createdAt");
 
 -- CreateIndex
 CREATE INDEX "RestaurantMenu_restaurantId_idx" ON "RestaurantMenu"("restaurantId");
@@ -413,13 +488,34 @@ CREATE INDEX "Reservation_secureToken_idx" ON "Reservation"("secureToken");
 CREATE INDEX "Subscription_organizationId_idx" ON "Subscription"("organizationId");
 
 -- CreateIndex
+CREATE INDEX "Subscription_currentPeriodEnd_idx" ON "Subscription"("currentPeriodEnd");
+
+-- CreateIndex
+CREATE INDEX "Subscription_isActiveSubscription_idx" ON "Subscription"("isActiveSubscription");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Subscription_organizationId_mercadopagoPreapprovalId_key" ON "Subscription"("organizationId", "mercadopagoPreapprovalId");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "EmailDomain_domain_key" ON "EmailDomain"("domain");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "EmailSender_email_key" ON "EmailSender"("email");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "WhatsAppTemplate_metaId_key" ON "WhatsAppTemplate"("metaId");
+
+-- CreateIndex
+CREATE INDEX "WhatsAppTemplate_status_idx" ON "WhatsAppTemplate"("status");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "WhatsAppTemplate_name_language_key" ON "WhatsAppTemplate"("name", "language");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Plan_productSKU_key" ON "Plan"("productSKU");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Plan_mercadopagoPreapprovalPlanId_key" ON "Plan"("mercadopagoPreapprovalPlanId");
 
 -- CreateIndex
 CREATE INDEX "BookingEvent_restaurantId_eventName_timestamp_idx" ON "BookingEvent"("restaurantId", "eventName", "timestamp");
@@ -463,11 +559,29 @@ CREATE INDEX "CheckoutSession_userId_idx" ON "CheckoutSession"("userId");
 -- CreateIndex
 CREATE INDEX "CheckoutSession_status_idx" ON "CheckoutSession"("status");
 
+-- CreateIndex
+CREATE INDEX "CheckoutSession_pendingChangeFromSubscriptionId_idx" ON "CheckoutSession"("pendingChangeFromSubscriptionId");
+
+-- CreateIndex
+CREATE INDEX "WebhookEvent_organizationId_idx" ON "WebhookEvent"("organizationId");
+
+-- CreateIndex
+CREATE INDEX "WebhookEvent_createdAt_idx" ON "WebhookEvent"("createdAt");
+
+-- CreateIndex
+CREATE INDEX "WebhookEvent_processingStatus_idx" ON "WebhookEvent"("processingStatus");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "WebhookEvent_mpEventType_mpDataId_key" ON "WebhookEvent"("mpEventType", "mpDataId");
+
 -- AddForeignKey
 ALTER TABLE "RestaurantOrganization" ADD CONSTRAINT "RestaurantOrganization_ownerId_fkey" FOREIGN KEY ("ownerId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "RestaurantOrganization" ADD CONSTRAINT "RestaurantOrganization_planId_fkey" FOREIGN KEY ("planId") REFERENCES "Plan"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "RestaurantOrganization" ADD CONSTRAINT "RestaurantOrganization_customPlanId_fkey" FOREIGN KEY ("customPlanId") REFERENCES "Plan"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "OrganizationManager" ADD CONSTRAINT "OrganizationManager_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "RestaurantOrganization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -483,6 +597,9 @@ ALTER TABLE "ManagerRestaurantAssignment" ADD CONSTRAINT "ManagerRestaurantAssig
 
 -- AddForeignKey
 ALTER TABLE "Restaurant" ADD CONSTRAINT "Restaurant_organizationId_fkey" FOREIGN KEY ("organizationId") REFERENCES "RestaurantOrganization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "BookingWaitlistEntry" ADD CONSTRAINT "BookingWaitlistEntry_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "RestaurantMenu" ADD CONSTRAINT "RestaurantMenu_restaurantId_fkey" FOREIGN KEY ("restaurantId") REFERENCES "Restaurant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
