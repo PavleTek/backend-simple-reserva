@@ -1,0 +1,30 @@
+---
+description: Prisma migration policy for backend-simple-reserva
+globs:
+  - "prisma/**"
+  - "prisma/**/*"
+alwaysApply: false
+---
+
+# Prisma migration policy (HARD RULES)
+
+When working anywhere inside `backend-simple-reserva/prisma/` you MUST follow these rules. They are non-negotiable.
+
+## Forbidden
+
+- `prisma db push` is NEVER allowed. Not for prototyping, not for "just this once", not even with `--accept-data-loss`. Do not suggest it, do not run it, do not document it as an option.
+- Do NOT hand-edit files inside `prisma/migrations/<timestamp>_*/migration.sql` after the migration has been committed. Create a new migration instead.
+- Do NOT delete or rename existing migration folders unless the user explicitly asks for a squash/reset.
+
+## Required workflow for ANY schema change
+
+1. Edit `prisma/schema.prisma`.
+2. Run `npx prisma migrate dev --name <short_snake_case_description>` against your local dev DB.
+3. Verify with `npx prisma migrate status` and `npx prisma validate`.
+4. Commit BOTH the `schema.prisma` change AND the new `prisma/migrations/<timestamp>_<name>/` folder in the same commit.
+5. Production deploys apply changes via `npx prisma migrate deploy` only — never `db push`.
+
+## If migrate dev fails
+
+- Read the error. Fix the schema or write a custom migration via `npx prisma migrate dev --create-only --name <name>` and edit the generated SQL before re-running `migrate dev`.
+- If you truly need to wipe local dev DB: `npx prisma migrate reset` (local only, asks for confirmation). Never run reset against any non-local `DATABASE_URL`.
