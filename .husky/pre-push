@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+
+set -e
+
+echo "[pre-push] prisma generate..."
+npx prisma generate
+
+echo "[pre-push] prisma validate..."
+npx prisma validate
+
+echo "[pre-push] prisma migrate diff (schema vs migrations folder)..."
+npx prisma migrate diff \
+  --from-migrations prisma/migrations \
+  --to-schema-datamodel prisma/schema.prisma \
+  --shadow-database-url "$DATABASE_URL" \
+  --exit-code
+
+echo "[pre-push] npm run build..."
+npm run build
+
+echo "[pre-push] OK"
