@@ -2,6 +2,14 @@
 
 set -e
 
+# Load .env so DATABASE_URL is available for prisma migrate diff
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . .env
+  set +a
+fi
+
 echo "[pre-push] prisma generate..."
 npx prisma generate
 
