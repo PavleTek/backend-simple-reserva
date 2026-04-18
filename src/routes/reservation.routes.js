@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const { isSlotInSchedule } = require('../utils/scheduleUtils');
 const {
+  loadDaySnapshot,
   getAvailabilitySlotsForRestaurant,
   findNextAvailableDateForSlug,
 } = require('../services/availabilityService');
@@ -14,7 +15,12 @@ const {
   notifyRestaurantWaitlistEntry,
 } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
-const { getEffectiveTimezone, parseInTimezone, nowInTimezone } = require('../utils/timezone');
+const {
+  getEffectiveTimezone,
+  parseInTimezone,
+  nowInTimezone,
+  getDayOfWeekInTimezone,
+} = require('../utils/timezone');
 const { incrementDataVersion } = require('../utils/dataVersion');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
 const { pickAutoTable } = require('../lib/tableAssignment');
@@ -105,7 +111,9 @@ router.patch('/token/:secureToken', async (req, res, next) => {
       throw new ValidationError('Formato de fecha u hora inválido');
     }
 
-    const dayOfWeek = dateTime.getDay(); // Note: luxon toJSDate() follows JS getDay() (0=Sun)
+    // Day-of-week MUST be computed in the restaurant's timezone, NOT via dateTime.getDay()
+    // which uses the server's local timezone and gives wrong answers when they differ.
+    const dayOfWeek = getDayOfWeekInTimezone(datePart, timezone);
     const schedule = await prisma.schedule.findFirst({
       where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
     });
@@ -325,7 +333,14 @@ router.post('/', async (req, res, next) => {
 
     const slotDuration = restaurant.defaultSlotDurationMinutes;
     const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
-    const dayOfWeek = dateTime.getDay();
+    // Day-of-week and slot minutes MUST be derived from the (date, time) request
+    // strings in the restaurant's timezone, NOT from dateTime.getDay()/getHours()
+    // which would use the server's local timezone and silently return the wrong
+    // values (e.g. allowing a Saturday booking when the restaurant is closed
+    // because the server reads it as Friday).
+    const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
+    const [reqH, reqM] = String(time).split(':').map(Number);
+    const reqMinutes = reqH * 60 + reqM;
 
     const reservation = await prisma.$transaction(
       async (tx) => {
@@ -334,7 +349,6 @@ router.post('/', async (req, res, next) => {
         });
         if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
-        const reqMinutes = dateTime.getHours() * 60 + dateTime.getMinutes();
         if (!isSlotInSchedule(schedule, reqMinutes, slotDuration, restaurant.scheduleMode)) {
           throw new ValidationError('La hora solicitada está fuera del horario de atención');
         }
@@ -528,6 +542,62 @@ router.post('/:slug/waitlist', async (req, res, next) => {
     );
 
     res.status(201).json({ id: entry.id, message: 'Recibimos tu solicitud. El restaurante puede contactarte.' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/public/restaurants/:slug/day-snapshot?date=YYYY-MM-DD
+ *
+ * Returns everything needed by the frontend to compute slot availability for ANY
+ * (partySize, zoneId) combination on the specified day — without further API calls.
+ *
+ * The response is party-size and zone agnostic.  The client applies computeSlots()
+ * (src/lib/availability.ts) to derive the actual available slots.
+ *
+ * IMPORTANT: `reservations` only contains { tableId, startUtc, durationMinutes } — no PII.
+ */
+router.get('/:slug/day-snapshot', async (req, res, next) => {
+  try {
+    const { slug } = req.params;
+    const { date } = req.query;
+
+    if (!date) {
+      throw new ValidationError('Se requiere el parámetro date');
+    }
+
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { slug, isActive: true },
+      include: {
+        organization: { include: { owner: { select: { country: true } } } },
+      },
+    });
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+    const ownerCountry = restaurant.organization?.owner?.country || 'CL';
+    const timezone = getEffectiveTimezone(restaurant, ownerCountry);
+
+    const access = await hasActiveAccess(restaurant.organizationId);
+    if (!access) {
+      return res.json({
+        date,
+        timezone,
+        subscriptionActive: false,
+        schedule: null,
+        defaults: null,
+        durationRules: [],
+        tables: [],
+        zones: [],
+        blockedSlots: [],
+        reservations: [],
+        serverNowUtc: new Date().toISOString(),
+        isToday: false,
+      });
+    }
+
+    const snapshot = await loadDaySnapshot(restaurant, { dateStr: date, timezone });
+    return res.json({ ...snapshot, subscriptionActive: true });
   } catch (error) {
     next(error);
   }

@@ -57,6 +57,36 @@ function nowInTimezone(timezone) {
   return DateTime.now().setZone(timezone);
 }
 
+/**
+ * Returns the JS-style day of week (0=Sunday … 6=Saturday) for a given date,
+ * interpreted in the supplied IANA timezone.
+ *
+ * IMPORTANT: never use `Date.prototype.getDay()` for restaurant-scoped logic — it
+ * returns the day in the SERVER's local timezone, which silently produces the
+ * wrong day-of-week whenever the server runs in a timezone different from the
+ * restaurant's (e.g. server in UTC, restaurant in America/Santiago at midnight
+ * local would give getDay()=Friday for a Saturday booking).
+ *
+ * Accepts either:
+ *   - a "YYYY-MM-DD" string (recommended — unambiguous, timezone-agnostic input)
+ *   - a JS Date object (interpreted as a UTC moment in time, then localized)
+ *
+ * @param {string|Date} dateOrStr
+ * @param {string} timezone - IANA timezone string
+ * @returns {number} 0..6
+ */
+function getDayOfWeekInTimezone(dateOrStr, timezone) {
+  const dt =
+    typeof dateOrStr === 'string'
+      ? DateTime.fromISO(dateOrStr, { zone: timezone })
+      : DateTime.fromJSDate(dateOrStr).setZone(timezone);
+  if (!dt.isValid) {
+    throw new Error(`Invalid date for getDayOfWeekInTimezone: ${dt.invalidReason}`);
+  }
+  // Luxon weekday: 1=Monday .. 7=Sunday → JS getDay: 0=Sunday .. 6=Saturday
+  return dt.weekday === 7 ? 0 : dt.weekday;
+}
+
 module.exports = {
   COUNTRY_TIMEZONES,
   SUPPORTED_COUNTRIES,
@@ -64,4 +94,5 @@ module.exports = {
   parseInTimezone,
   formatInTimezone,
   nowInTimezone,
+  getDayOfWeekInTimezone,
 };

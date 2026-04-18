@@ -7,7 +7,13 @@ const { getRestaurant, updateRestaurant, completeOnboarding } = require('../cont
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const { isSlotInSchedule, generateTimeSlots, resolveDuration } = require('../utils/scheduleUtils');
 const { NotFoundError, ValidationError } = require('../utils/errors');
-const { getEffectiveTimezone, parseInTimezone, nowInTimezone, formatInTimezone } = require('../utils/timezone');
+const {
+  getEffectiveTimezone,
+  parseInTimezone,
+  nowInTimezone,
+  formatInTimezone,
+  getDayOfWeekInTimezone,
+} = require('../utils/timezone');
 const { incrementDataVersion } = require('../utils/dataVersion');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
 const { pickAutoTable, sortFreeTablesForUi } = require('../lib/tableAssignment');
@@ -261,7 +267,8 @@ router.get('/availability', async (req, res, next) => {
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
 
     const requestedDate = parseInTimezone(date, '00:00', timezone);
-    const dayOfWeek = requestedDate.getDay();
+    // Day-of-week MUST be in the restaurant's timezone (see utils/timezone.js).
+    const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
 
     const schedule = await prisma.schedule.findFirst({
       where: { restaurantId, dayOfWeek, isActive: true },
@@ -608,7 +615,12 @@ router.post('/reservations', async (req, res, next) => {
     });
     const slotDuration = resolveDuration(restaurant, size, durationRules);
     const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
-    const dayOfWeek = dateTime.getDay();
+    // Day-of-week and slot minutes derived from the request strings interpreted in
+    // the restaurant's timezone — never via dateTime.getDay()/getHours() (which use
+    // the server's local timezone, see utils/timezone.js).
+    const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
+    const [reqH, reqM] = String(time).split(':').map(Number);
+    const reqMinutes = reqH * 60 + reqM;
 
     const reservation = await prisma.$transaction(
       async (tx) => {
@@ -617,7 +629,6 @@ router.post('/reservations', async (req, res, next) => {
         });
         if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
-        const reqMinutes = dateTime.getHours() * 60 + dateTime.getMinutes();
         if (!isSlotInSchedule(schedule, reqMinutes, slotDuration, restaurant.scheduleMode)) {
           throw new ValidationError('La hora solicitada está fuera del horario de atención');
         }
@@ -779,7 +790,11 @@ router.patch('/reservations/:id', async (req, res, next) => {
       });
       const slotDuration = resolveDuration(restaurant, size, durationRules);
       const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
-      const dayOfWeek = dateTime.getDay();
+      // Day-of-week and slot minutes in the restaurant's timezone
+      // (see utils/timezone.js — never use dateTime.getDay()/getHours() here).
+      const dayOfWeek = getDayOfWeekInTimezone(dateStr, timezone);
+      const [reqH, reqM] = String(timeStr).split(':').map(Number);
+      const reqMinutes = reqH * 60 + reqM;
 
       const updated = await prisma.$transaction(
         async (tx) => {
@@ -788,7 +803,6 @@ router.patch('/reservations/:id', async (req, res, next) => {
           });
           if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
-          const reqMinutes = dateTime.getHours() * 60 + dateTime.getMinutes();
           if (!isSlotInSchedule(schedule, reqMinutes, slotDuration, restaurant.scheduleMode)) {
             throw new ValidationError('La hora solicitada está fuera del horario de atención');
           }
