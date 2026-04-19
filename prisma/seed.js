@@ -23,6 +23,24 @@ async function main() {
     Subscription: { created: 0, skipped: 0 },
   };
 
+  // One-shot guard: this seed is intended ONLY for the very first launch on
+  // an empty database. If ANY user already exists, abort entirely — do not
+  // touch plans, users, organizations, restaurants, schedules, or any other
+  // table. To re-seed intentionally you must wipe the database first.
+  const existingUserCount = await prisma.user.count();
+  if (existingUserCount > 0) {
+    console.log(`[seed] Skipped: database already has ${existingUserCount} user(s). Seed is one-shot for fresh launches only.`);
+    return;
+  }
+  console.log('[seed] No users found — proceeding with one-time seed of fresh database.');
+
+  // Seed password must be provided via env var — no insecure default allowed.
+  const seedPassword = process.env.SEED_PASSWORD;
+  if (!seedPassword || seedPassword.length < 8) {
+    throw new Error('[seed] SEED_PASSWORD env var is required (min 8 chars). Refusing to seed with insecure default.');
+  }
+  const passwordHash = await bcrypt.hash(seedPassword, 12);
+
   // 0. Seed Plan (basico, profesional, premium)
   const plans = [
     {
@@ -85,7 +103,7 @@ async function main() {
       billingFrequencyType: 'months',
     },
   ];
-  
+
   const planMap = {};
   for (const data of plans) {
     const p = await prisma.plan.upsert({
@@ -122,9 +140,6 @@ async function main() {
   summary.Configuration.created = 1;
 
   // 3. Seed Users & Organizations
-  const seedPassword = 'asdf';
-  const passwordHash = await bcrypt.hash(seedPassword, 12);
-
   const superAdmins = [
     { email: 'admin@simplereserva.com', name: 'Super', lastName: 'Admin', role: 'super_admin' },
     { email: 'pavle@simplereserva.com', name: 'Pavle', lastName: 'Admin', role: 'super_admin' },
@@ -151,12 +166,12 @@ async function main() {
   for (const o of owners) {
     const user = await prisma.user.upsert({
       where: { email: o.email },
-      create: { 
-        email: o.email, 
-        name: o.name, 
-        lastName: o.lastName, 
-        role: o.role, 
-        hashedPassword: passwordHash 
+      create: {
+        email: o.email,
+        name: o.name,
+        lastName: o.lastName,
+        role: o.role,
+        hashedPassword: passwordHash
       },
       update: { role: o.role },
     });
@@ -175,7 +190,6 @@ async function main() {
     orgs.push(org);
     summary.RestaurantOrganization.created += 1;
 
-    // Use upsert or check for existing subscription to avoid duplicates
     const existingSub = await prisma.subscription.findFirst({
       where: { organizationId: org.id, status: 'trial' }
     });
@@ -255,12 +269,12 @@ async function main() {
   for (const m of managers) {
     const user = await prisma.user.upsert({
       where: { email: m.email },
-      create: { 
-        email: m.email, 
-        name: m.name, 
-        lastName: m.lastName, 
-        role: m.role, 
-        hashedPassword: passwordHash 
+      create: {
+        email: m.email,
+        name: m.name,
+        lastName: m.lastName,
+        role: m.role,
+        hashedPassword: passwordHash
       },
       update: { role: m.role },
     });
@@ -288,9 +302,8 @@ async function main() {
 
   // 6. Seed Zones, Tables, Schedules, etc.
   for (const rest of restaurants) {
-    // Check for existing zones to avoid duplicates
     const zoneNames = rest.slug === 'la-casona-de-pedro' ? ['Salón Principal', 'Terraza'] : ['Salón Principal'];
-    
+
     for (const zoneName of zoneNames) {
       let zone = await prisma.zone.findFirst({
         where: { restaurantId: rest.id, name: zoneName }
@@ -302,7 +315,6 @@ async function main() {
         summary.Zone.created += 1;
       }
 
-      // Add tables based on zone
       const tablesToAdd = [];
       if (zoneName === 'Salón Principal') {
         tablesToAdd.push({ label: 'M1', minCapacity: 2, maxCapacity: 4 });

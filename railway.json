@@ -4,7 +4,10 @@
     "buildCommand": "npm install && npx prisma generate"
   },
   "deploy": {
-    "preDeployCommand": ["npm run db:deploy"],
+    "preDeployCommand": [
+      "npx prisma migrate deploy",
+      "node prisma/seed.js"
+    ],
     "startCommand": "npx prisma migrate deploy && node src/index.js"
   }
 }

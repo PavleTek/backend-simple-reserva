@@ -28,3 +28,10 @@ When working anywhere inside `backend-simple-reserva/prisma/` you MUST follow th
 
 - Read the error. Fix the schema or write a custom migration via `npx prisma migrate dev --create-only --name <name>` and edit the generated SQL before re-running `migrate dev`.
 - If you truly need to wipe local dev DB: `npx prisma migrate reset` (local only, asks for confirmation). Never run reset against any non-local `DATABASE_URL`.
+
+## Seeding policy
+
+- `prisma/seed.js` is a ONE-SHOT script that runs on Railway pre-deploy and aborts immediately if any user already exists in the DB. Do NOT remove the `await prisma.user.count() > 0` guard at the top of `main()`.
+- Seeding requires the `SEED_PASSWORD` env var to be set (min 8 chars); never hardcode a password.
+- To intentionally re-seed (local dev only): wipe the DB with `npx prisma migrate reset` then run `npm run seed`. Never re-seed prod.
+
