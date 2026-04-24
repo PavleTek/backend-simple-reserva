@@ -34,12 +34,7 @@ async function main() {
   }
   console.log('[seed] No users found — proceeding with one-time seed of fresh database.');
 
-  // Seed password must be provided via env var — no insecure default allowed.
-  const seedPassword = process.env.SEED_PASSWORD;
-  if (!seedPassword || seedPassword.length < 8) {
-    throw new Error('[seed] SEED_PASSWORD env var is required (min 8 chars). Refusing to seed with insecure default.');
-  }
-  const passwordHash = await bcrypt.hash(seedPassword, 12);
+  const passwordHash = await bcrypt.hash('asdf', 12);
 
   // 0. Seed Plan (basico, profesional, premium)
   const plans = [

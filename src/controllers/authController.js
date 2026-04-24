@@ -111,7 +111,7 @@ const login = async (req, res) => {
 
     if (!user) {
       console.log('[AUTH] Login failed: no user found for email', identifier);
-      res.status(401).json({ error: 'Credenciales inválidas' });
+      res.status(401).json({ error: 'No existe ninguna cuenta con ese correo electrónico.' });
       return;
     }
 
@@ -120,7 +120,7 @@ const login = async (req, res) => {
     const isPasswordValid = await comparePassword(password, user.hashedPassword);
     if (!isPasswordValid) {
       console.log('[AUTH] Login failed: invalid password for', user.email);
-      res.status(401).json({ error: 'Credenciales inválidas' });
+      res.status(401).json({ error: 'Contraseña incorrecta.' });
       return;
     }
 
