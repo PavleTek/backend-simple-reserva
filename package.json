@@ -9,6 +9,7 @@
     "build": "npx prisma generate",
     "migrate": "npx prisma migrate deploy",
     "seed": "node prisma/seed.js",
+    "railway-predeploy": "npm run migrate && npm run seed",
     "postinstall": "npm run build",
     "prepare": "husky",
     "test": "node --test src/**/*.test.js",

@@ -4,7 +4,7 @@
     "buildCommand": "npm install && npx prisma generate"
   },
   "deploy": {
-    "preDeployCommand": "npx prisma migrate deploy && node prisma/seed.js",
+    "preDeployCommand": "npm run railway-predeploy",
     "startCommand": "npx prisma migrate deploy && node src/index.js"
   }
 }
