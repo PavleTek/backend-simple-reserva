@@ -8,6 +8,3 @@
     "startCommand": "npx prisma migrate deploy && node src/index.js"
   }
 }
--reserva
-
-npm run dev
