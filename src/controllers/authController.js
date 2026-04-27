@@ -1,5 +1,6 @@
 const prisma = require('../lib/prisma');
 const planService = require('../services/planService');
+const promoCodeService = require('../services/promoCodeService');
 const { comparePassword, hashPassword } = require('../utils/password');
 const { generateToken, generateTempToken, verifyToken } = require('../utils/jwt');
 const {
@@ -13,6 +14,7 @@ const {
 const { sendEmail } = require('../services/emailService');
 const { SUPPORTED_COUNTRIES } = require('../utils/timezone');
 const { getPasswordPolicyError } = require('../utils/passwordPolicy');
+const { ValidationError } = require('../utils/errors');
 
 function stripUser(user, lastLoginOverride) {
   return {
@@ -199,7 +201,7 @@ const login = async (req, res) => {
 
 const register = async (req, res) => {
   try {
-    const { email, password, name, lastName, restaurantName, restaurantSlug, plan, country } = req.body;
+    const { email, password, name, lastName, restaurantName, restaurantSlug, plan, country, promoCode: promoCodeInput } = req.body;
 
     if (!email || !password || !restaurantName) {
       res.status(400).json({ error: 'Se requiere email, contraseña y nombre del restaurante' });
@@ -239,9 +241,16 @@ const register = async (req, res) => {
       return;
     }
 
+    // Validate promo code before we start writing anything
+    let validatedPromoCode = null;
+    if (promoCodeInput && promoCodeInput.trim()) {
+      const { promoCode } = await promoCodeService.validatePromoCode({ code: promoCodeInput, email });
+      validatedPromoCode = promoCode;
+    }
+
     const hashedPassword = await hashPassword(password);
 
-    const trialEndsAt = (() => {
+    const defaultTrialEndsAt = (() => {
       const d = new Date();
       d.setDate(d.getDate() + 14);
       return d;
@@ -260,16 +269,34 @@ const register = async (req, res) => {
         }
       });
 
-      // 2. Find default plan
-      const planSKU = plan || 'plan-basico';
-      const defaultPlan = await tx.plan.findFirst({
-        where: { productSKU: planSKU, isDefault: true }
-      }) || await tx.plan.findFirst({
-        where: { isDefault: true }
-      });
+      let activePlan;
+      let trialEndsAt;
+      let promoCodeResult = null;
+      let txPromo = null;
 
-      if (!defaultPlan) {
-        throw new Error('No se encontró una configuración de plan válida');
+      if (validatedPromoCode) {
+        // Re-validate inside transaction for concurrency safety (reads with tx client)
+        const validated = await promoCodeService.validatePromoCode({
+          code: validatedPromoCode.code,
+          email,
+          tx,
+        });
+        txPromo = validated.promoCode;
+        activePlan = txPromo.plan;
+        trialEndsAt = promoCodeService.computeAccessEnd(txPromo.durationValue, txPromo.durationUnit);
+      } else {
+        // 2. Find default plan
+        const planSKU = plan || 'plan-basico';
+        activePlan = await tx.plan.findFirst({
+          where: { productSKU: planSKU, isDefault: true }
+        }) || await tx.plan.findFirst({
+          where: { isDefault: true }
+        });
+
+        if (!activePlan) {
+          throw new Error('No se encontró una configuración de plan válida');
+        }
+        trialEndsAt = defaultTrialEndsAt;
       }
 
       // 3. Create Organization
@@ -277,10 +304,21 @@ const register = async (req, res) => {
         data: {
           name: `${restaurantName} Org`,
           ownerId: user.id,
-          planId: defaultPlan.id,
+          planId: activePlan.id,
           trialEndsAt,
         }
       });
+
+      // Record promo code redemption now that we have the org id
+      if (txPromo) {
+        const { planAccessEndsAt } = await promoCodeService.redeemPromoCodeForSignup({
+          promoCode: txPromo,
+          userId: user.id,
+          organizationId: organization.id,
+          tx,
+        });
+        promoCodeResult = { code: txPromo.code, planName: activePlan.name, accessEndsAt: planAccessEndsAt };
+      }
 
       // 4. Create Restaurant
       const restaurant = await tx.restaurant.create({
@@ -296,13 +334,13 @@ const register = async (req, res) => {
       await tx.subscription.create({
         data: {
           organizationId: organization.id,
-          planId: defaultPlan.id,
+          planId: activePlan.id,
           status: 'trial',
           isActiveSubscription: true,
         }
       });
 
-      return { user, restaurant };
+      return { user, restaurant, promoCodeResult };
     });
 
     const userWithoutPassword = stripUser(result.user);
@@ -332,8 +370,13 @@ const register = async (req, res) => {
       restaurants,
       token,
       requiresPayment: false,
+      ...(result.promoCodeResult && { promoCode: result.promoCodeResult }),
     });
   } catch (error) {
+    if (error instanceof ValidationError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     console.error('Register error:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }

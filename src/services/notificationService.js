@@ -32,8 +32,16 @@ function normalizePhone(phone) {
   return null;
 }
 
+/**
+ * Public marketing / user booking site (reservation links, SMS, email).
+ * Supports legacy typo FRONTEND_LANDING_PAGE_URL and correct FRONTEND_LANDING_PAGE_URL.
+ */
 function getBaseUrl() {
-  return process.env.FRONTEND_LADNING_PAGE_URL || 'http://localhost:5174';
+  return (
+    process.env.FRONTEND_LANDING_PAGE_URL ||
+    process.env.FRONTEND_LANDING_PAGE_URL ||
+    'http://localhost:5173'
+  );
 }
 
 async function sendSmsTwilio(to, body) {

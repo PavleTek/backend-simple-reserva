@@ -1402,4 +1402,164 @@ router.post('/whatsapp/templates/sync', async (req, res, next) => {
   }
 });
 
+// ─── Promo Codes (super admin) ────────────────────────────────────────────────
+
+const promoCodeService = require('../services/promoCodeService');
+
+router.get('/promo-codes', async (req, res, next) => {
+  try {
+    const { type, isActive } = req.query;
+    const where = {};
+    if (type) where.type = type;
+    if (isActive !== undefined) where.isActive = isActive === 'true';
+
+    const promoCodes = await prisma.promoCode.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        plan: { select: { id: true, name: true, productSKU: true } },
+        _count: { select: { redemptions: true } },
+      },
+    });
+    res.json(promoCodes);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/promo-codes/:id', async (req, res, next) => {
+  try {
+    const promoCode = await prisma.promoCode.findUnique({
+      where: { id: req.params.id },
+      include: {
+        plan: { select: { id: true, name: true, productSKU: true } },
+        redemptions: {
+          orderBy: { redeemedAt: 'desc' },
+          take: 50,
+          include: {
+            // userId is a plain string ref — join via user lookup
+          },
+        },
+        _count: { select: { redemptions: true } },
+      },
+    });
+    if (!promoCode) throw new NotFoundError('Código promocional no encontrado');
+    res.json(promoCode);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/promo-codes', async (req, res, next) => {
+  try {
+    const allowed = [
+      'code', 'type', 'planId', 'durationValue', 'durationUnit',
+      'maxRedemptions', 'lockedToEmail', 'isActive', 'expiresAt', 'notes',
+    ];
+    const data = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) data[key] = req.body[key];
+    }
+
+    // Generate a code if not provided
+    if (!data.code) {
+      data.code = await promoCodeService.generateUniqueCode(10);
+    } else {
+      data.code = String(data.code).trim().toUpperCase();
+    }
+
+    const type = data.type || 'signup_plan_grant';
+    if (type === 'signup_plan_grant') {
+      if (!data.planId) throw new ValidationError('planId es obligatorio para códigos de tipo signup_plan_grant');
+      if (!data.durationValue) throw new ValidationError('durationValue es obligatorio para códigos de tipo signup_plan_grant');
+      if (!['days', 'months'].includes(data.durationUnit)) throw new ValidationError('durationUnit debe ser "days" o "months"');
+      const plan = await prisma.plan.findUnique({ where: { id: data.planId } });
+      if (!plan) throw new ValidationError('El plan especificado no existe');
+    }
+
+    data.createdById = req.user.id;
+
+    const promoCode = await prisma.promoCode.create({
+      data,
+      include: { plan: { select: { id: true, name: true, productSKU: true } } },
+    });
+    res.status(201).json(promoCode);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/promo-codes/:id', async (req, res, next) => {
+  try {
+    const existing = await prisma.promoCode.findUnique({ where: { id: req.params.id } });
+    if (!existing) throw new NotFoundError('Código promocional no encontrado');
+
+    const allowed = [
+      'type', 'planId', 'durationValue', 'durationUnit',
+      'maxRedemptions', 'lockedToEmail', 'isActive', 'expiresAt', 'notes',
+    ];
+    const data = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) data[key] = req.body[key];
+    }
+
+    const type = data.type || existing.type;
+    if (type === 'signup_plan_grant') {
+      const planId = data.planId !== undefined ? data.planId : existing.planId;
+      const durationValue = data.durationValue !== undefined ? data.durationValue : existing.durationValue;
+      const durationUnit = data.durationUnit !== undefined ? data.durationUnit : existing.durationUnit;
+      if (!planId) throw new ValidationError('planId es obligatorio para códigos de tipo signup_plan_grant');
+      if (!durationValue) throw new ValidationError('durationValue es obligatorio para códigos de tipo signup_plan_grant');
+      if (!['days', 'months'].includes(durationUnit)) throw new ValidationError('durationUnit debe ser "days" o "months"');
+      if (data.planId) {
+        const plan = await prisma.plan.findUnique({ where: { id: planId } });
+        if (!plan) throw new ValidationError('El plan especificado no existe');
+      }
+    }
+
+    const updated = await prisma.promoCode.update({
+      where: { id: req.params.id },
+      data,
+      include: { plan: { select: { id: true, name: true, productSKU: true } } },
+    });
+    res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/promo-codes/:id', async (req, res, next) => {
+  try {
+    const existing = await prisma.promoCode.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, timesRedeemed: true },
+    });
+    if (!existing) throw new NotFoundError('Código promocional no encontrado');
+    if (existing.timesRedeemed > 0) {
+      return res.status(409).json({
+        error: 'No se puede eliminar un código que ya ha sido canjeado. Desactívalo en su lugar.',
+      });
+    }
+    await prisma.promoCode.delete({ where: { id: req.params.id } });
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/promo-codes/:id/disable', async (req, res, next) => {
+  try {
+    const existing = await prisma.promoCode.findUnique({ where: { id: req.params.id } });
+    if (!existing) throw new NotFoundError('Código promocional no encontrado');
+    const updated = await prisma.promoCode.update({
+      where: { id: req.params.id },
+      data: { isActive: false },
+      include: { plan: { select: { id: true, name: true, productSKU: true } } },
+    });
+    res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

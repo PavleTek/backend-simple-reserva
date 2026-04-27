@@ -387,6 +387,7 @@ model Plan {
   subscriptions            Subscription[]
   paymentReceipts          PaymentReceipt[]
   checkoutSessions         CheckoutSession[]
+  promoCodes               PromoCode[]               @relation("PromoCodePlan")
 }
 
 // Booking analytics events - tracking user behavior on the booking page
@@ -483,6 +484,52 @@ model CheckoutSession {
   @@index([userId])
   @@index([status])
   @@index([pendingChangeFromSubscriptionId])
+}
+
+model PromoCode {
+  id              String    @id @default(cuid())
+  code            String    @unique
+  type            String    @default("signup_plan_grant") // future: "discount", "extend_trial", etc.
+
+  // What this code grants (for type=signup_plan_grant)
+  planId          String?
+  plan            Plan?     @relation("PromoCodePlan", fields: [planId], references: [id])
+  durationValue   Int?      // e.g. 3
+  durationUnit    String?   // "days" | "months"
+
+  // Redemption rules
+  maxRedemptions  Int?      // null => unlimited (still gated by isActive/expiresAt)
+  timesRedeemed   Int       @default(0)
+  lockedToEmail   String?   // optional pin to a single email (case-insensitive match)
+
+  // Lifecycle
+  isActive        Boolean   @default(true)
+  expiresAt       DateTime? // code itself stops working after this date
+
+  notes           String?
+  createdById     String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  redemptions     PromoCodeRedemption[]
+
+  @@index([type])
+  @@index([isActive])
+  @@index([planId])
+}
+
+model PromoCodeRedemption {
+  id               String    @id @default(cuid())
+  promoCodeId      String
+  promoCode        PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  userId           String
+  organizationId   String
+  redeemedAt       DateTime  @default(now())
+  planAccessEndsAt DateTime? // mirror of trialEndsAt at redemption time, for audit
+
+  @@index([promoCodeId])
+  @@index([userId])
+  @@index([organizationId])
 }
 
 /// Registro persistente de cada evento webhook recibido desde MercadoPago.
