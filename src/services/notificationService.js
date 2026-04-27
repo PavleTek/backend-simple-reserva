@@ -437,10 +437,11 @@ async function sendPaymentFailureNotification(options) {
  * @param {Date|string} options.dateTime - Reservation date/time
  * @param {number} options.partySize - Party size
  * @param {string} options.secureToken - Self-service token
+ * @param {string|null} [options.timezone] - IANA timezone for formatting date/time in the email body
  * @returns {Promise<boolean>}
  */
 async function sendReservationConfirmationEmail(options) {
-  const { customerEmail, restaurantName, customerName, dateTime, partySize, secureToken } = options;
+  const { customerEmail, restaurantName, customerName, dateTime, partySize, secureToken, timezone } = options;
   if (!customerEmail) {
     console.log('[Notification] sendReservationConfirmationEmail: skipped — no customerEmail');
     return false;
@@ -478,6 +479,8 @@ async function sendReservationConfirmationEmail(options) {
     dateTime,
     partySize,
     viewUrl,
+    timezone: timezone || null,
+    assetBaseUrl: baseUrl,
   });
 
   try {

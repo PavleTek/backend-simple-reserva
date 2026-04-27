@@ -460,7 +460,7 @@ All notifications are fire-and-forget — called after the transaction commits, 
 | Function | Trigger | Channel |
 |----------|---------|---------|
 | `sendReservationConfirmation` | Reservation created | WhatsApp to customer |
-| `sendReservationConfirmationEmail` | Reservation created (if email provided) | Email to customer |
+| `sendReservationConfirmationEmail` | Reservation created (if email provided) | HTML email to customer (branded template in `src/templates/reservationConfirmationEmail.js`, date/time in restaurant IANA timezone; palette mirrors [user-front-simple-reserva/docs/STYLING.md](../user-front-simple-reserva/docs/STYLING.md)) |
 | `sendModificationAlertToCustomer` | Reservation modified or cancelled | WhatsApp to customer |
 | `sendCancellationNotification` | Reservation cancelled | Email to restaurant owner |
 | `notifyRestaurantWaitlistEntry` | Waitlist entry created | WhatsApp/email to restaurant |

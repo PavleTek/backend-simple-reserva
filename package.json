@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "dev": "npx prisma generate && NODE_ENV=development nodemon src/index.js",
+    "dev:all": "concurrently -n backend,user,admin,restaurant -c blue,cyan,magenta,yellow \"npm run dev\" \"npm --prefix ../user-front-simple-reserva run dev\" \"npm --prefix ../admin-front-simple-reserva run dev\" \"npm --prefix ../restaurant-front-simple-reserva run dev\"",
     "start": "node src/index.js",
     "build": "npx prisma generate",
     "migrate": "npx prisma migrate deploy",
@@ -44,6 +45,7 @@
     "zod": "^3.25.3"
   },
   "devDependencies": {
+    "concurrently": "^9.2.1",
     "cypress": "^14.3.0",
     "husky": "^9.1.7",
     "nodemon": "^3.1.10"

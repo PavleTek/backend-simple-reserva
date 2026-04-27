@@ -440,6 +440,7 @@ router.post('/', async (req, res, next) => {
             dateTime: reservation.dateTime,
             partySize: size,
             secureToken: reservation.secureToken,
+            timezone,
           }).catch((err) => console.error('[Notification] Email confirmation failed:', err));
         }
       }
