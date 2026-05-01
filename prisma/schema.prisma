@@ -365,6 +365,9 @@ model Plan {
   multipleMenu             Boolean  @default(false)
   prioritySupport          Boolean  @default(false)
 
+  comingSoon               Boolean  @default(false)
+  comingSoonLabel          String?
+
   priceCLP                 Decimal  @default(0) @db.Decimal(10,2)
   priceUSD                 Decimal  @default(0) @db.Decimal(10,2)
   priceEUR                 Decimal  @default(0) @db.Decimal(10,2)

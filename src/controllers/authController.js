@@ -299,6 +299,10 @@ const register = async (req, res) => {
         trialEndsAt = defaultTrialEndsAt;
       }
 
+      if (activePlan.comingSoon) {
+        throw new ValidationError('Este plan aún no está disponible.');
+      }
+
       // 3. Create Organization
       const organization = await tx.restaurantOrganization.create({
         data: {

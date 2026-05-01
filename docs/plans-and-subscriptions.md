@@ -46,6 +46,16 @@ Three default public plans ship via `prisma/seed.js` (`isDefault: true`). A fall
 | `freeTrialLengthUnit` | days | — | — |
 | `billingFrequency` | 1 | 1 | 1 |
 | `billingFrequencyType` | months | months | months |
+| `comingSoon` | false | false | false |
+| `comingSoonLabel` | null | null | null |
+
+### Coming soon plans
+
+Setting `comingSoon = true` on any `Plan` row makes it visible but fully disabled across all frontends:
+
+- **user-front landing** (`Pricing.tsx`, `SocialPricingCardsPage.tsx`): the card is rendered at 70% opacity with a "Próximamente" badge (or `comingSoonLabel` if set) and a non-clickable disabled button instead of the normal CTA. No link to `/register` is generated.
+- **restaurant-front billing** (`BillingPage.tsx`): the plan card shows the badge and a disabled CTA; all action branches (Activar, Cambiar plan, Reactivar) are replaced.
+- **backend** (`billing.routes.js`, `authController.js`): any attempt to check out or register using a `comingSoon` plan is rejected with HTTP 400. Existing subscriptions already on that plan are unaffected.
 
 > **Note:** Only `plan-basico` includes a free trial. The other plans activate immediately on purchase.
 
@@ -198,6 +208,8 @@ File: `backend-simple-reserva/src/controllers/authController.js`
 ## 7. What happens when someone buys a plan
 
 File: `backend-simple-reserva/src/services/mercadopagoService.js` (`activateOrganizationSubscription`)
+
+> **Note:** `POST /api/restaurant/:restaurantId/billing/checkout`, `/billing/change-plan`, and `/billing/reactivate` all return HTTP 400 if the target plan has `comingSoon = true`. The same guard applies to `POST /api/auth/register` when the requested plan is marked as coming soon.
 
 1. User goes to `/billing` in the restaurant frontend (`restaurant-front-simple-reserva/src/pages/BillingPage.tsx`).
 2. Clicking a plan calls `POST /api/restaurant/:restaurantId/billing/checkout` which:
@@ -385,7 +397,7 @@ All via `backend-simple-reserva/src/routes/admin.routes.js` (requires `super_adm
 | Edit subscription | `PATCH /api/admin/subscriptions/:id` | Updates `status`, `endDate`, `planId`, and/or `isActiveSubscription`; if `planId` changes: cascades to `RestaurantOrganization.planId` in a transaction + invalidates cache; if `isActiveSubscription = false`: cancels MP preapproval, sets `status = 'cancelled_by_admin'`, sets `endDate` and `gracePeriodEndsAt` to now, and invalidates cache |
 | List plans | `GET /api/admin/plans` | All plans sorted by display order |
 | Create plan | `POST /api/admin/plans` | Creates a new `Plan` row; clears plan cache |
-| Edit plan | `PATCH /api/admin/plans/:id` | Updates plan config; clears plan cache |
+| Edit plan | `PATCH /api/admin/plans/:id` | Updates plan config; clears plan cache. Includes `comingSoon` (boolean) and `comingSoonLabel` (string?) to mark a plan as visible-but-disabled across all frontends |
 | Delete plan | `DELETE /api/admin/plans/:id` | Only non-default plans; clears plan cache |
 | Assign custom plan | `POST /api/admin/organizations/:orgId/assign-plan` | Sets `customPlanId` on the org; makes that plan available in billing UI |
 | Get custom plan | `GET /api/admin/organizations/:orgId/custom-plan` | Returns the org's custom plan if set |

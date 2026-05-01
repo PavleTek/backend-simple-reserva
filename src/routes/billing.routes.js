@@ -268,6 +268,10 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
     });
     if (!plan) throw new Error(`Plan no encontrado: ${planSKU}`);
 
+    if (plan.comingSoon) {
+      return res.status(400).json({ error: 'Este plan aún no está disponible. Pronto podrás contratarlo.' });
+    }
+
     // Verificar que el plan es accesible para esta org:
     // debe ser público (isDefault) o ser el plan personalizado asignado a esta org
     if (!plan.isDefault) {
@@ -570,6 +574,10 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
     const plan = await prisma.plan.findUnique({ where: { productSKU: planSKU } });
     if (!plan) return res.status(400).json({ error: `Plan no encontrado: ${planSKU}` });
 
+    if (plan.comingSoon) {
+      return res.status(400).json({ error: 'Este plan aún no está disponible. Pronto podrás contratarlo.' });
+    }
+
     if (!plan.isDefault) {
       const org = await prisma.restaurantOrganization.findUnique({
         where: { id: organizationId },
@@ -665,6 +673,10 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
 
     const newPlan = await prisma.plan.findUnique({ where: { productSKU: newPlanSKU } });
     if (!newPlan) return res.status(400).json({ error: `Plan no encontrado: ${newPlanSKU}` });
+
+    if (newPlan.comingSoon) {
+      return res.status(400).json({ error: 'Este plan aún no está disponible. Pronto podrás contratarlo.' });
+    }
 
     if (!newPlan.isDefault) {
       const orgCheck = await prisma.restaurantOrganization.findUnique({

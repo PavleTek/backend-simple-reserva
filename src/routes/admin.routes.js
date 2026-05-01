@@ -230,7 +230,8 @@ router.post('/plans', async (req, res, next) => {
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
       'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
-      'freeTrialLength', 'freeTrialLengthUnit'
+      'freeTrialLength', 'freeTrialLengthUnit',
+      'comingSoon', 'comingSoonLabel'
     ];
     const data = {};
     for (const key of allowed) {
@@ -274,7 +275,8 @@ router.patch('/plans/:id', async (req, res, next) => {
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
       'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
-      'freeTrialLength', 'freeTrialLengthUnit'
+      'freeTrialLength', 'freeTrialLengthUnit',
+      'comingSoon', 'comingSoonLabel'
     ];
     const data = {};
     for (const key of allowed) {

@@ -159,6 +159,8 @@ app.get("/api/public/plans", async (req, res, next) => {
         googleReserveIntegration: true,
         multipleMenu: true,
         prioritySupport: true,
+        comingSoon: true,
+        comingSoonLabel: true,
       },
     }));
     res.json(plans);
