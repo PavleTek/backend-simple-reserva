@@ -31,6 +31,7 @@ const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
 const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
 const { startReconciliationJob } = require("./jobs/reconciliationJob");
 const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
+const { getClpPerUsd } = require("./services/clpUsdRateService");
 
 const app = express();
 
@@ -164,6 +165,22 @@ app.get("/api/public/plans", async (req, res, next) => {
       },
     }));
     res.json(plans);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Tipo de cambio referencial CLP/USD (landing y panel; sin auth)
+app.get("/api/public/fx", async (req, res, next) => {
+  try {
+    const { clpPerUsd, asOf, source } = await getClpPerUsd();
+    res.json({
+      clpPerUsd,
+      asOf,
+      source,
+      /** IVA Chile (19%) — referencia; los montos de plan se publican netos */
+      ivaRate: 0.19,
+    });
   } catch (error) {
     next(error);
   }

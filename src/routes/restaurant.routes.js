@@ -555,6 +555,22 @@ router.get('/reservations', async (req, res, next) => {
   }
 });
 
+router.get('/reservations/:id', async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const reservation = await prisma.reservation.findFirst({
+      where: { id: req.params.id, restaurantId },
+      include: { table: { select: { id: true, label: true } } },
+    });
+    if (!reservation) {
+      throw new NotFoundError('Reserva no encontrada');
+    }
+    res.json(reservation);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/reservations', async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
