@@ -28,7 +28,7 @@ const FALLBACK_CONFIG = {
   'plan-profesional': {
     productSKU: 'plan-profesional',
     name: 'Profesional',
-    description: 'Para quienes tienen más de un local (hasta 3 sedes)',
+    description: 'Para quienes tienen más de un local (hasta 3 locales)',
     maxRestaurants: 3,
     maxZonesPerRestaurant: null,
     maxTables: null,

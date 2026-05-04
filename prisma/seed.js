@@ -62,7 +62,7 @@ async function main() {
     {
       productSKU: 'plan-profesional',
       name: 'Profesional',
-      description: 'Para quienes tienen más de un local (hasta 3 sedes)',
+      description: 'Para quienes tienen más de un local (hasta 3 locales)',
       isDefault: true,
       maxRestaurants: 3,
       maxZonesPerRestaurant: null,
