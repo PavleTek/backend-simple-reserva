@@ -18,6 +18,13 @@ const { incrementDataVersion } = require('../utils/dataVersion');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
 const { pickAutoTable, sortFreeTablesForUi } = require('../lib/tableAssignment');
 
+/** Walk-in desde el panel — alineado con `isWalkInReservation` en restaurant-front */
+function reservationIsWalkIn(r) {
+  const n = (r.notes || '').trim().toLowerCase();
+  const name = (r.customerName || '').trim();
+  return n === 'walk-in' || name === 'Walk-in' || name === 'walk-in';
+}
+
 const router = express.Router({ mergeParams: true });
 
 router.get('/data-version', async (req, res, next) => {
@@ -187,15 +194,30 @@ router.get('/tables/status', async (req, res, next) => {
             };
             break;
           }
-          if (now > rEnd && !lateReservation) {
-            lateReservation = {
-              id: r.id,
-              customerName: r.customerName,
-              customerPhone: r.customerPhone,
-              partySize: r.partySize,
-              dateTime: r.dateTime,
-            };
-            status = 'late_arrival';
+          if (now > rEnd) {
+            if (reservationIsWalkIn(r)) {
+              // Ya están en la mesa; el cupo nominal venció pero no es "atrasada" como una reserva web
+              status = 'occupied';
+              currentReservation = {
+                id: r.id,
+                customerName: r.customerName,
+                customerPhone: r.customerPhone,
+                partySize: r.partySize,
+                dateTime: r.dateTime,
+                dateTimeEnd: rEnd,
+              };
+              break;
+            }
+            if (!lateReservation) {
+              lateReservation = {
+                id: r.id,
+                customerName: r.customerName,
+                customerPhone: r.customerPhone,
+                partySize: r.partySize,
+                dateTime: r.dateTime,
+              };
+              status = 'late_arrival';
+            }
           }
           if (r.dateTime > now) {
             nextReservation = nextReservation || {
@@ -720,7 +742,7 @@ router.post('/reservations', async (req, res, next) => {
             partySize: size,
             dateTime,
             durationMinutes: slotDuration,
-            notes: notes?.trim() || null,
+            notes: isWalkIn ? (typeof notes === 'string' && notes.trim() ? notes.trim() : 'Walk-in') : notes?.trim() || null,
             source: 'manual',
           },
           include: {
