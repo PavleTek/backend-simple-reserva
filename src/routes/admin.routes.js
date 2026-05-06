@@ -1564,4 +1564,222 @@ router.post('/promo-codes/:id/disable', async (req, res, next) => {
   }
 });
 
+// ─── Reservations list ───────────────────────────────────────────
+
+const RESERVATION_SORT_ALLOWLIST = new Set([
+  'dateTime', 'createdAt', 'customerName', 'partySize', 'status', 'source', 'emailSent',
+]);
+
+router.get('/reservations', async (req, res, next) => {
+  try {
+    const { page, limit, skip } = parsePagination(req.query);
+
+    const {
+      customerName,
+      customerPhone,
+      customerEmail,
+      notes,
+      status,
+      source,
+      restaurantId,
+      emailSent,
+      dateTimeFrom,
+      dateTimeTo,
+      partySizeMin,
+      partySizeMax,
+      sortField,
+      sortOrder,
+    } = req.query;
+
+    const where = {};
+
+    if (customerName) where.customerName = { contains: String(customerName), mode: 'insensitive' };
+    if (customerPhone) where.customerPhone = { contains: String(customerPhone), mode: 'insensitive' };
+    if (customerEmail) where.customerEmail = { contains: String(customerEmail), mode: 'insensitive' };
+    if (notes) where.notes = { contains: String(notes), mode: 'insensitive' };
+    if (status) where.status = String(status);
+    if (source) where.source = String(source);
+    if (restaurantId) where.restaurantId = String(restaurantId);
+
+    if (emailSent === 'true') where.emailSent = true;
+    else if (emailSent === 'false') where.emailSent = false;
+
+    if (dateTimeFrom || dateTimeTo) {
+      where.dateTime = {};
+      if (dateTimeFrom) where.dateTime.gte = new Date(String(dateTimeFrom));
+      if (dateTimeTo) where.dateTime.lte = new Date(String(dateTimeTo));
+    }
+
+    const sizeMin = partySizeMin != null ? parseInt(String(partySizeMin), 10) : NaN;
+    const sizeMax = partySizeMax != null ? parseInt(String(partySizeMax), 10) : NaN;
+    if (!isNaN(sizeMin) || !isNaN(sizeMax)) {
+      where.partySize = {};
+      if (!isNaN(sizeMin)) where.partySize.gte = sizeMin;
+      if (!isNaN(sizeMax)) where.partySize.lte = sizeMax;
+    }
+
+    const resolvedSort = RESERVATION_SORT_ALLOWLIST.has(String(sortField)) ? String(sortField) : 'dateTime';
+    const resolvedOrder = sortOrder === 'asc' ? 'asc' : 'desc';
+
+    const [reservations, total] = await Promise.all([
+      prisma.reservation.findMany({
+        where,
+        include: {
+          restaurant: { select: { id: true, name: true } },
+          table: { select: { id: true, label: true } },
+        },
+        orderBy: { [resolvedSort]: resolvedOrder },
+        skip,
+        take: limit,
+      }),
+      prisma.reservation.count({ where }),
+    ]);
+
+    res.json(paginatedResponse(reservations, total, page, limit));
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Reservation per-row actions ─────────────────────────────────
+
+router.patch('/reservations/:id/cancel', async (req, res, next) => {
+  try {
+    const reservation = await prisma.reservation.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, status: true },
+    });
+    if (!reservation) throw new NotFoundError('Reserva no encontrada');
+    if (reservation.status === 'cancelled') {
+      return res.status(409).json({ error: 'La reserva ya está cancelada' });
+    }
+    const updated = await prisma.reservation.update({
+      where: { id: req.params.id },
+      data: { status: 'cancelled' },
+      include: {
+        restaurant: { select: { id: true, name: true } },
+        table: { select: { id: true, label: true } },
+      },
+    });
+    res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/reservations/:id/send-email', async (req, res, next) => {
+  try {
+    const { sendReservationConfirmationEmail } = require('../services/notificationService');
+    const { canSendConfirmations } = require('../services/subscriptionService');
+
+    const reservation = await prisma.reservation.findUnique({
+      where: { id: req.params.id },
+      include: { restaurant: { select: { id: true, name: true } } },
+    });
+    if (!reservation) throw new NotFoundError('Reserva no encontrada');
+    if (!reservation.customerEmail) {
+      return res.status(422).json({ error: 'La reserva no tiene correo electrónico' });
+    }
+
+    const canSend = await canSendConfirmations(reservation.restaurant.id);
+    if (!canSend) {
+      return res.status(422).json({ error: 'El plan del restaurante no permite envío de emails' });
+    }
+
+    const sent = await sendReservationConfirmationEmail({
+      customerEmail: reservation.customerEmail,
+      restaurantName: reservation.restaurant.name,
+      customerName: reservation.customerName,
+      dateTime: reservation.dateTime,
+      partySize: reservation.partySize,
+      secureToken: reservation.secureToken,
+      timezone: null,
+    });
+
+    if (sent) {
+      await prisma.reservation.update({
+        where: { id: req.params.id },
+        data: { emailSent: true },
+      });
+    }
+
+    res.json({ sent });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Reservation email bulk-send ─────────────────────────────────
+
+router.post('/reservations/send-missing-emails', async (req, res, next) => {
+  try {
+    const { sendReservationConfirmationEmail } = require('../services/notificationService');
+    const { canSendConfirmations } = require('../services/subscriptionService');
+
+    const reservations = await prisma.reservation.findMany({
+      where: {
+        emailSent: false,
+        customerEmail: { not: null },
+        status: { not: 'cancelled' },
+        dateTime: { gt: new Date() },
+      },
+      include: {
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            organization: { include: { owner: { select: { country: true } } } },
+          },
+        },
+      },
+    });
+
+    const total = reservations.length;
+    let sent = 0;
+    let failed = 0;
+
+    const CHUNK_SIZE = 5;
+    for (let i = 0; i < reservations.length; i += CHUNK_SIZE) {
+      const chunk = reservations.slice(i, i + CHUNK_SIZE);
+      const results = await Promise.allSettled(
+        chunk.map(async (r) => {
+          const canSend = await canSendConfirmations(r.restaurant.id);
+          if (!canSend) return 'skipped';
+
+          const success = await sendReservationConfirmationEmail({
+            customerEmail: r.customerEmail,
+            restaurantName: r.restaurant.name,
+            customerName: r.customerName,
+            dateTime: r.dateTime,
+            partySize: r.partySize,
+            secureToken: r.secureToken,
+            timezone: null,
+          });
+
+          if (success) {
+            await prisma.reservation.update({
+              where: { id: r.id },
+              data: { emailSent: true },
+            });
+            return 'sent';
+          }
+          return 'failed';
+        })
+      );
+
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value === 'sent') {
+          sent++;
+        } else if (result.status !== 'fulfilled' || result.value === 'failed') {
+          failed++;
+        }
+      }
+    }
+
+    res.json({ total, sent, failed, skipped: total - sent - failed });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

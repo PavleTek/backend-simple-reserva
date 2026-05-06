@@ -353,10 +353,14 @@ const register = async (req, res) => {
 
     try {
       const panelUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || 'http://localhost:5175').replace(/\/$/, '');
-      const { sendWelcomeEmail } = require('../services/notificationService');
-      await sendWelcomeEmail({
+      const { sendOrganizationOwnerWelcomeEmail } = require('../services/notificationService');
+      const ownerName = [result.user.name, result.user.lastName]
+        .filter(Boolean)
+        .join(' ')
+        .trim() || result.user.email;
+      await sendOrganizationOwnerWelcomeEmail({
         email: result.user.email,
-        restaurantName: result.restaurant.name,
+        ownerName,
         panelUrl,
       });
     } catch (err) {

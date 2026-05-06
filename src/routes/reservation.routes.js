@@ -282,10 +282,14 @@ router.post('/', async (req, res, next) => {
       preferredZoneId,
     } = req.body;
 
-    if (!restaurantSlug || !date || !time || !partySize || !customerName || !customerPhone) {
+    if (!restaurantSlug || !date || !time || !partySize || !customerName || !customerEmail) {
       throw new ValidationError(
-        'Se requiere restaurantSlug, date, time, partySize, customerName y customerPhone'
+        'Se requiere restaurantSlug, date, time, partySize, customerName y customerEmail'
       );
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(String(customerEmail).trim())) {
+      throw new ValidationError('El correo electrónico no tiene un formato válido');
     }
 
     const size = parseInt(partySize);
@@ -404,8 +408,8 @@ router.post('/', async (req, res, next) => {
             restaurantId: restaurant.id,
             tableId: selectedTable.id,
             customerName,
-            customerPhone,
-            customerEmail: customerEmail || null,
+            customerPhone: customerPhone?.trim() || null,
+            customerEmail: String(customerEmail).trim().toLowerCase(),
             partySize: size,
             dateTime,
             durationMinutes: slotDuration,
@@ -423,24 +427,35 @@ router.post('/', async (req, res, next) => {
 
     canSendConfirmations(restaurant.id).then((ok) => {
       if (ok) {
-        sendReservationConfirmation({
-          customerPhone,
-          restaurantName: reservation.restaurant.name,
-          dateTime: reservation.dateTime,
-          partySize: size,
-          secureToken: reservation.secureToken,
-          restaurantId: restaurant.id,
-        }).catch((err) => console.error('[Notification] Confirmation failed:', err));
+        const savedPhone = reservation.customerPhone;
+        if (savedPhone) {
+          sendReservationConfirmation({
+            customerPhone: savedPhone,
+            restaurantName: reservation.restaurant.name,
+            dateTime: reservation.dateTime,
+            partySize: size,
+            secureToken: reservation.secureToken,
+            restaurantId: restaurant.id,
+          }).catch((err) => console.error('[Notification] Confirmation failed:', err));
+        }
 
-        if (customerEmail) {
+        const savedEmail = reservation.customerEmail;
+        if (savedEmail) {
           sendReservationConfirmationEmail({
-            customerEmail,
+            customerEmail: savedEmail,
             restaurantName: reservation.restaurant.name,
             customerName,
             dateTime: reservation.dateTime,
             partySize: size,
             secureToken: reservation.secureToken,
             timezone,
+          }).then((sent) => {
+            if (sent) {
+              prisma.reservation.update({
+                where: { id: reservation.id },
+                data: { emailSent: true },
+              }).catch((err) => console.error('[Notification] emailSent update failed:', err));
+            }
           }).catch((err) => console.error('[Notification] Email confirmation failed:', err));
         }
       }

@@ -756,9 +756,9 @@ router.post('/reservations', async (req, res, next) => {
 
     if (!isWalkIn) {
       canSendConfirmations(restaurantId).then((ok) => {
-        if (ok) {
+        if (ok && reservation.customerPhone) {
           sendReservationConfirmation({
-            customerPhone: phone,
+            customerPhone: reservation.customerPhone,
             restaurantName: restaurant.name,
             dateTime: reservation.dateTime,
             partySize: size,

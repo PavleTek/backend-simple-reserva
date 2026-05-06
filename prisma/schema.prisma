@@ -265,8 +265,9 @@ model Reservation {
   tableId         String?
   table           RestaurantTable? @relation(fields: [tableId], references: [id], onDelete: SetNull)
   customerName    String
-  customerPhone   String
+  customerPhone   String?
   customerEmail   String?
+  emailSent       Boolean   @default(false)
   partySize       Int
   dateTime        DateTime
   durationMinutes Int
