@@ -3,6 +3,7 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
+const { incrementDataVersion } = require('../utils/dataVersion');
 
 const router = express.Router({ mergeParams: true });
 
@@ -69,10 +70,34 @@ router.patch('/:id', async (req, res, next) => {
       throw new NotFoundError('Zona no encontrada');
     }
 
-    const { name, description, sortOrder } = req.body;
+    const { name, description, sortOrder, gridCols, gridRows } = req.body;
 
     if (name !== undefined && (!name || !String(name).trim())) {
       throw new ValidationError('El nombre no puede estar vacío');
+    }
+
+    const nextCols = gridCols !== undefined ? Number(gridCols) : zone.gridCols;
+    const nextRows = gridRows !== undefined ? Number(gridRows) : zone.gridRows;
+    if (
+      (gridCols !== undefined && (!Number.isFinite(nextCols) || nextCols < 1 || nextCols > 50)) ||
+      (gridRows !== undefined && (!Number.isFinite(nextRows) || nextRows < 1 || nextRows > 50))
+    ) {
+      throw new ValidationError('La grilla debe tener entre 1 y 50 filas y columnas.');
+    }
+
+    if (gridCols !== undefined || gridRows !== undefined) {
+      const tables = await prisma.restaurantTable.findMany({
+        where: { zoneId: zone.id, isActive: true },
+      });
+      const { tableFitsInGrid } = require('../lib/floorPlanUtils');
+      for (const t of tables) {
+        if (t.posX == null || t.posY == null) continue;
+        if (!tableFitsInGrid(t, nextCols, nextRows)) {
+          throw new ValidationError(
+            'No se puede reducir la grilla: alguna mesa quedaría fuera del plano. Mueve las mesas primero.',
+          );
+        }
+      }
     }
 
     const updated = await prisma.zone.update({
@@ -81,9 +106,12 @@ router.patch('/:id', async (req, res, next) => {
         ...(name !== undefined && { name }),
         ...(description !== undefined && { description }),
         ...(sortOrder !== undefined && { sortOrder }),
+        ...(gridCols !== undefined && { gridCols: nextCols }),
+        ...(gridRows !== undefined && { gridRows: nextRows }),
       },
     });
 
+    await incrementDataVersion(req.activeRestaurant.restaurantId);
     res.json(updated);
   } catch (error) {
     next(error);

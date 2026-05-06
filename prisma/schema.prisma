@@ -197,6 +197,9 @@ model Zone {
   sortOrder     Int       @default(0)
   isActive      Boolean   @default(true)
   createdAt     DateTime  @default(now())
+  /// Tamaño del plano interactivo (celdas)
+  gridCols      Int       @default(10)
+  gridRows      Int       @default(10)
 
   tables        RestaurantTable[]
 
@@ -213,6 +216,13 @@ model RestaurantTable {
   sortOrder     Int       @default(0)
   isActive      Boolean   @default(true)
   createdAt     DateTime  @default(now())
+  /// Origen en grilla del plano (celda superior izquierda), null = sin posición en plano
+  posX          Int?
+  posY          Int?
+  rotation      Int       @default(0) // 0, 90, 180, 270
+  shape         String    @default("square") // square | rectangular | round
+  width         Int       @default(1) // ancho en celdas
+  height        Int       @default(1) // alto en celdas
 
   reservations  Reservation[]
 

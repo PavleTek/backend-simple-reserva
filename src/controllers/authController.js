@@ -182,7 +182,7 @@ const login = async (req, res) => {
         return res.status(403).json({
           error: 'inactive_organization',
           message: 'La organización a la que perteneces no tiene una suscripción activa. Contacta al administrador de la cuenta.',
-          contactEmail: process.env.CONTACT_EMAIL || 'soporte@simplereserva.com',
+          contactEmail: process.env.CONTACT_EMAIL || 'contacto@simplereserva.com',
         });
       }
     }
@@ -480,7 +480,7 @@ const getProfile = async (req, res) => {
         return res.status(403).json({
           error: 'inactive_organization',
           message: 'La organización a la que perteneces no tiene una suscripción activa. Contacta al administrador de la cuenta.',
-          contactEmail: process.env.CONTACT_EMAIL || 'soporte@simplereserva.com',
+          contactEmail: process.env.CONTACT_EMAIL || 'contacto@simplereserva.com',
         });
       }
     }
