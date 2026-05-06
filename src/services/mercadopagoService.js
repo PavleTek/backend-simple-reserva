@@ -12,16 +12,23 @@
 const prisma = require('../lib/prisma');
 const planService = require('./planService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
+const {
+  getMercadoPagoAccessToken,
+  getMercadoPagoPublicKey,
+  describeMercadoPagoCredentialChoice,
+} = require('../lib/mercadopagoEnv');
 
 const CURRENCY = 'CLP';
 const MIN_AMOUNT_CLP = 950; // MP rechaza montos menores con 400/500
 
 let preApprovalClient = null;
+/** Evita reutilizar cliente de MP si cambia el access token resuelto por entorno. */
+let cachedMercadoPagoAccessToken = null;
 
 /** Sin exponer el token completo (solo prefijo/sufijo para verificar TEST- vs APP_USR-). */
 function mercadoPagoCredentialHints() {
-  const at = process.env.MERCADOPAGO_ACCESS_TOKEN || '';
-  const pk = process.env.MP_PUBLIC_KEY || '';
+  const at = getMercadoPagoAccessToken();
+  const pk = getMercadoPagoPublicKey();
   const atHint =
     at.length < 8 ? '(vacío o muy corto)' : `${at.slice(0, 12)}…${at.slice(-4)}`;
   const pkHint =
@@ -29,7 +36,13 @@ function mercadoPagoCredentialHints() {
   let mode = 'desconocido';
   if (at.startsWith('TEST-')) mode = 'TEST (credenciales de prueba)';
   else if (at.startsWith('APP_USR-')) mode = 'APP_USR (producción o prueba según panel MP)';
-  return { atHint, pkHint, mode, testModeEnv: process.env.MERCADOPAGO_TEST_MODE };
+  return {
+    atHint,
+    pkHint,
+    mode,
+    testModeEnv: process.env.MERCADOPAGO_TEST_MODE,
+    credentialChoice: describeMercadoPagoCredentialChoice(),
+  };
 }
 
 /**
@@ -99,14 +112,15 @@ function resolvePayerEmailForPreapproval(loginEmail) {
 }
 
 function getClient() {
-  const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+  const accessToken = getMercadoPagoAccessToken();
   if (!accessToken) {
     throw new Error('MERCADOPAGO_ACCESS_TOKEN no configurado');
   }
-  if (!preApprovalClient) {
+  if (!preApprovalClient || cachedMercadoPagoAccessToken !== accessToken) {
     const { MercadoPagoConfig, PreApproval } = require('mercadopago');
     const client = new MercadoPagoConfig({ accessToken });
     preApprovalClient = new PreApproval(client);
+    cachedMercadoPagoAccessToken = accessToken;
   }
   return { preApprovalClient };
 }
@@ -205,6 +219,9 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
     publicKey: hints.pkHint,
     modo: hints.mode,
     MERCADOPAGO_TEST_MODE: hints.testModeEnv,
+    entorno_credenciales: hints.credentialChoice?.source,
+    token_desde: hints.credentialChoice?.accessTokenEnvKey,
+    public_key_desde: hints.credentialChoice?.publicKeyEnvKey,
   });
   console.log('[MercadoPago] Request (sanitized):', {
     amount,
@@ -220,7 +237,7 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
   console.log('[MercadoPago] Start date for subscription:', startDate.toISOString());
   console.log('[MercadoPago] NOTE: MP will send POST requests to this URL when events occur (payment authorized, subscription status changes, etc.)');
 
-  const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+  const accessToken = getMercadoPagoAccessToken();
   if (accessToken && process.env.MERCADOPAGO_LOG_SELLER !== 'false') {
     await logMercadoPagoSellerContext(accessToken);
   }

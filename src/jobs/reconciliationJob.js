@@ -17,6 +17,7 @@
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const logger = require('../lib/logger');
+const { getMercadoPagoAccessToken } = require('../lib/mercadopagoEnv');
 const {
   activateOrganizationSubscription,
   scheduleOrganizationSubscription,
@@ -30,7 +31,7 @@ function sleep(ms) {
 }
 
 async function runReconciliation() {
-  const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+  const accessToken = getMercadoPagoAccessToken();
   if (!accessToken) {
     logger.warn('[Reconciliation] MERCADOPAGO_ACCESS_TOKEN no configurado, saltando reconciliacion');
     return;

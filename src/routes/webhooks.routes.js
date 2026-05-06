@@ -1,7 +1,7 @@
 /**
  * MercadoPago webhooks for subscription and payment events.
  * Configure webhook URL in MercadoPago dashboard: https://www.mercadopago.cl/developers/panel/app
- * Set MP_WEBHOOK_SECRET in .env (from Webhooks > Configure) to validate signatures.
+ * Firma HMAC: define MP_WEBHOOK_SECRET_* o MP_WEBHOOK_SECRET (según mercadopagoEnv).
  *
  * Hardening:
  * - Firma HMAC validada antes de 200 OK (no se persisten eventos con firma inválida).
@@ -12,6 +12,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const prisma = require('../lib/prisma');
+const { getMercadoPagoAccessToken, getMercadoPagoWebhookSecret } = require('../lib/mercadopagoEnv');
 const {
   activateOrganizationSubscription,
   scheduleOrganizationSubscription,
@@ -30,10 +31,10 @@ router.get('/mercadopago', (req, res) => {
 });
 
 function validateMPSignature(req, dataId) {
-  const secret = process.env.MP_WEBHOOK_SECRET;
+  const secret = getMercadoPagoWebhookSecret();
   if (!secret || secret === '') {
     if (process.env.NODE_ENV === 'production') {
-      console.error('[Webhook] CRITICAL: MP_WEBHOOK_SECRET no configurado en producción. Rechazando webhook.');
+      console.error('[Webhook] CRITICAL: secret de webhook MP no configurado en producción. Rechazando webhook.');
       return false;
     }
     return true; // Solo permitir sin secret en desarrollo/staging
@@ -93,7 +94,7 @@ router.post('/mercadopago', express.json({
   }
 
   if (!validateMPSignature(req, dataId)) {
-    console.warn('[Webhook] MercadoPago signature validation failed – revisa MP_WEBHOOK_SECRET');
+    console.warn('[Webhook] MercadoPago signature validation failed – revisa MP_WEBHOOK_SECRET_* / MP_WEBHOOK_SECRET');
     return res.status(401).send('Unauthorized');
   }
 
@@ -132,7 +133,7 @@ router.post('/mercadopago', express.json({
       return;
     }
 
-    const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+    const accessToken = getMercadoPagoAccessToken();
     if (!accessToken) {
       console.error('[Webhook] MercadoPago: MERCADOPAGO_ACCESS_TOKEN not set');
       await prisma.webhookEvent.update({

@@ -3,14 +3,17 @@
  * Ejecutar: node scripts/test-mp.js
  * Ayuda a aislar si el error es de credenciales o del body.
  */
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const TOKEN = process.env.MERCADOPAGO_ACCESS_TOKEN;
+const { getMercadoPagoAccessToken } = require('../src/lib/mercadopagoEnv');
+const TOKEN = getMercadoPagoAccessToken();
 const EMAIL = process.env.MP_TEST_PAYER_EMAIL;
 const BACK_URL = process.env.BACKEND_PUBLIC_URL || 'https://example.com';
 
 if (!TOKEN) {
-  console.error('Falta MERCADOPAGO_ACCESS_TOKEN en .env');
+  console.error(
+    'Falta access token de MP (MERCADOPAGO_ACCESS_TOKEN / MERCADOPAGO_ACCESS_TOKEN_DEVELOPMENT según NODE_ENV o MERCADOPAGO_ENV).',
+  );
   process.exit(1);
 }
 
