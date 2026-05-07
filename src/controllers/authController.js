@@ -1305,6 +1305,46 @@ const completeDashboardTour = async (req, res) => {
   }
 };
 
+/** Throttle window for recording restaurant-dashboard presence (reuses User.lastLogin). */
+const RESTAURANT_DASHBOARD_ACTIVITY_INTERVAL_MS = 30 * 60 * 1000;
+
+const touchRestaurantDashboardActivity = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const threshold = new Date(Date.now() - RESTAURANT_DASHBOARD_ACTIVITY_INTERVAL_MS);
+    const now = new Date();
+
+    const result = await prisma.user.updateMany({
+      where: {
+        id: userId,
+        OR: [{ lastLogin: null }, { lastLogin: { lt: threshold } }],
+      },
+      data: { lastLogin: now },
+    });
+
+    if (result.count > 0) {
+      res.status(200).json({
+        updated: true,
+        lastLogin: now.toISOString(),
+      });
+      return;
+    }
+
+    const row = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { lastLogin: true },
+    });
+
+    res.status(200).json({
+      updated: false,
+      lastLogin: row?.lastLogin ? row.lastLogin.toISOString() : null,
+    });
+  } catch (error) {
+    console.error('Touch restaurant dashboard activity error:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+};
+
 module.exports = {
   login,
   register,
@@ -1314,6 +1354,7 @@ module.exports = {
   updateProfile,
   updatePassword,
   completeDashboardTour,
+  touchRestaurantDashboardActivity,
   verifyTwoFactor,
   setupTwoFactor,
   setupTwoFactorMandatory,
