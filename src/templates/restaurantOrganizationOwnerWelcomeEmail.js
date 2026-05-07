@@ -137,8 +137,10 @@ function buildOrganizationOwnerWelcomeHtml(options) {
                 ¿Tienes preguntas? Escríbenos, estamos para ayudarte.
               </p>
               <p style="margin:0;font-size:14px;line-height:1.5;color:${COLORS.textSecondary};text-align:center;">
-                También puedes <a href="${safeWhatsappHref}" style="color:${COLORS.primary600};font-weight:600;">escribirnos por WhatsApp al ${safeWhatsappDisplay}</a> o por
-                <a href="${safeMailtoContact}" style="color:${COLORS.primary600};font-weight:600;">${safeContactEmail}</a>.
+                También puedes escribirnos por WhatsApp al
+                <a href="${safeWhatsappHref}" target="_blank" rel="noopener noreferrer" style="color:${COLORS.primary600};font-weight:600;text-decoration:underline;">${safeWhatsappDisplay}</a>
+                o por
+                <a href="${safeMailtoContact}" style="color:${COLORS.primary600};font-weight:600;text-decoration:underline;">${safeContactEmail}</a>.
               </p>
             </td>
           </tr>
