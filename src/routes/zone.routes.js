@@ -33,7 +33,7 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { name, description, sortOrder } = req.body;
+    const { name, description, sortOrder, smokingZone } = req.body;
     const restaurantId = req.activeRestaurant.restaurantId;
 
     if (!name) {
@@ -51,6 +51,7 @@ router.post('/', async (req, res, next) => {
         name,
         description: description || null,
         sortOrder: sortOrder ?? 0,
+        ...(smokingZone !== undefined && { smokingZone: Boolean(smokingZone) }),
       },
     });
 
@@ -70,7 +71,7 @@ router.patch('/:id', async (req, res, next) => {
       throw new NotFoundError('Zona no encontrada');
     }
 
-    const { name, description, sortOrder, gridCols, gridRows } = req.body;
+    const { name, description, sortOrder, gridCols, gridRows, smokingZone } = req.body;
 
     if (name !== undefined && (!name || !String(name).trim())) {
       throw new ValidationError('El nombre no puede estar vacío');
@@ -108,6 +109,7 @@ router.patch('/:id', async (req, res, next) => {
         ...(sortOrder !== undefined && { sortOrder }),
         ...(gridCols !== undefined && { gridCols: nextCols }),
         ...(gridRows !== undefined && { gridRows: nextRows }),
+        ...(smokingZone !== undefined && { smokingZone: Boolean(smokingZone) }),
       },
     });
 

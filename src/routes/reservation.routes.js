@@ -693,6 +693,7 @@ router.get('/:slug', async (req, res, next) => {
           select: {
             id: true,
             name: true,
+            smokingZone: true,
             tables: {
               where: { isActive: true },
               select: {

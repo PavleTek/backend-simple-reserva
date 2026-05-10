@@ -200,6 +200,7 @@ model Zone {
   /// Tamaño del plano interactivo (celdas)
   gridCols      Int       @default(10)
   gridRows      Int       @default(10)
+  smokingZone   Boolean   @default(false)
 
   tables        RestaurantTable[]
 
