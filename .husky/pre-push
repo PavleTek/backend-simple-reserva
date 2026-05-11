@@ -23,12 +23,11 @@ echo "[pre-push] prisma validate..."
 npx prisma validate
 
 echo "[pre-push] creating shadow DB..."
-# Extract DB name from URL (last path segment, strip query string)
+# Extract DB name (strip query string, then take last path segment)
 SHADOW_DB_NAME=$(echo "$SHADOW_DB" | sed 's/?.*//' | sed 's|.*/||')
-SHADOW_DB_HOST=$(echo "$SHADOW_DB" | sed 's|postgresql://||' | sed 's|/.*||')
-psql -h "$(echo "$SHADOW_DB_HOST" | cut -d@ -f2 | cut -d: -f1)" \
-     -U "$(echo "$SHADOW_DB_HOST" | cut -d@ -f1)" \
-     -c "CREATE DATABASE \"$SHADOW_DB_NAME\";" 2>/dev/null || true
+# Build an admin URL pointing to 'postgres' so we can CREATE/DROP the shadow DB
+ADMIN_URL=$(echo "$SHADOW_DB" | sed "s|/${SHADOW_DB_NAME}[?].*|/postgres|" | sed "s|/${SHADOW_DB_NAME}$|/postgres|")
+psql "$ADMIN_URL" -c "CREATE DATABASE \"$SHADOW_DB_NAME\";"
 
 echo "[pre-push] prisma migrate diff (migrations vs schema; shadow DB only)..."
 set +e
@@ -41,9 +40,7 @@ MIGRATE_EXIT=$?
 set -e
 
 echo "[pre-push] dropping shadow DB..."
-psql -h "$(echo "$SHADOW_DB_HOST" | cut -d@ -f2 | cut -d: -f1)" \
-     -U "$(echo "$SHADOW_DB_HOST" | cut -d@ -f1)" \
-     -c "DROP DATABASE IF EXISTS \"$SHADOW_DB_NAME\";" 2>/dev/null || true
+psql "$ADMIN_URL" -c "DROP DATABASE IF EXISTS \"$SHADOW_DB_NAME\";" 2>/dev/null || true
 
 if [ $MIGRATE_EXIT -ne 0 ]; then
   echo "[pre-push] ERROR: schema has unapplied changes. Run 'npx prisma migrate dev' first." >&2
