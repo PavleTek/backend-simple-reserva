@@ -22,12 +22,33 @@ npx prisma generate
 echo "[pre-push] prisma validate..."
 npx prisma validate
 
+echo "[pre-push] creating shadow DB..."
+# Extract DB name from URL (last path segment, strip query string)
+SHADOW_DB_NAME=$(echo "$SHADOW_DB" | sed 's/?.*//' | sed 's|.*/||')
+SHADOW_DB_HOST=$(echo "$SHADOW_DB" | sed 's|postgresql://||' | sed 's|/.*||')
+psql -h "$(echo "$SHADOW_DB_HOST" | cut -d@ -f2 | cut -d: -f1)" \
+     -U "$(echo "$SHADOW_DB_HOST" | cut -d@ -f1)" \
+     -c "CREATE DATABASE \"$SHADOW_DB_NAME\";" 2>/dev/null || true
+
 echo "[pre-push] prisma migrate diff (migrations vs schema; shadow DB only)..."
+set +e
 npx prisma migrate diff \
   --from-migrations prisma/migrations \
   --to-schema-datamodel prisma/schema.prisma \
   --shadow-database-url "$SHADOW_DB" \
   --exit-code
+MIGRATE_EXIT=$?
+set -e
+
+echo "[pre-push] dropping shadow DB..."
+psql -h "$(echo "$SHADOW_DB_HOST" | cut -d@ -f2 | cut -d: -f1)" \
+     -U "$(echo "$SHADOW_DB_HOST" | cut -d@ -f1)" \
+     -c "DROP DATABASE IF EXISTS \"$SHADOW_DB_NAME\";" 2>/dev/null || true
+
+if [ $MIGRATE_EXIT -ne 0 ]; then
+  echo "[pre-push] ERROR: schema has unapplied changes. Run 'npx prisma migrate dev' first." >&2
+  exit $MIGRATE_EXIT
+fi
 
 echo "[pre-push] npm run build..."
 npm run build
