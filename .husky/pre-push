@@ -2,12 +2,18 @@
 
 set -e
 
-# Load .env so DATABASE_URL is available for prisma migrate diff
+# Load .env for SHADOW_DB (never use DATABASE_URL as Prisma's shadow target).
 if [ -f .env ]; then
   set -a
   # shellcheck disable=SC1091
   . .env
   set +a
+fi
+
+if [ -z "$SHADOW_DB" ]; then
+  echo "[pre-push] ERROR: SHADOW_DB is not set." >&2
+  echo "Add SHADOW_DB to .env — a dedicated empty Postgres URL (see .env.example). Do not use your app DATABASE_URL." >&2
+  exit 1
 fi
 
 echo "[pre-push] prisma generate..."
@@ -16,11 +22,11 @@ npx prisma generate
 echo "[pre-push] prisma validate..."
 npx prisma validate
 
-echo "[pre-push] prisma migrate diff (schema vs migrations folder)..."
+echo "[pre-push] prisma migrate diff (migrations vs schema; shadow DB only)..."
 npx prisma migrate diff \
   --from-migrations prisma/migrations \
   --to-schema-datamodel prisma/schema.prisma \
-  --shadow-database-url "$DATABASE_URL" \
+  --shadow-database-url "$SHADOW_DB" \
   --exit-code
 
 echo "[pre-push] npm run build..."
