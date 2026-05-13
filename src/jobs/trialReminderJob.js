@@ -1,5 +1,5 @@
 /**
- * Sends trial reminder emails at day 7 and day 12.
+ * Sends trial reminder emails at 7 days and 2 days before trial end.
  * Runs daily at 09:00 Chile time.
  */
 
@@ -9,8 +9,21 @@ const logger = require('../lib/logger');
 const { sendEmail } = require('../services/emailService');
 const { isTrialing } = require('../services/subscriptionService');
 const planService = require('../services/planService');
+const { buildTrialReminderHtml, buildTrialReminderSubject } = require('../templates/trialReminderEmail');
+const { CONTACT_EMAIL, WHATSAPP_DISPLAY, WHATSAPP_HREF } = require('../config/contact');
 
 const RESTAURANT_PORTAL_URL = process.env.FRONTEND_RESTAURANT_PORTAL_URL || 'http://localhost:5175';
+
+/**
+ * Origin for logo image in HTML emails (same env as public booking site).
+ */
+function getAssetBaseUrl() {
+  return (
+    process.env.FRONTEND_LANDING_PAGE_URL ||
+    process.env.FRONTEND_LANDING_PAGE_URL ||
+    'http://localhost:5173'
+  ).replace(/\/$/, '');
+}
 
 function formatPriceCLP(amount) {
   if (amount == null) return '$4,990 CLP';
@@ -49,7 +62,7 @@ async function runTrialReminders() {
     if (!trialEndsAt) continue;
 
     const daysLeft = msToDays(trialEndsAt.getTime() - now.getTime());
-    if (daysLeft !== 7 && daysLeft !== 12) continue;
+    if (daysLeft !== 7 && daysLeft !== 2) continue;
 
     const ownerId = org.ownerId;
     const planConfig = ownerId ? await planService.resolvePlanConfig(ownerId, true) : null;
@@ -62,19 +75,25 @@ async function runTrialReminders() {
     const fromEmail = fromSender || 'noreply@simplereserva.com';
 
     const panelUrl = `${RESTAURANT_PORTAL_URL.replace(/\/$/, '')}/billing`;
-    const subject =
-      daysLeft === 7
-        ? `Te quedan 7 días de prueba en SimpleReserva`
-        : `Tu prueba de SimpleReserva termina en 2 días`;
+    const subject = buildTrialReminderSubject(daysLeft);
 
     // If multiple restaurants, we use the first one for the name in the email, or just the organization name
     const restaurantName = org.restaurants[0]?.name || org.name;
     const reservationCount = org.restaurants.reduce((acc, r) => acc + r._count.reservations, 0);
-    
-    const body =
-      daysLeft === 7
-        ? `Hola,\n\nTe quedan 7 días de prueba gratuita en SimpleReserva para ${restaurantName}.\n\n${reservationCount > 0 ? `Hasta ahora has recibido ${reservationCount} reservas. ` : ''}Activa tu suscripción antes de que termine la prueba para seguir recibiendo reservas sin interrupciones.\n\nPrecio: ${priceStr} al mes (neto), más IVA. Sin contrato.\n\nActivar suscripción: ${panelUrl}\n\nSaludos,\nEl equipo de SimpleReserva`
-        : `Hola,\n\nTu prueba gratuita de SimpleReserva para ${restaurantName} termina en 2 días.\n\nActiva tu suscripción para no perder acceso a tu página de reservas:\n\n${panelUrl}\n\nPrecio: ${priceStr} al mes (neto), más IVA. Cancela cuando quieras.\n\nSaludos,\nEl equipo de SimpleReserva`;
+
+    const ownerName = org.owner?.name || org.owner?.email || '';
+    const html = buildTrialReminderHtml({
+      ownerName,
+      restaurantName,
+      daysLeft,
+      reservationCount,
+      priceStr,
+      panelUrl,
+      contactEmail: CONTACT_EMAIL,
+      whatsappDisplay: WHATSAPP_DISPLAY,
+      whatsappHref: WHATSAPP_HREF,
+      assetBaseUrl: getAssetBaseUrl(),
+    });
 
     const email = org.owner?.email;
     if (email) {
@@ -83,8 +102,8 @@ async function runTrialReminders() {
           fromEmail,
           toEmails: [email],
           subject,
-          content: body,
-          isHtml: false,
+          content: html,
+          isHtml: true,
         });
         sent++;
       } catch (err) {
