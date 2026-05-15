@@ -47,12 +47,15 @@ router.get('/subscription', async (req, res, next) => {
     const cancelAtEndDate = sub?.status === 'cancelled' && sub?.endDate ? sub.endDate.toISOString() : null;
 
     let status;
-    if (trialing) {
-      status = 'trial';
+    // Una suscripción paga activa siempre tiene precedencia sobre el periodo de prueba.
+    // trialEndsAt puede quedar vigente en la org si el pago se procesó por rutas que no
+    // lo limpian (webhook de payment, asignación manual de admin, etc.).
+    if (sub?.status === 'active') {
+      status = 'active';
     } else if (inGrace) {
       status = 'grace';
-    } else if (sub?.status === 'active') {
-      status = 'active';
+    } else if (trialing) {
+      status = 'trial';
     } else if (cancelAtEndDate) {
       // Cancelada pero con acceso hasta endDate: mostrar como 'cancelled' para que
       // el UI ofrezca "Activar" en lugar de "Cambiar plan" (change-plan busca status='active')

@@ -524,7 +524,9 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
 
       const orgUpdateData = {};
       if (isPlanChanging) orgUpdateData.planId = planId;
-      if (isActiveSubscription === false) orgUpdateData.trialEndsAt = null;
+      // Limpiar trialEndsAt al desactivar o al activar: evita que la UI muestre "Prueba gratuita"
+      // cuando ya hay una suscripción paga asignada manualmente.
+      if (isActiveSubscription === false || isActiveSubscription === true) orgUpdateData.trialEndsAt = null;
 
       if (Object.keys(orgUpdateData).length > 0) {
         await tx.restaurantOrganization.update({
