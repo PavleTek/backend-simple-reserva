@@ -7,6 +7,7 @@ const planService = require('../services/planService');
 const paymentReceiptService = require('../services/paymentReceiptService');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const whatsappService = require('../services/whatsappService');
+const { computePeriodEnd } = require('../lib/billingPeriod');
 
 const router = express.Router();
 
@@ -450,8 +451,15 @@ router.get('/subscriptions', async (req, res, next) => {
   try {
     const { page, limit, skip } = parsePagination(req.query);
 
+    // Solo mostrar suscripciones relevantes: las activas/actuales por organización.
+    // Se excluyen las canceladas/expiradas históricas para evitar filas duplicadas por org.
+    const relevantWhere = {
+      status: { notIn: ['cancelled', 'cancelled_by_admin', 'expired'] },
+    };
+
     const [subscriptions, total] = await Promise.all([
       prisma.subscription.findMany({
+        where: relevantWhere,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
@@ -460,7 +468,7 @@ router.get('/subscriptions', async (req, res, next) => {
           plan: true
         },
       }),
-      prisma.subscription.count(),
+      prisma.subscription.count({ where: relevantWhere }),
     ]);
 
     res.json(paginatedResponse(subscriptions, total, page, limit));
@@ -489,6 +497,21 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
     if (status !== undefined) subData.status = status;
     if (endDate !== undefined) subData.endDate = endDate ? new Date(endDate) : null;
     if (isActiveSubscription !== undefined) subData.isActiveSubscription = Boolean(isActiveSubscription);
+
+    // When admin activates a subscription manually, set status and compute currentPeriodEnd
+    if (isActiveSubscription === true) {
+      subData.status = 'active';
+      const effectivePlanId = planId ?? existing.planId;
+      if (effectivePlanId) {
+        const plan = await prisma.plan.findUnique({ where: { id: effectivePlanId } });
+        if (plan) {
+          const activatedAt = new Date();
+          const periodEnd = computePeriodEnd(activatedAt, plan);
+          if (periodEnd) subData.currentPeriodEnd = periodEnd;
+          subData.startDate = activatedAt;
+        }
+      }
+    }
 
     // When admin deactivates a subscription, cancel on MP immediately and set all dates to now
     if (isActiveSubscription === false) {
@@ -538,7 +561,7 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
       return updated;
     });
 
-    if (isPlanChanging || isActiveSubscription === false) {
+    if (isPlanChanging || isActiveSubscription === false || isActiveSubscription === true) {
       planService.invalidateCache(existing.organizationId);
     }
 

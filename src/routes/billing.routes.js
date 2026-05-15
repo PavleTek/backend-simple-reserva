@@ -180,7 +180,7 @@ router.get('/subscription', async (req, res, next) => {
       paymentGracePeriod: inGrace,
       gracePeriodEndsAt: sub?.gracePeriodEndsAt?.toISOString() ?? null,
       hasAccess,
-      canActivate: !hasAccess || inGrace || trialing,
+      canActivate: status !== 'active',
       canReactivate,
       renewalScheduledSamePlan,
       renewalScheduledAt,
