@@ -20,6 +20,7 @@ const {
 
 const CURRENCY = 'CLP';
 const MIN_AMOUNT_CLP = 950; // MP rechaza montos menores con 400/500
+const IVA_RATE = 0.19; // IVA Chile
 
 let preApprovalClient = null;
 /** Evita reutilizar cliente de MP si cambia el access token resuelto por entorno. */
@@ -146,7 +147,8 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
 
   const planAmount = Number(config.priceCLP);
   const mpFreq = planService.toMercadoPagoFrequency(config.billingFrequency, config.billingFrequencyType);
-  let amount = Math.round(planAmount);
+  // priceCLP es precio neto (sin IVA); el frontend lo muestra como "más IVA (19%)".
+  let amount = Math.round(planAmount * (1 + IVA_RATE));
   if (amount < MIN_AMOUNT_CLP) {
     amount = MIN_AMOUNT_CLP;
   }
