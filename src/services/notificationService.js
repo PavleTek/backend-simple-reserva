@@ -308,42 +308,50 @@ async function sendModificationAlertToCustomer(options) {
  * @param {string} options.panelUrl - Link to view reservations
  */
 /**
- * Email de bienvenida tras registro de restaurante (owner).
+ * HTML welcome email for new restaurant organization owners.
+ * @param {Object} options
+ * @param {string} options.email - Owner email address
+ * @param {string} options.ownerName - Owner's display name (full name or email fallback)
+ * @param {string} options.panelUrl - URL to the restaurant management portal
+ * @returns {Promise<boolean>}
  */
-async function sendWelcomeEmail({ email, restaurantName, panelUrl }) {
+async function sendOrganizationOwnerWelcomeEmail({ email, ownerName, panelUrl }) {
   if (!email) return false;
 
-  const subject = `Bienvenido a SimpleReserva — ${restaurantName}`;
-  const body = [
-    `Hola,`,
-    ``,
-    `Tu cuenta para ${restaurantName} ya está lista.`,
-    ``,
-    `Entra al panel: ${panelUrl}`,
-    ``,
-    `Saludos,`,
-    `El equipo de SimpleReserva`,
-  ].join("\n");
+  const { buildOrganizationOwnerWelcomeHtml } = require('../templates/restaurantOrganizationOwnerWelcomeEmail');
+  const { sendEmail } = require('./emailService');
+  const { CONTACT_EMAIL, WHATSAPP_DISPLAY, WHATSAPP_HREF } = require('../config/contact');
+  const prisma = require('../lib/prisma');
 
-  const { sendEmail } = require("./emailService");
-  const prisma = require("../lib/prisma");
   const config = await prisma.configuration.findFirst();
-  const fromSender = config?.recoveryEmailSenderId
-    ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
+  const fromSenderId = config?.reservationEmailSenderId || config?.recoveryEmailSenderId;
+  const fromSender = fromSenderId
+    ? (await prisma.emailSender.findUnique({ where: { id: fromSenderId } }))?.email
     : null;
-  const fromEmail = fromSender || "noreply@simplereserva.com";
+  const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+
+  const html = buildOrganizationOwnerWelcomeHtml({
+    ownerName,
+    panelUrl,
+    contactEmail: CONTACT_EMAIL,
+    whatsappDisplay: WHATSAPP_DISPLAY,
+    whatsappHref: WHATSAPP_HREF,
+    assetBaseUrl: baseUrl,
+  });
 
   try {
     await sendEmail({
       fromEmail,
       toEmails: [email],
-      subject,
-      content: body,
-      isHtml: false,
+      subject: 'Bienvenido a SimpleReserva — tu cuenta está lista',
+      content: html,
+      isHtml: true,
     });
     return true;
   } catch (err) {
-    console.error("[Notification] Welcome email error:", err.message);
+    console.error('[Notification] Welcome email error:', err.message);
     return false;
   }
 }
@@ -593,7 +601,7 @@ module.exports = {
   sendReservationConfirmation,
   sendReservationReminder,
   sendModificationAlertToCustomer,
-  sendWelcomeEmail,
+  sendOrganizationOwnerWelcomeEmail,
   sendDailySummary,
   sendPaymentFailureNotification,
   sendReservationConfirmationEmail,

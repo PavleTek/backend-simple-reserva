@@ -2,12 +2,18 @@
 
 set -e
 
-# Load .env so DATABASE_URL is available for prisma migrate diff
+# Load .env for SHADOW_DB (never use DATABASE_URL as Prisma's shadow target).
 if [ -f .env ]; then
   set -a
   # shellcheck disable=SC1091
   . .env
   set +a
+fi
+
+if [ -z "$SHADOW_DB" ]; then
+  echo "[pre-push] ERROR: SHADOW_DB is not set." >&2
+  echo "Add SHADOW_DB to .env — a dedicated empty Postgres URL (see .env.example). Do not use your app DATABASE_URL." >&2
+  exit 1
 fi
 
 echo "[pre-push] prisma generate..."
@@ -16,12 +22,30 @@ npx prisma generate
 echo "[pre-push] prisma validate..."
 npx prisma validate
 
-echo "[pre-push] prisma migrate diff (schema vs migrations folder)..."
+echo "[pre-push] creating shadow DB..."
+# Extract DB name (strip query string, then take last path segment)
+SHADOW_DB_NAME=$(echo "$SHADOW_DB" | sed 's/?.*//' | sed 's|.*/||')
+# Build an admin URL pointing to 'postgres' so we can CREATE/DROP the shadow DB
+ADMIN_URL=$(echo "$SHADOW_DB" | sed "s|/${SHADOW_DB_NAME}[?].*|/postgres|" | sed "s|/${SHADOW_DB_NAME}$|/postgres|")
+psql "$ADMIN_URL" -c "CREATE DATABASE \"$SHADOW_DB_NAME\";"
+
+echo "[pre-push] prisma migrate diff (migrations vs schema; shadow DB only)..."
+set +e
 npx prisma migrate diff \
   --from-migrations prisma/migrations \
   --to-schema-datamodel prisma/schema.prisma \
-  --shadow-database-url "$DATABASE_URL" \
+  --shadow-database-url "$SHADOW_DB" \
   --exit-code
+MIGRATE_EXIT=$?
+set -e
+
+echo "[pre-push] dropping shadow DB..."
+psql "$ADMIN_URL" -c "DROP DATABASE IF EXISTS \"$SHADOW_DB_NAME\";" 2>/dev/null || true
+
+if [ $MIGRATE_EXIT -ne 0 ]; then
+  echo "[pre-push] ERROR: schema has unapplied changes. Run 'npx prisma migrate dev' first." >&2
+  exit $MIGRATE_EXIT
+fi
 
 echo "[pre-push] npm run build..."
 npm run build

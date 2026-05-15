@@ -47,7 +47,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       prisma.zone.findMany({
         where: { restaurantId: restaurant.id, isActive: true },
         orderBy: { sortOrder: 'asc' },
-        select: { id: true, name: true, sortOrder: true },
+        select: { id: true, name: true, sortOrder: true, smokingZone: true },
       }),
       prisma.durationRule.findMany({ where: { restaurantId: restaurant.id } }),
       prisma.blockedSlot.findMany({
