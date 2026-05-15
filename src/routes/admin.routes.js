@@ -451,11 +451,11 @@ router.get('/subscriptions', async (req, res, next) => {
   try {
     const { page, limit, skip } = parsePagination(req.query);
 
-    // Solo mostrar suscripciones relevantes: las activas/actuales por organización.
-    // Se excluyen las canceladas/expiradas históricas para evitar filas duplicadas por org.
-    const relevantWhere = {
-      status: { notIn: ['cancelled', 'cancelled_by_admin', 'expired'] },
-    };
+    // Por defecto mostrar solo suscripciones vigentes (isActiveSubscription = true):
+    // incluye activas, en gracia, en prueba, y canceladas-con-acceso-hasta-endDate.
+    // Con ?all=true se muestran también las históricas (canceladas/expiradas antiguas).
+    const showAll = req.query.all === 'true';
+    const relevantWhere = showAll ? {} : { isActiveSubscription: true };
 
     const [subscriptions, total] = await Promise.all([
       prisma.subscription.findMany({
@@ -633,12 +633,22 @@ router.post('/subscriptions/:id/repair', async (req, res, next) => {
     }
 
     // 3. Aplicar actualizaciones a la suscripción
-    let updated = sub;
+    const fullInclude = {
+      plan: true,
+      organization: { include: { restaurants: { select: { name: true } } } },
+    };
+
+    let updated;
     if (Object.keys(updates).length > 0) {
       updated = await prisma.subscription.update({
         where: { id: sub.id },
         data: updates,
-        include: { plan: true, organization: { select: { name: true } } },
+        include: fullInclude,
+      });
+    } else {
+      updated = await prisma.subscription.findUnique({
+        where: { id: sub.id },
+        include: fullInclude,
       });
     }
 
@@ -655,6 +665,125 @@ router.post('/subscriptions/:id/repair', async (req, res, next) => {
     planService.invalidateCache(sub.organizationId);
 
     res.json({ subscription: updated, log });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/subscriptions/:id/mp-check
+ *
+ * Verifica si la organización tiene pagos/preapprovals en MercadoPago no reflejados
+ * en el sistema. Útil antes de asignar un plan manualmente para evitar duplicar
+ * o solapar con un pago real ya procesado.
+ *
+ * Retorna:
+ * - checkoutSessions: sesiones recientes de checkout (pendientes/completadas)
+ * - preapprovals: estado de cada preapproval en MP
+ * - suggestion: 'activate' | 'manual' | 'none'
+ */
+router.get('/subscriptions/:id/mp-check', async (req, res, next) => {
+  try {
+    const sub = await prisma.subscription.findUnique({
+      where: { id: req.params.id },
+      select: { organizationId: true, mercadopagoPreapprovalId: true, status: true },
+    });
+    if (!sub) throw new NotFoundError('Suscripción no encontrada');
+
+    const { organizationId } = sub;
+
+    // Buscar CheckoutSessions recientes (últimos 30 días) para esta org
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const sessions = await prisma.checkoutSession.findMany({
+      where: {
+        organizationId,
+        createdAt: { gt: since },
+        mercadopagoPreapprovalId: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      include: { plan: { select: { name: true, productSKU: true } } },
+    });
+
+    const { getMercadoPagoAccessToken } = require('../lib/mercadopagoEnv');
+    const accessToken = getMercadoPagoAccessToken();
+
+    const results = [];
+    let suggestion = 'manual';
+
+    if (accessToken && sessions.length > 0) {
+      const { MercadoPagoConfig, PreApproval } = require('mercadopago');
+      const mpClient = new MercadoPagoConfig({ accessToken });
+      const preApprovalClient = new PreApproval(mpClient);
+
+      // Deduplicar preapproval IDs (puede haber varios sessions con el mismo preapproval)
+      const seen = new Set();
+      for (const session of sessions) {
+        if (!session.mercadopagoPreapprovalId || seen.has(session.mercadopagoPreapprovalId)) continue;
+        seen.add(session.mercadopagoPreapprovalId);
+
+        let mpStatus = null;
+        let mpError = null;
+        try {
+          const mpSub = await preApprovalClient.get({ id: session.mercadopagoPreapprovalId });
+          mpStatus = mpSub?.status ?? null;
+        } catch (e) {
+          mpError = e?.message ?? 'Error consultando MP';
+        }
+
+        const isAuthorized = mpStatus === 'authorized' || mpStatus === 'approved';
+        if (isAuthorized && sub.status !== 'active') {
+          suggestion = 'activate';
+        }
+
+        results.push({
+          preapprovalId: session.mercadopagoPreapprovalId,
+          sessionStatus: session.status,
+          sessionCreatedAt: session.createdAt.toISOString(),
+          planName: session.plan?.name ?? null,
+          planSKU: session.plan?.productSKU ?? null,
+          mpStatus,
+          mpError,
+          isAuthorized,
+        });
+      }
+    } else if (!accessToken) {
+      suggestion = 'none';
+    }
+
+    res.json({ organizationId, results, suggestion });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /admin/subscriptions/:id/activate-from-preapproval
+ *
+ * Activa la suscripción usando un preapproval autorizado en MercadoPago.
+ * Usa la misma lógica que el webhook de subscription_preapproval.
+ * body: { preapprovalId: string }
+ */
+router.post('/subscriptions/:id/activate-from-preapproval', async (req, res, next) => {
+  try {
+    const { preapprovalId } = req.body;
+    if (!preapprovalId) throw new ValidationError('preapprovalId requerido');
+
+    const sub = await prisma.subscription.findUnique({
+      where: { id: req.params.id },
+      select: { organizationId: true },
+    });
+    if (!sub) throw new NotFoundError('Suscripción no encontrada');
+
+    const mercadopagoService = require('../services/mercadopagoService');
+    const result = await mercadopagoService.confirmSubscriptionFromPreapproval(
+      sub.organizationId,
+      preapprovalId,
+    );
+
+    planService.invalidateCache(sub.organizationId);
+
+    res.json({ ok: true, result });
   } catch (error) {
     next(error);
   }

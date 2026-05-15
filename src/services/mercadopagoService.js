@@ -450,9 +450,11 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   const nextPeriodEnd = computePeriodEnd(activatedAt, plan);
 
   await prisma.$transaction(async (tx) => {
-    // Cancelar suscripciones previas (trial, active, scheduled) para evitar duplicados
+    // Cancelar suscripciones previas para evitar duplicados.
+    // Incluye 'grace': cuando el cliente compra un plan nuevo durante periodo de gracia,
+    // la sub en grace queda reemplazada por la nueva activa.
     await tx.subscription.updateMany({
-      where: { organizationId, status: { in: ['trial', 'active', 'scheduled'] } },
+      where: { organizationId, status: { in: ['trial', 'active', 'scheduled', 'grace'] } },
       data: { status: 'cancelled', isActiveSubscription: false },
     });
     await tx.subscription.create({

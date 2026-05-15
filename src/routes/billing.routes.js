@@ -457,15 +457,20 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
       orderBy: { startDate: 'desc' },
       include: { plan: true }
     });
-    if (!sub?.mercadopagoPreapprovalId) {
+    if (!sub) {
       res.status(400).json({ error: 'No hay suscripción activa para cancelar.' });
       return;
     }
-    const mercadopagoService = require('../services/mercadopagoService');
-    await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
-    
-    // Calcular el fin real del periodo ya pagado: anclar en startDate + periodicidad
-    const periodEnd = computePeriodEnd(sub.startDate, sub.plan);
+
+    // Cancelar en MercadoPago solo si hay un preapproval vinculado.
+    // Suscripciones asignadas manualmente por admin no tienen preapproval; se cancelan solo localmente.
+    if (sub.mercadopagoPreapprovalId) {
+      const mercadopagoService = require('../services/mercadopagoService');
+      await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
+    }
+
+    // Calcular el fin real del periodo ya pagado: anclar en currentPeriodEnd o startDate + periodicidad
+    const periodEnd = sub.currentPeriodEnd ?? computePeriodEnd(sub.startDate, sub.plan);
     if (!periodEnd) {
       return res.status(500).json({ error: 'No se pudo calcular el fin del periodo.' });
     }
