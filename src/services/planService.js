@@ -337,6 +337,132 @@ async function canAddTeamMember(ownerId, restaurantId, includeTrial = true) {
   return { allowed: true };
 }
 
+const PLAN_SKU_TIER_ORDER = ['plan-basico', 'plan-profesional', 'plan-premium'];
+
+/**
+ * Compara planes por precio (y desempata por SKU) para upgrade/downgrade en facturación.
+ * @param {import('@prisma/client').Plan | Record<string, any>} fromPlan
+ * @param {import('@prisma/client').Plan | Record<string, any>} toPlan
+ * @returns {'upgrade'|'downgrade'|'same'}
+ */
+function comparePlansChangeKind(fromPlan, toPlan) {
+  if (!fromPlan || !toPlan) return 'same';
+  if (fromPlan.productSKU === toPlan.productSKU) return 'same';
+  const a = Number(fromPlan.priceCLP ?? 0);
+  const b = Number(toPlan.priceCLP ?? 0);
+  if (b > a) return 'upgrade';
+  if (b < a) return 'downgrade';
+  const ia = PLAN_SKU_TIER_ORDER.indexOf(fromPlan.productSKU);
+  const ib = PLAN_SKU_TIER_ORDER.indexOf(toPlan.productSKU);
+  if (ia >= 0 && ib >= 0) {
+    if (ib > ia) return 'upgrade';
+    if (ib < ia) return 'downgrade';
+  }
+  return 'same';
+}
+
+async function computePlanChangeDowngradeBlockers(organizationId, currentPlanEntity, targetPlanEntity) {
+  const overLimits = [];
+  const featuresLost = [];
+
+  const restaurantCount = await prisma.restaurant.count({ where: { organizationId } });
+  if (targetPlanEntity.maxRestaurants != null && restaurantCount > targetPlanEntity.maxRestaurants) {
+    overLimits.push({
+      resource: 'restaurants',
+      current: restaurantCount,
+      allowed: targetPlanEntity.maxRestaurants,
+    });
+  }
+
+  const restaurants = await prisma.restaurant.findMany({
+    where: { organizationId },
+    select: { id: true, name: true },
+  });
+
+  for (const r of restaurants) {
+    if (targetPlanEntity.maxZonesPerRestaurant != null) {
+      const zc = await prisma.zone.count({ where: { restaurantId: r.id } });
+      if (zc > targetPlanEntity.maxZonesPerRestaurant) {
+        overLimits.push({
+          resource: 'zones',
+          restaurantId: r.id,
+          restaurantName: r.name,
+          current: zc,
+          allowed: targetPlanEntity.maxZonesPerRestaurant,
+        });
+      }
+    }
+    if (targetPlanEntity.maxTables != null) {
+      const tc = await prisma.restaurantTable.count({
+        where: { zone: { restaurantId: r.id } },
+      });
+      if (tc > targetPlanEntity.maxTables) {
+        overLimits.push({
+          resource: 'tables',
+          restaurantId: r.id,
+          restaurantName: r.name,
+          current: tc,
+          allowed: targetPlanEntity.maxTables,
+        });
+      }
+    }
+    if (targetPlanEntity.maxTeamMembers != null) {
+      const teamCount = await prisma.organizationManager.count({
+        where: {
+          organizationId,
+          restaurantAssignments: { some: { restaurantId: r.id } },
+        },
+      });
+      if (teamCount > targetPlanEntity.maxTeamMembers) {
+        overLimits.push({
+          resource: 'team_members',
+          restaurantId: r.id,
+          restaurantName: r.name,
+          current: teamCount,
+          allowed: targetPlanEntity.maxTeamMembers,
+        });
+      }
+    }
+  }
+
+  if (!targetPlanEntity.multipleMenu && currentPlanEntity.multipleMenu) {
+    const extraMenus =
+      restaurants.length === 0
+        ? 0
+        : await prisma.restaurantMenu.count({
+            where: {
+              restaurantId: { in: restaurants.map((x) => x.id) },
+              menuType: { in: ['drinks', 'dessert'] },
+            },
+          });
+    if (extraMenus > 0) {
+      featuresLost.push({
+        feature: 'multipleMenu',
+        message:
+          'Tienes cartas adicionales (bebidas o postres). Elimínalas en cada local antes de bajar de plan.',
+      });
+    }
+  }
+
+  return { overLimits, featuresLost };
+}
+
+/**
+ * Vista previa de cambio de plan (bloqueos por downgrade).
+ */
+async function evaluatePlanChangeForOrganization(organizationId, currentPlanEntity, targetPlanEntity) {
+  const kind = comparePlansChangeKind(currentPlanEntity, targetPlanEntity);
+  if (kind !== 'downgrade') {
+    return { kind, overLimits: [], featuresLost: [] };
+  }
+  const { overLimits, featuresLost } = await computePlanChangeDowngradeBlockers(
+    organizationId,
+    currentPlanEntity,
+    targetPlanEntity,
+  );
+  return { kind, overLimits, featuresLost };
+}
+
 /**
  * Invalidate cache (call when Plan changes).
  */
@@ -362,6 +488,8 @@ module.exports = {
   canAddZone,
   canAddTable,
   canAddTeamMember,
+  comparePlansChangeKind,
+  evaluatePlanChangeForOrganization,
   invalidateCache,
   toMercadoPagoFrequency,
   VALID_PLANS,

@@ -30,6 +30,7 @@ const { startTrialReminderJob } = require("./jobs/trialReminderJob");
 const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
 const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
 const { startReconciliationJob } = require("./jobs/reconciliationJob");
+const { startScheduledPlanChangeGuardJob } = require("./jobs/scheduledPlanChangeGuardJob");
 const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
 const { getClpPerUsd } = require("./services/clpUsdRateService");
 
@@ -221,4 +222,5 @@ app.listen(PORT, "0.0.0.0", () => {
   startTrialExpiryJob();
   startGracePeriodExpiryJob();
   startReconciliationJob();
+  startScheduledPlanChangeGuardJob();
 });

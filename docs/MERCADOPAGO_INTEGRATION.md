@@ -43,6 +43,16 @@ The following variables are required in the backend `.env`:
 - `MERCADOPAGO_TEST_MODE`: Set to `true` when using test credentials.
 - `MP_TEST_PAYER_EMAIL`: The email of the test buyer account.
 
+### Feature flags (suscripciones / cobros recurrentes)
+
+| Variable | Effect |
+|----------|--------|
+| `FEATURE_SCOPED_PREAPPROVAL_EVENTS` | When `false`, grace-period handling may fall back to broader legacy matching by organization instead of resolving the exact `preapprovalId`. |
+| `FEATURE_NO_CANCEL_BEFORE_AUTHORIZE` | When `false`, deferred plan changes (`end_of_period`) cancel the current MP preapproval at checkout start (legacy). Default: enabled unless `=false`. |
+| `FEATURE_SAVED_CARD` | When `false`, webhook handlers skip persisting `mpCustomerId` / `mpCardId` on `RestaurantOrganization`. |
+
+Optional cron: `SCHEDULED_PLAN_GUARD_CRON` schedules `scheduledPlanChangeGuardJob` (default `15 */4 * * *`, TZ `America/Santiago` or `TZ` env).
+
 ## API Entities Mapping
 
 | SimpleReserva Model | MercadoPago Entity | Description |
@@ -80,11 +90,11 @@ The following fields are stored in the `Plan` model:
 The webhook endpoint is `/api/webhooks/mercadopago`.
 
 - **Event `subscription_preapproval`**:
-    - `authorized` / `approved`: Activates the subscription.
-    - `payment_required`: Enters grace period (7 days).
-    - `cancelled` / `expired`: Deactivates the subscription.
+    - `authorized` / `approved`: Activates or schedules the subscription; may finalize a deferred plan change when `CheckoutSession.pendingEndOfPeriodFromSubscriptionId` is set.
+    - `payment_required`: Typically enters grace on the **specific** subscription tied to that preapproval when scoped events are enabled.
+    - `cancelled` / `expired`: Resolves the impacted subscription/preapproval before revoking access (avoids “ghost” cancellations from unrelated preapprovals).
 - **Event `payment`**:
-    - `approved`: Creates a `PaymentReceipt` in the database.
+    - `approved`: Creates a `PaymentReceipt` in the database. When `FEATURE_SAVED_CARD !== 'false'`, may persist MP customer/card identifiers for future saved-card flows.
 
 ## Testing Guide
 

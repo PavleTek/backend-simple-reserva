@@ -58,6 +58,7 @@ model RestaurantOrganization {
   reservationAnalytics ReservationAnalytics[]
   paymentReceipts PaymentReceipt[]
   checkoutSessions CheckoutSession[]
+  subscriptionEvents SubscriptionEvent[]
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -65,6 +66,11 @@ model RestaurantOrganization {
   billingBusinessName String?   // Company/business name
   billingAddress      String?
   billingEmail        String?   // Billing-specific email
+
+  /// Mercado Pago: customer permanent id (para reutilizar tarjeta / cobros sin redirect)
+  mpCustomerId String?
+  /// Mercado Pago: id de tarjeta guardada del cliente
+  mpCardId       String?
 
   @@index([ownerId])
   @@index([customPlanId])
@@ -299,14 +305,38 @@ model Subscription {
   /// Access deadline: 7 days after payment failure, OR set equal to endDate on manual cancellation
   gracePeriodEndsAt DateTime?
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
+
+  /// Intento de cambio de plan inmediato (checkout MP en curso); si el preapproval se cancela sin autorizar, se limpia sin pasar a gracia.
+  pendingChangeToPlanId       String?
+  pendingChangePreapprovalId   String?
+  pendingChangeRequestedAt     DateTime?
+
   createdAt     DateTime  @default(now())
 
   paymentReceipts PaymentReceipt[]
+  subscriptionEvents SubscriptionEvent[]
 
   @@unique([organizationId, mercadopagoPreapprovalId])
   @@index([organizationId])
   @@index([currentPeriodEnd])
   @@index([isActiveSubscription])
+  @@index([pendingChangePreapprovalId])
+}
+
+/// Auditoría de transiciones relevantes en suscripción / cobros (soporte y reconciliación).
+model SubscriptionEvent {
+  id               String   @id @default(cuid())
+  organizationId   String
+  organization     RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptionId   String?
+  subscription     Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  source           String   // webhook | reconcile | user | admin | system
+  action           String
+  meta             Json?
+  createdAt        DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([subscriptionId])
 }
 
 model EmailDomain {
@@ -492,6 +522,8 @@ model CheckoutSession {
   checkoutUrl               String?
   /// Si existe, al autorizar el nuevo preapproval se cancela esta suscripción en MP (cambio de plan inmediato sin perder acceso antes de pagar).
   pendingChangeFromSubscriptionId String?
+  /// Cambio de plan al fin del periodo: suscripción activa que debe reflejarse como cancelled (con acceso hasta periodEnd) tras autorizar el nuevo preapproval.
+  pendingEndOfPeriodFromSubscriptionId String?
 
   createdAt                 DateTime  @default(now())
   expiresAt                 DateTime?

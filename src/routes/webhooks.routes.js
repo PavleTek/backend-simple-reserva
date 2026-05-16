@@ -18,6 +18,9 @@ const {
   scheduleOrganizationSubscription,
   enterGracePeriod,
   getActivateOptionsForPreapproval,
+  resolvePreapprovalFailureAction,
+  finalizeEndOfPeriodPlanChangeFromSession,
+  clearPendingPlanChangeIntent,
 } = require('../services/mercadopagoService');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
@@ -188,6 +191,7 @@ router.post('/mercadopago', express.json({
 
           if (isFutureStart) {
             await scheduleOrganizationSubscription(organizationId, preapprovalId, plan, new Date(mpStartDate));
+            await finalizeEndOfPeriodPlanChangeFromSession(organizationId, preapprovalId);
             console.log('[Webhook] MercadoPago subscription scheduled (future start):', organizationId, plan, mpStartDate);
           } else {
             const activateOpts = await getActivateOptionsForPreapproval(organizationId, preapprovalId);
@@ -199,12 +203,22 @@ router.post('/mercadopago', express.json({
             where: { mercadopagoPreapprovalId: preapprovalId, organizationId },
             data: { status: 'completed', completedAt: new Date() },
           });
-        } else if (status === 'payment_required') {
-          await enterGracePeriod(organizationId, { scheduledPreapprovalId: preapprovalId });
-          console.log('[Webhook] MercadoPago payment_required → grace period:', organizationId);
-        } else if (status === 'cancelled' || status === 'expired') {
-          await enterGracePeriod(organizationId, { scheduledPreapprovalId: preapprovalId });
-          console.log('[Webhook] MercadoPago', status, '→ grace period:', organizationId);
+        } else if (status === 'payment_required' || status === 'cancelled' || status === 'expired') {
+          const resolved = await resolvePreapprovalFailureAction(organizationId, preapprovalId);
+          if (resolved.action === 'legacy_grace') {
+            await enterGracePeriod(organizationId, { scheduledPreapprovalId: preapprovalId });
+          } else if (resolved.action === 'grace') {
+            await enterGracePeriod(organizationId, {
+              subscriptionId: resolved.subscriptionId,
+              scheduledPreapprovalId: preapprovalId,
+            });
+          } else if (resolved.action === 'clear_pending_change') {
+            await clearPendingPlanChangeIntent(resolved.subscriptionId, organizationId);
+            console.log('[Webhook] Intento de cambio de plan cancelado; pending limpio:', organizationId, preapprovalId);
+          } else {
+            console.log('[Webhook] Preapproval huérfano (sin gracia):', status, preapprovalId, organizationId);
+          }
+          console.log('[Webhook] MercadoPago', status, 'processed:', organizationId);
         } else {
           console.log('[Webhook] MercadoPago status ignorado:', status);
         }
@@ -260,6 +274,22 @@ router.post('/mercadopago', express.json({
         if (mpPayment.status === 'approved') {
           await createReceiptFromMPPayment(mpPayment, organizationId, planSKU);
           console.log('[Webhook] MercadoPago receipt created for payment:', paymentId);
+
+          if (process.env.FEATURE_SAVED_CARD !== 'false') {
+            const payerId = mpPayment.payer?.id != null ? String(mpPayment.payer.id) : null;
+            const cardId = mpPayment.card?.id != null ? String(mpPayment.card.id) : null;
+            if (payerId || cardId) {
+              await prisma.restaurantOrganization
+                .update({
+                  where: { id: organizationId },
+                  data: {
+                    ...(payerId ? { mpCustomerId: payerId } : {}),
+                    ...(cardId ? { mpCardId: cardId } : {}),
+                  },
+                })
+                .catch((e) => console.warn('[Webhook] No se pudo persistir mpCustomer/mpCard:', e?.message ?? e));
+            }
+          }
           // Reactivar acceso si estaba en periodo de gracia por fallo de cobro
           const reactivated = await prisma.subscription.updateMany({
             where: { organizationId, status: 'grace' },

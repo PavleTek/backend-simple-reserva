@@ -220,6 +220,58 @@ router.get('/subscription', async (req, res, next) => {
   }
 });
 
+/**
+ * GET /billing/change-plan-preview
+ * Vista previa para cambio de plan (bloqueo en downgrade si hay más uso que el límite del plan objetivo).
+ */
+router.get('/billing/change-plan-preview', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const organizationId = restaurant.organizationId;
+
+    const targetSKU = typeof req.query.plan === 'string' ? req.query.plan.trim() : '';
+    if (!targetSKU) {
+      return res.status(400).json({ error: 'Parámetro plan requerido' });
+    }
+
+    const targetPlan = await prisma.plan.findUnique({ where: { productSKU: targetSKU } });
+    if (!targetPlan) return res.status(400).json({ error: `Plan no encontrado: ${targetSKU}` });
+
+    const currentSub = await prisma.subscription.findFirst({
+      where: { organizationId, status: 'active' },
+      orderBy: { startDate: 'desc' },
+      include: { plan: true },
+    });
+    if (!currentSub?.plan) {
+      return res.status(400).json({ error: 'No tienes una suscripción activa para evaluar el cambio.' });
+    }
+
+    if (currentSub.plan.productSKU === targetSKU) {
+      return res.json({
+        kind: 'same',
+        overLimits: [],
+        featuresLost: [],
+        blocked: false,
+      });
+    }
+
+    const preview = await planService.evaluatePlanChangeForOrganization(
+      organizationId,
+      currentSub.plan,
+      targetPlan,
+    );
+    const blocked = preview.kind === 'downgrade' && (preview.overLimits.length > 0 || preview.featuresLost.length > 0);
+    res.json({ ...preview, blocked });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/billing/payments', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
@@ -478,7 +530,36 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
       where: { id: sub.id },
       data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd, gracePeriodEndsAt: periodEnd },
     });
-    res.json({ message: 'Suscripción cancelada. Seguirás con acceso hasta el final del periodo actual.' });
+
+    planService.invalidateCache(organizationId);
+
+    try {
+      const orgRow = await prisma.restaurantOrganization.findUnique({
+        where: { id: organizationId },
+        select: { name: true, owner: { select: { email: true } } },
+      });
+      const { sendSubscriptionCancellationScheduledEmail } = require('../services/notificationService');
+      const panelBase = (
+        process.env.FRONTEND_RESTAURANT_PORTAL_URL ||
+        process.env.RESTAURANT_PANEL_URL ||
+        'http://localhost:5175'
+      ).replace(/\/$/, '');
+      const panelUrl = `${panelBase}/billing?organizationId=${organizationId}`;
+      await sendSubscriptionCancellationScheduledEmail({
+        emails: orgRow?.owner?.email ? [orgRow.owner.email] : [],
+        organizationName: orgRow?.name || 'Tu organización',
+        accessUntil: periodEnd,
+        panelUrl,
+      });
+    } catch (mailErr) {
+      console.warn('[billing/cancel] Email confirmación cancelación:', mailErr?.message ?? mailErr);
+    }
+
+    res.json({
+      message:
+        'Suscripción cancelada: no se renovará automáticamente. Mantienes acceso completo hasta el final del periodo ya pagado.',
+      accessUntil: periodEnd.toISOString(),
+    });
   } catch (error) {
     if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
       res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
@@ -660,9 +741,9 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
  *
  * when='now' (default): abre checkout inmediato; la sub actual en MP se mantiene hasta que
  *   el nuevo pago autorice (CheckoutSession.pendingChangeFromSubscriptionId).
- * when='end_of_period': cancela el preapproval de MP (deja de cobrar el plan viejo),
- *   mantiene acceso hasta el fin del periodo ya pagado, y abre un checkout cuyo
- *   primer cobro es en esa fecha (igual que reactivate pero partiendo de un estado activo).
+ * when='end_of_period': por defecto (FEATURE_NO_CANCEL_BEFORE_AUTHORIZE): no cancela el preapproval actual
+ *   hasta que el nuevo esté autorizado en MP; el primer cobro del nuevo plan coincide con el fin del periodo.
+ *   Con FEATURE_NO_CANCEL_BEFORE_AUTHORIZE=false se mantiene el comportamiento anterior (cancela MP y marca cancelled local al iniciar el checkout).
  */
 router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
@@ -709,28 +790,49 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     }
 
     const mercadopagoService = require('../services/mercadopagoService');
+    const deferEnd = mercadopagoService.useNoCancelBeforeAuthorize();
+
+    const preview = await planService.evaluatePlanChangeForOrganization(organizationId, currentSub.plan, newPlan);
+    if (preview.kind === 'downgrade' && (preview.overLimits.length > 0 || preview.featuresLost.length > 0)) {
+      return res.status(400).json({
+        error: 'No puedes bajar a este plan con tu uso actual.',
+        code: 'downgrade_blocked',
+        overLimits: preview.overLimits,
+        featuresLost: preview.featuresLost,
+      });
+    }
+
+    if (when === 'now' && deferEnd && currentSub.pendingChangePreapprovalId) {
+      return res.status(409).json({
+        error: 'Ya tienes un cambio de plan en proceso. Espera unos minutos o vuelve a Facturación.',
+        code: 'pending_plan_change',
+      });
+    }
 
     let checkoutStartDateOpt = null;
 
     if (when === 'end_of_period') {
-      if (currentSub.mercadopagoPreapprovalId) {
-        try {
-          await mercadopagoService.cancelSubscription(currentSub.mercadopagoPreapprovalId);
-        } catch (err) {
-          console.error('[billing/change-plan] Error cancelando preapproval en MP:', err?.message);
-        }
-      }
       const periodEnd = computePeriodEnd(currentSub.startDate, currentSub.plan);
       if (!periodEnd) {
         return res.status(500).json({ error: 'No se pudo calcular el fin del periodo.' });
       }
-      await prisma.subscription.update({
-        where: { id: currentSub.id },
-        data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd, gracePeriodEndsAt: periodEnd },
-      });
       checkoutStartDateOpt = periodEnd;
+
+      if (!deferEnd) {
+        if (currentSub.mercadopagoPreapprovalId) {
+          try {
+            await mercadopagoService.cancelSubscription(currentSub.mercadopagoPreapprovalId);
+          } catch (err) {
+            console.error('[billing/change-plan] Error cancelando preapproval en MP:', err?.message);
+          }
+        }
+        await prisma.subscription.update({
+          where: { id: currentSub.id },
+          data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd, gracePeriodEndsAt: periodEnd },
+        });
+      }
     }
-    // when === 'now': no cancelar MP ni DB hasta que el nuevo preapproval autorice (ver activateOrganizationSubscription + pendingChangeFromSubscriptionId)
+    // when === 'now': no cancelar MP ni DB hasta que el nuevo preapproval autorice (salvo flujo legacy sin defer).
 
     planService.invalidateCache(organizationId);
 
@@ -750,6 +852,8 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
         status: 'pending',
         expiresAt,
         pendingChangeFromSubscriptionId: when === 'now' ? currentSub.id : null,
+        pendingEndOfPeriodFromSubscriptionId:
+          when === 'end_of_period' && deferEnd ? currentSub.id : null,
       },
     });
 
@@ -775,6 +879,17 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       data: { mercadopagoPreapprovalId: preapprovalId, checkoutUrl },
     });
 
+    if (when === 'now' && deferEnd && preapprovalId) {
+      await prisma.subscription.update({
+        where: { id: currentSub.id },
+        data: {
+          pendingChangePreapprovalId: preapprovalId,
+          pendingChangeToPlanId: newPlan.id,
+          pendingChangeRequestedAt: new Date(),
+        },
+      });
+    }
+
     res.json({ checkoutUrl });
   } catch (error) {
     if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
@@ -784,6 +899,50 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       return res.status(502).json({ error: error.message });
     }
     next(error);
+  }
+});
+
+/**
+ * POST /billing/payment-method
+ * Reservado: actualización explícita de medio de pago (MP). Por ahora se usa el checkout estándar.
+ */
+router.post('/billing/payment-method', authenticateRestaurantRoles(['restaurant_owner']), async (req, res) => {
+  return res.status(501).json({
+    error: 'Para actualizar tu tarjeta usa el checkout de Mercado Pago en Facturación.',
+    code: 'use_checkout',
+  });
+});
+
+/**
+ * POST /billing/change-plan-with-saved-card
+ * Placeholder: cuando exista integración completa con tarjeta guardada en MP, evitará el redirect.
+ */
+router.post('/billing/change-plan-with-saved-card', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) return res.status(400).json({ error: 'Restaurante no encontrado' });
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: restaurant.organizationId },
+      select: { mpCardId: true },
+    });
+    if (process.env.FEATURE_SAVED_CARD === 'false' || !org?.mpCardId) {
+      return res.status(422).json({
+        error: 'No hay tarjeta guardada. Completa el flujo normal en Mercado Pago.',
+        code: 'saved_card_required',
+        fallbackToCheckout: true,
+      });
+    }
+    return res.status(501).json({
+      error: 'Cambio de plan con tarjeta guardada no está habilitado aún. Usa el checkout estándar.',
+      code: 'not_implemented',
+      fallbackToCheckout: true,
+    });
+  } catch (err) {
+    next(err);
   }
 });
 

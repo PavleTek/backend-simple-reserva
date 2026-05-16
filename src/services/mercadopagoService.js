@@ -484,21 +484,177 @@ async function deactivateOrganizationSubscription(organizationId) {
   });
 }
 
+/** Por defecto activado: solo pasar a gracia la suscripción vinculada al preapproval del evento (evita “desuscribe fantasma”). Desactivar con FEATURE_SCOPED_PREAPPROVAL_EVENTS=false */
+function useScopedPreapprovalEvents() {
+  return process.env.FEATURE_SCOPED_PREAPPROVAL_EVENTS !== 'false';
+}
+
+/** Por defecto activado: cambio al fin del periodo no cancela MP hasta autorizar el nuevo preapproval. */
+function useNoCancelBeforeAuthorize() {
+  return process.env.FEATURE_NO_CANCEL_BEFORE_AUTHORIZE !== 'false';
+}
+
 /**
- * Pasa a periodo de gracia por fallo de pago. Opcionalmente marca una sub programada (mismo preapproval) para reflejar el estado en DB.
+ * Resuelve qué hacer ante cancelled/expired/payment_required de un preapproval (webhook / reconcile).
+ * @returns {Promise<{ action: 'grace'|'legacy_grace'|'clear_pending_change'|'noop', subscriptionId?: string }>}
+ */
+async function resolvePreapprovalFailureAction(organizationId, preapprovalId) {
+  if (!useScopedPreapprovalEvents()) {
+    return { action: 'legacy_grace' };
+  }
+
+  const pendingIntent = await prisma.subscription.findFirst({
+    where: { organizationId, pendingChangePreapprovalId: preapprovalId },
+  });
+  if (pendingIntent) {
+    return { action: 'clear_pending_change', subscriptionId: pendingIntent.id };
+  }
+
+  const sub = await prisma.subscription.findFirst({
+    where: { organizationId, mercadopagoPreapprovalId: preapprovalId },
+  });
+  if (sub && (sub.status === 'active' || sub.status === 'scheduled')) {
+    return { action: 'grace', subscriptionId: sub.id };
+  }
+
+  return { action: 'noop' };
+}
+
+async function clearPendingPlanChangeIntent(subscriptionId, organizationId) {
+  await prisma.subscription.updateMany({
+    where: { id: subscriptionId, organizationId },
+    data: {
+      pendingChangePreapprovalId: null,
+      pendingChangeToPlanId: null,
+      pendingChangeRequestedAt: null,
+    },
+  });
+  try {
+    const { logSubscriptionEvent } = require('./subscriptionAuditService');
+    await logSubscriptionEvent({
+      organizationId,
+      subscriptionId,
+      source: 'system',
+      action: 'pending_plan_change_cleared',
+      meta: { reason: 'preapproval_abandoned_or_failed' },
+    });
+  } catch (_) {
+    /* noop */
+  }
+  planService.invalidateCache(organizationId);
+}
+
+/**
+ * Tras autorizar un cambio al fin del periodo: cortar cobros del plan anterior en MP y reflejar cancelación local con acceso hasta periodEnd.
+ */
+async function finalizeEndOfPeriodPlanChangeFromSession(organizationId, newPreapprovalId) {
+  const session = await prisma.checkoutSession.findFirst({
+    where: {
+      organizationId,
+      mercadopagoPreapprovalId: newPreapprovalId,
+      pendingEndOfPeriodFromSubscriptionId: { not: null },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!session?.pendingEndOfPeriodFromSubscriptionId) return;
+
+  const oldSub = await prisma.subscription.findUnique({
+    where: { id: session.pendingEndOfPeriodFromSubscriptionId },
+    include: { plan: true },
+  });
+  if (!oldSub || oldSub.organizationId !== organizationId) return;
+  if (oldSub.status !== 'active') return;
+
+  const periodEnd = oldSub.currentPeriodEnd ?? computePeriodEnd(oldSub.startDate, oldSub.plan);
+  if (!periodEnd) {
+    console.warn('[MercadoPago] finalizeEndOfPeriodPlanChangeFromSession: sin periodEnd');
+    return;
+  }
+
+  if (oldSub.mercadopagoPreapprovalId && oldSub.mercadopagoPreapprovalId !== newPreapprovalId) {
+    try {
+      await cancelSubscription(oldSub.mercadopagoPreapprovalId);
+    } catch (err) {
+      if (!isPreapprovalAlreadyCancelledError(err)) {
+        console.error(
+          '[MercadoPago] finalizeEndOfPeriodPlanChangeFromSession: no se pudo cancelar preapproval anterior:',
+          err?.message ?? err,
+        );
+      }
+    }
+  }
+
+  await prisma.subscription.update({
+    where: { id: oldSub.id },
+    data: {
+      status: 'cancelled',
+      endDate: periodEnd,
+      currentPeriodEnd: periodEnd,
+      gracePeriodEndsAt: periodEnd,
+    },
+  });
+
+  await prisma.checkoutSession.updateMany({
+    where: { id: session.id },
+    data: { pendingEndOfPeriodFromSubscriptionId: null },
+  });
+
+  const planService = require('./planService');
+  planService.invalidateCache(organizationId);
+}
+
+/**
+ * Pasa a periodo de gracia por fallo de pago.
  * @param {string} organizationId
- * @param {{ scheduledPreapprovalId?: string|null }} [options]
+ * @param {{ scheduledPreapprovalId?: string|null, subscriptionId?: string|null }} [options]
  */
 async function enterGracePeriod(organizationId, options = {}) {
-  const { scheduledPreapprovalId } = options;
+  const { scheduledPreapprovalId, subscriptionId } = options;
   const graceEnd = new Date();
   graceEnd.setDate(graceEnd.getDate() + 7);
-  await prisma.subscription.updateMany({
-    where: { organizationId, status: 'active' },
-    data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
-  });
-  if (scheduledPreapprovalId) {
+
+  let didGrace = false;
+
+  if (!useScopedPreapprovalEvents()) {
     await prisma.subscription.updateMany({
+      where: { organizationId, status: 'active' },
+      data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
+    });
+    didGrace = true;
+    if (scheduledPreapprovalId) {
+      const r = await prisma.subscription.updateMany({
+        where: {
+          organizationId,
+          status: 'scheduled',
+          mercadopagoPreapprovalId: scheduledPreapprovalId,
+        },
+        data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
+      });
+      didGrace = didGrace || r.count > 0;
+    }
+  } else if (subscriptionId) {
+    const r = await prisma.subscription.updateMany({
+      where: {
+        id: subscriptionId,
+        organizationId,
+        status: { in: ['active', 'scheduled'] },
+      },
+      data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
+    });
+    didGrace = r.count > 0;
+    if (!didGrace && scheduledPreapprovalId) {
+      const r2 = await prisma.subscription.updateMany({
+        where: {
+          organizationId,
+          status: 'scheduled',
+          mercadopagoPreapprovalId: scheduledPreapprovalId,
+        },
+        data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
+      });
+      didGrace = r2.count > 0;
+    }
+  } else if (scheduledPreapprovalId) {
+    const r = await prisma.subscription.updateMany({
       where: {
         organizationId,
         status: 'scheduled',
@@ -506,20 +662,26 @@ async function enterGracePeriod(organizationId, options = {}) {
       },
       data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
     });
+    didGrace = r.count > 0;
   }
 
-  // Notify owners by email
+  if (!didGrace) return;
+
   try {
-  const organization = await prisma.restaurantOrganization.findUnique({
-    where: { id: organizationId },
-    select: {
-      name: true,
-      owner: { select: { email: true } },
-    },
-  });
+    const organization = await prisma.restaurantOrganization.findUnique({
+      where: { id: organizationId },
+      select: {
+        name: true,
+        owner: { select: { email: true } },
+      },
+    });
     if (organization && organization.owner?.email) {
       const emails = [organization.owner.email];
-      const panelBase = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
+      const panelBase = (
+        process.env.FRONTEND_RESTAURANT_PORTAL_URL ||
+        process.env.RESTAURANT_PANEL_URL ||
+        'http://localhost:5175'
+      ).replace(/\/$/, '');
       const panelUrl = `${panelBase}/billing?organizationId=${organizationId}`;
       const { sendPaymentFailureNotification } = require('./notificationService');
       await sendPaymentFailureNotification({
@@ -572,6 +734,7 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
 
   if (isFutureStart) {
     await scheduleOrganizationSubscription(organizationId, preapprovalId, planSKU, new Date(startDate));
+    await finalizeEndOfPeriodPlanChangeFromSession(organizationId, preapprovalId);
     console.log('[MercadoPago] confirmSubscriptionFromPreapproval scheduled:', organizationId, planSKU, startDate);
     return { activated: false, scheduled: true, scheduledDate: startDate, planSKU };
   }
@@ -616,6 +779,7 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
         mpSub?.date_created;
       const sd = new Date(rawStart);
       await scheduleOrganizationSubscription(organizationId, preapprovalId, planSKU, sd);
+      await finalizeEndOfPeriodPlanChangeFromSession(organizationId, preapprovalId);
       console.log(
         '[MercadoPago] confirmSubscriptionFromPreapproval scheduled (cambio al vencer periodo):',
         organizationId,
@@ -646,4 +810,9 @@ module.exports = {
   enterGracePeriod,
   confirmSubscriptionFromPreapproval,
   getActivateOptionsForPreapproval,
+  resolvePreapprovalFailureAction,
+  finalizeEndOfPeriodPlanChangeFromSession,
+  clearPendingPlanChangeIntent,
+  useScopedPreapprovalEvents,
+  useNoCancelBeforeAuthorize,
 };

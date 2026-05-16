@@ -397,11 +397,63 @@ async function sendDailySummary(options) {
 }
 
 /**
- * Send payment failure notification to restaurant owner.
- * @param {Object} options
- * @param {string[]} options.emails - Owner emails
- * @param {string} options.restaurantName - Restaurant name
- * @param {string} options.panelUrl - Link to billing page
+ * Email tras cancelar renovación: acceso hasta fecha exacta y enlace a Facturación.
+ * @param {{ emails: string[], organizationName: string, accessUntil: Date|string, panelUrl: string }} options
+ */
+async function sendSubscriptionCancellationScheduledEmail(options) {
+  const { emails, organizationName, accessUntil, panelUrl } = options;
+  if (!emails || emails.length === 0) return false;
+
+  const until =
+    accessUntil instanceof Date
+      ? accessUntil.toLocaleDateString('es-CL', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          timeZone: process.env.TZ || 'America/Santiago',
+        })
+      : String(accessUntil);
+
+  const subject = `Confirmamos la cancelación de tu renovación — ${organizationName}`;
+  const body = [
+    `Hola,`,
+    ``,
+    `Confirmamos que tu suscripción no se renovará automáticamente.`,
+    `Seguirás teniendo acceso completo a SimpleReserva hasta el **${until}** (fin del periodo ya pagado).`,
+    ``,
+    `Si quieres reactivar o cambiar de plan antes de esa fecha, entra a Facturación:`,
+    `${panelUrl}`,
+    ``,
+    `Saludos,`,
+    `El equipo de SimpleReserva`,
+  ].join('\n');
+
+  const { sendEmail } = require('./emailService');
+  const prisma = require('../lib/prisma');
+  const config = await prisma.configuration.findFirst();
+  const fromSender = config?.recoveryEmailSenderId
+    ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
+    : null;
+  const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  try {
+    await sendEmail({
+      fromEmail,
+      toEmails: emails,
+      subject,
+      content: body,
+      isHtml: false,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Notification] Subscription cancellation scheduled email error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Avisa por correo fallo de cobro recurrente (periodo de gracia).
  */
 async function sendPaymentFailureNotification(options) {
   const { emails, restaurantName, panelUrl } = options;
@@ -604,6 +656,7 @@ module.exports = {
   sendOrganizationOwnerWelcomeEmail,
   sendDailySummary,
   sendPaymentFailureNotification,
+  sendSubscriptionCancellationScheduledEmail,
   sendReservationConfirmationEmail,
   sendCancellationNotification,
   notifyRestaurantWaitlistEntry,

@@ -21,6 +21,7 @@ This document explains how plans, subscriptions, and billing work across all rep
 13. [Admin operations](#13-admin-operations)
 14. [Cron jobs](#14-cron-jobs)
 15. [Key files per repo](#15-key-files-per-repo)
+16. [Flags de entorno y auditoría (suscripciones)](#16-flags-de-entorno-y-auditoría-suscripciones)
 
 ---
 
@@ -116,12 +117,16 @@ Subscription {
                            • manual cancellation → set equal to endDate
                          gracePeriodExpiryJob sets isActiveSubscription = false when this passes
   mercadopagoPreapprovalId  MP subscription ID when paid
+  pendingChangeToPlanId         Intento de cambio inmediato de plan (checkout en curso)
+  pendingChangePreapprovalId    Preapproval MP asociado al intento anterior
+  pendingChangeRequestedAt
   createdAt
 }
 ```
 
 `RestaurantOrganization` also holds:
 
+- `mpCustomerId` / `mpCardId` — optional MP identifiers when customer/card persistence is enabled (`FEATURE_SAVED_CARD`, see §16)
 - `planId` — the effective plan used for feature resolution (kept in sync with the active subscription's plan)
 - `trialEndsAt` — set at registration, cleared when the first paid subscription activates (informational for UI/emails)
 - `customPlanId` — optional admin-assigned custom plan (controls which plans are shown in billing)
@@ -231,22 +236,23 @@ File: `backend-simple-reserva/src/services/mercadopagoService.js` (`activateOrga
 
 ## 8. What happens when someone changes plans
 
-File: `backend-simple-reserva/src/routes/billing.routes.js` (`POST /billing/change-plan`)
+Archivos: `backend-simple-reserva/src/routes/billing.routes.js`, `planService.evaluatePlanChangeForOrganization`, `mercadopagoService`.
 
-Two modes are supported via the `when` parameter:
+- **Preview**: `GET /billing/change-plan-preview?plan=<SKU>` devuelve tipo de cambio (upgrade/downgrade/same), límites excedidos y features que se perderían; la UI bloquea downgrades inválidos.
+- **Validación servidor**: `POST /billing/change-plan` vuelve a evaluar el downgrade; responde `400` con `code: downgrade_blocked` si hay uso por sobre el plan destino.
 
-### `when = "now"` (immediate upgrade/downgrade)
-1. Creates a new `CheckoutSession` with `pendingChangeFromSubscriptionId` = current active sub's ID.
-2. Opens a new MP preapproval checkout.
-3. On activation webhook, the old MP preapproval is cancelled via MP API.
-4. The new plan's limits and features take effect immediately.
+### `when = "now"` (cambio con cobro desde checkout actual)
 
-### `when = "end_of_period"` (change at next renewal)
-1. Cancels the current MP preapproval immediately.
-2. Sets current subscription `status = "cancelled"` with `endDate = computePeriodEnd(...)` (access continues until then).
-3. Creates a new `CheckoutSession` with billing `start_date` set to the period end.
-4. On activation, the new subscription is created with `status = "scheduled"` until `startDate`.
-5. The reconciliation job activates it when the time comes.
+1. Crea `CheckoutSession` con `pendingChangeFromSubscriptionId` = suscripción activa actual (salvo migraciones legacy).
+2. Abre un nuevo preapproval en MP.
+3. Con **`FEATURE_NO_CANCEL_BEFORE_AUTHORIZE`** activo (default): la suscripción actual **no** se cancela en MP hasta que el nuevo preapproval quede autorizado; la fila activa puede llevar `pendingChange*` mientras tanto.
+4. Tras autorización del nuevo cobro, el webhook reconcilia y cancela el preapproval anterior / sustituye la suscripción según corresponda.
+
+### `when = "end_of_period"` (cambio diferido al fin del ciclo ya pagado)
+
+1. Se crea checkout MP con **fecha de inicio** al fin del periodo vigente (`computePeriodEnd`), sin cobro duplicado antes de esa fecha.
+2. Con **`FEATURE_NO_CANCEL_BEFORE_AUTHORIZE=true`** (default): **no** se marca la suscripción local como `cancelled` ni se cancela MP al iniciar el checkout; `CheckoutSession.pendingEndOfPeriodFromSubscriptionId` enlaza la sub vigente hasta que el nuevo preapproval autorice y ejecute el reemplazo (webhook + `finalizeEndOfPeriodPlanChangeFromSession`; respaldo en `scheduledPlanChangeGuardJob`).
+3. Con **`FEATURE_NO_CANCEL_BEFORE_AUTHORIZE=false`**: se mantiene el comportamiento anterior — se intenta cancelar el preapproval en MP al iniciar el checkout y la suscripción local pasa a `cancelled` con acceso hasta el fin del periodo programado.
 
 ### Admin-forced plan change (no payment)
 An admin can change the plan directly in the admin panel (`SubscriptionsPage`):
@@ -393,7 +399,9 @@ All via `backend-simple-reserva/src/routes/admin.routes.js` (requires `super_adm
 
 | Operation | Endpoint | Effect |
 |-----------|----------|--------|
-| List subscriptions | `GET /api/admin/subscriptions` | Paginated; includes `plan`, `organization`, all date fields |
+| List subscriptions | `GET /api/admin/subscriptions` | Paginated; incluye `plan`, `organization` (con `id`), fechas |
+| Métricas facturación | `GET /api/admin/billing-metrics` | MRR aproximado (CLP), suscripciones pagadoras activas, churn 30d y snapshot trial vs pago, distribución por plan |
+| Extender prueba org | `POST /api/admin/organizations/:organizationId/extend-trial` | Body `{ days }` (1–365); extiende `trialEndsAt` |
 | Edit subscription | `PATCH /api/admin/subscriptions/:id` | Updates `status`, `endDate`, `planId`, and/or `isActiveSubscription`; if `planId` changes: cascades to `RestaurantOrganization.planId` in a transaction + invalidates cache; if `isActiveSubscription = false`: cancels MP preapproval, sets `status = 'cancelled_by_admin'`, sets `endDate` and `gracePeriodEndsAt` to now, and invalidates cache |
 | List plans | `GET /api/admin/plans` | All plans sorted by display order |
 | Create plan | `POST /api/admin/plans` | Creates a new `Plan` row; clears plan cache |
@@ -413,7 +421,8 @@ All jobs are in `backend-simple-reserva/src/jobs/`:
 | `trialReminderJob.js` | `TRIAL_REMINDER_CRON` | Emails owners with ≤7 days and ≤2 days left in trial |
 | `trialExpiryJob.js` | `TRIAL_EXPIRY_CRON` | Sets `isActiveSubscription = false, status = 'expired'` when `trialEndsAt` has passed |
 | `gracePeriodExpiryJob.js` | `GRACE_PERIOD_EXPIRY_CRON` | Sets `isActiveSubscription = false, status = 'expired'` for grace subs past `gracePeriodEndsAt`, AND for cancelled subs whose `gracePeriodEndsAt` (= endDate) has passed |
-| `reconciliationJob.js` | `RECONCILIATION_CRON` | Activates `scheduled` subs whose `startDate` has passed; cleans up stale checkout sessions; detects MP↔DB drift |
+| `reconciliationJob.js` | `RECONCILIATION_CRON` | Activa `scheduled` subs cuyo `startDate` ya pasó; limpia sesiones de checkout; detecta drift MP↔DB; finaliza cambios de plan diferidos cuando aplica |
+| `scheduledPlanChangeGuardJob.js` | `SCHEDULED_PLAN_GUARD_CRON` (default `15 */4 * * *`) | Respaldo: si quedó una `CheckoutSession` de cambio al fin de periodo con preapproval asignado, intenta `finalizeEndOfPeriodPlanChangeFromSession` |
 | `reminderJob.js` | — | Sends reservation reminders; checks `canSendReminders` (same as `hasActiveAccess`) |
 
 ---
@@ -428,7 +437,8 @@ All jobs are in `backend-simple-reserva/src/jobs/`:
 | `prisma/seed.js` | Seeds the 3 default plans |
 | `src/services/planService.js` | Plan resolution, feature checks, limit checks, in-memory cache |
 | `src/services/subscriptionService.js` | `hasActiveAccess`, `getActiveSubscription`, `canCreateReservation` |
-| `src/services/mercadopagoService.js` | Checkout creation, preapproval activation, grace period, MP API calls |
+| `src/services/mercadopagoService.js` | Checkout, activación preapproval, gracia acotada por suscripción, cambio de plan diferido |
+| `src/services/subscriptionAuditService.js` | `SubscriptionEvent` — auditoría ligera (no debe romper flujos si falla escritura) |
 | `src/services/paymentReceiptService.js` | Creates receipts from MP payment webhooks |
 | `src/lib/billingPeriod.js` | `computePeriodEnd`, `estimateNextPaymentDate` |
 | `src/lib/planDisplayOrder.js` | Canonical sort order for plan cards |
@@ -442,10 +452,12 @@ All jobs are in `backend-simple-reserva/src/jobs/`:
 
 | File | Purpose |
 |------|---------|
-| `src/pages/SubscriptionsPage.tsx` | List + edit subscriptions; plan dropdown, billing cycle columns |
+| `src/pages/DashboardPage.tsx` | Platform summary + billing metrics cards (`getBillingMetrics`) |
+| `src/pages/SubscriptionsPage.tsx` | List/edit subscriptions; MP verify; extend trial; repair/reactivate |
 | `src/pages/PlansPage.tsx` | CRUD for plans; shows subscription counts per plan |
 | `src/pages/RestaurantsPage.tsx` | Restaurant detail; assign custom plan to org |
-| `src/api/subscriptions.ts` | `listSubscriptions`, `updateSubscription` |
+| `src/api/subscriptions.ts` | `listSubscriptions`, `updateSubscription`, `extendOrganizationTrial`, … |
+| `src/api/analytics.ts` | `getAnalytics`, `getBillingMetrics` |
 | `src/api/plans.ts` | `listPlans`, `createPlan`, `updatePlan`, `deletePlan`, `Plan` interface |
 | `src/api/restaurants.ts` | `assignCustomPlan`, `getOrganizationCustomPlan` |
 
@@ -459,7 +471,19 @@ All jobs are in `backend-simple-reserva/src/jobs/`:
 | `src/components/onboarding/TablesStep.tsx` | Same limits during onboarding |
 | `src/pages/settings/SettingsProfilePage.tsx` | `maxRestaurants` limit, upgrade prompt |
 | `src/pages/TeamPage.tsx` | Shows plan limit error from API on team invite |
-| `src/api/restaurant.ts` | `getSubscription`, `createBillingCheckout`, `changeBillingPlan`, `reactivateBillingSubscription`, `cancelScheduledSubscription` |
+| `src/api/restaurant.ts` | `getSubscription`, checkout, `change-plan`, preview, confirm, cancelaciones |
+
+---
+
+## 16. Flags de entorno y auditoría (suscripciones)
+
+| Variable | Efecto |
+|----------|--------|
+| `FEATURE_SCOPED_PREAPPROVAL_EVENTS` | Si es `false`, la gracia ante fallos MP puede aplicarse con heurísticas legacy menos estrictas por preapproval. Default: activado salvo `=false`. |
+| `FEATURE_NO_CANCEL_BEFORE_AUTHORIZE` | Si es `false`, el flujo `end_of_period` vuelve a cancelar MP/marcar `cancelled` al iniciar checkout. Default: activado salvo `=false`. |
+| `FEATURE_SAVED_CARD` | Si es `false`, no se persisten `mpCustomerId` / `mpCardId` desde webhooks de pago. |
+
+Modelo **`SubscriptionEvent`**: tabla de auditoría (`source`, `action`, `meta`). Pensada para soporte y métricas futuras; los errores de escritura no deben bloquear cobros.
 
 ### `user-front-simple-reserva`
 

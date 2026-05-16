@@ -164,6 +164,36 @@ router.post('/organizations/:organizationId/assign-plan', async (req, res, next)
   }
 });
 
+/**
+ * POST /admin/organizations/:organizationId/extend-trial
+ * Extiende la fecha trialEndsAt desde hoy o desde la fecha actual de fin de prueba.
+ */
+router.post('/organizations/:organizationId/extend-trial', async (req, res, next) => {
+  try {
+    const { organizationId } = req.params;
+    const days = Number(req.body?.days);
+    if (!Number.isFinite(days) || days < 1 || days > 365) {
+      throw new ValidationError('days debe ser un número entre 1 y 365');
+    }
+    const org = await prisma.restaurantOrganization.findUnique({ where: { id: organizationId } });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const now = new Date();
+    const base = org.trialEndsAt && org.trialEndsAt > now ? org.trialEndsAt : now;
+    const trialEndsAt = new Date(base.getTime() + days * 86400000);
+
+    await prisma.restaurantOrganization.update({
+      where: { id: organizationId },
+      data: { trialEndsAt },
+    });
+
+    planService.invalidateCache(organizationId);
+    res.json({ trialEndsAt: trialEndsAt.toISOString(), daysAdded: days });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── Users ───────────────────────────────────────────────────────
 
 router.get('/users', async (req, res, next) => {
@@ -1206,6 +1236,102 @@ router.get('/reservation-analytics', async (req, res, next) => {
   }
 });
 
+// ─── Billing metrics (aprox.) ─────────────────────────────────────
+
+router.get('/billing-metrics', async (req, res, next) => {
+  try {
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
+
+    const payingSubs = await prisma.subscription.findMany({
+      where: {
+        isActiveSubscription: true,
+        mercadopagoPreapprovalId: { not: null },
+        status: { in: ['active', 'grace'] },
+      },
+      include: { plan: true },
+    });
+
+    let mrrClp = 0;
+    /** @type {Map<string, { planId: string, label: string | null, count: number }>} */
+    const planBuckets = new Map();
+    for (const s of payingSubs) {
+      const price = Number(s.plan?.priceCLP ?? 0);
+      mrrClp += price;
+      const pid = s.planId;
+      if (!planBuckets.has(pid)) {
+        planBuckets.set(pid, { planId: pid, label: s.plan?.name ?? null, count: 0 });
+      }
+      planBuckets.get(pid).count += 1;
+    }
+
+    const payingOrganizationsCount = new Set(payingSubs.map((x) => x.organizationId)).size;
+    const activePaidSubscriptions = payingSubs.length;
+
+    const churnCandidates = await prisma.subscription.findMany({
+      where: {
+        isActiveSubscription: false,
+        mercadopagoPreapprovalId: { not: null },
+        status: { in: ['cancelled', 'cancelled_by_admin', 'expired'] },
+        OR: [
+          { gracePeriodEndsAt: { gte: thirtyDaysAgo, lte: now } },
+          { endDate: { gte: thirtyDaysAgo, lte: now } },
+        ],
+      },
+      select: { organizationId: true },
+    });
+    const churnedOrganizationsLast30d = new Set(churnCandidates.map((c) => c.organizationId)).size;
+
+    const churnDenom = payingOrganizationsCount + churnedOrganizationsLast30d;
+    const churnLast30dPercent =
+      churnDenom > 0 && churnedOrganizationsLast30d > 0
+        ? Math.round((10000 * churnedOrganizationsLast30d) / churnDenom) / 100
+        : churnDenom > 0 && churnedOrganizationsLast30d === 0
+          ? 0
+          : null;
+
+    const trialSubs = await prisma.subscription.findMany({
+      where: { status: 'trial', isActiveSubscription: true },
+      select: { organizationId: true },
+    });
+    const trialOrgIds = new Set(trialSubs.map((t) => t.organizationId));
+    const paidOrgIds = new Set(payingSubs.map((p) => p.organizationId));
+    const activeBillableUnion = new Set([...trialOrgIds, ...paidOrgIds]);
+    const trialToPaidConversionPercent =
+      activeBillableUnion.size > 0
+        ? Math.round((10000 * paidOrgIds.size) / activeBillableUnion.size) / 100
+        : null;
+
+    const trialOrganizationsActive = await prisma.restaurantOrganization.count({
+      where: { trialEndsAt: { gt: now } },
+    });
+
+    const subscriptionsTrialActive = await prisma.subscription.count({
+      where: { status: 'trial', isActiveSubscription: true },
+    });
+
+    const planDistribution = [...planBuckets.values()].sort((a, b) => b.count - a.count);
+
+    res.json({
+      generatedAt: now.toISOString(),
+      mrrClp,
+      activePaidSubscriptions,
+      payingSubscriptionsCount: activePaidSubscriptions,
+      payingOrganizationsCount,
+      churnLast30dPercent,
+      churnedOrganizationsLast30d,
+      trialToPaidConversionPercent,
+      trialOrganizationsActive,
+      subscriptionsTrialActive,
+      planDistribution,
+      note:
+        'MRR: suma priceCLP de suscripciones con cobro recurrente MP en active/grace. Churn 30d (aprox.): orgas que perdieron acceso con MP por cancel/expiración en ventana vs (pagadoras actuales + esas bajas). Conversión trial→paid (snapshot): % de orgas con suscripción activa en trial o pagando que están pagando.',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── Analytics ───────────────────────────────────────────────────
 
 router.get('/analytics', async (req, res, next) => {
@@ -1226,7 +1352,7 @@ router.get('/analytics', async (req, res, next) => {
       prisma.user.count(),
       prisma.reservation.count(),
       prisma.reservation.count({ where: { createdAt: { gte: startOfMonth } } }),
-      prisma.subscription.count({ where: { status: 'active' } }),
+      prisma.subscription.count({ where: { isActiveSubscription: true } }),
     ]);
 
     res.json({

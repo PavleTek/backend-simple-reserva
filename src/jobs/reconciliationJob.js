@@ -23,6 +23,9 @@ const {
   scheduleOrganizationSubscription,
   enterGracePeriod,
   getActivateOptionsForPreapproval,
+  finalizeEndOfPeriodPlanChangeFromSession,
+  resolvePreapprovalFailureAction,
+  clearPendingPlanChangeIntent,
 } = require('../services/mercadopagoService');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 
@@ -93,6 +96,7 @@ async function runReconciliation() {
 
         if (isFutureStart) {
           await scheduleOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, new Date(mpStartDate));
+          await finalizeEndOfPeriodPlanChangeFromSession(orgId, session.mercadopagoPreapprovalId);
           console.warn(`[Reconciliation] Session scheduled (future start ${mpStartDate}): ${session.id} org=${orgId}`);
         } else {
           const activateOpts = await getActivateOptionsForPreapproval(orgId, session.mercadopagoPreapprovalId);
@@ -119,6 +123,14 @@ async function runReconciliation() {
         } catch (e) {
           console.warn(`[Reconciliation] No se pudo cancelar preapproval pending session ${session.id}:`, e?.message);
         }
+        await prisma.subscription.updateMany({
+          where: { pendingChangePreapprovalId: session.mercadopagoPreapprovalId },
+          data: {
+            pendingChangePreapprovalId: null,
+            pendingChangeToPlanId: null,
+            pendingChangeRequestedAt: null,
+          },
+        });
         await prisma.checkoutSession.update({
           where: { id: session.id },
           data: { status: 'expired' },
@@ -148,6 +160,8 @@ async function runReconciliation() {
 
   console.log(`[Reconciliation] Pasada 2: ${activeSubs.length} subscriptions activas para verificar en MP.`);
 
+  const scopedGrace = process.env.FEATURE_SCOPED_PREAPPROVAL_EVENTS !== 'false';
+
   for (const sub of activeSubs) {
     await sleep(100);
     try {
@@ -155,13 +169,20 @@ async function runReconciliation() {
       const mpStatus = mpSub?.status;
 
       if (mpStatus === 'cancelled' || mpStatus === 'expired') {
-        await enterGracePeriod(sub.organizationId);
+        if (scopedGrace) {
+          await enterGracePeriod(sub.organizationId, { subscriptionId: sub.id });
+        } else {
+          await enterGracePeriod(sub.organizationId);
+        }
         console.error(`[Reconciliation] ERROR: Sub ${sub.id} activa localmente pero MP dice ${mpStatus}. Entrando grace period. org=${sub.organizationId}`);
       } else if (mpStatus === 'payment_required') {
-        // Solo entrar grace si aun no esta en grace
         const currentSub = await prisma.subscription.findUnique({ where: { id: sub.id } });
         if (currentSub?.status === 'active') {
-          await enterGracePeriod(sub.organizationId);
+          if (scopedGrace) {
+            await enterGracePeriod(sub.organizationId, { subscriptionId: sub.id });
+          } else {
+            await enterGracePeriod(sub.organizationId);
+          }
           console.error(`[Reconciliation] ERROR: Sub ${sub.id} con payment_required en MP. Entrando grace period. org=${sub.organizationId}`);
         }
       }
@@ -259,12 +280,23 @@ async function runReconciliation() {
 
           if (isFutureStart) {
             await scheduleOrganizationSubscription(orgId, event.mpDataId, planSKU, new Date(mpStartDate));
+            await finalizeEndOfPeriodPlanChangeFromSession(orgId, event.mpDataId);
           } else {
             const activateOpts = await getActivateOptionsForPreapproval(orgId, event.mpDataId);
             await activateOrganizationSubscription(orgId, event.mpDataId, planSKU, activateOpts);
           }
         } else if (status === 'payment_required' || status === 'cancelled' || status === 'expired') {
-          await enterGracePeriod(orgId, { scheduledPreapprovalId: event.mpDataId });
+          const resolved = await resolvePreapprovalFailureAction(orgId, event.mpDataId);
+          if (resolved.action === 'legacy_grace') {
+            await enterGracePeriod(orgId, { scheduledPreapprovalId: event.mpDataId });
+          } else if (resolved.action === 'grace') {
+            await enterGracePeriod(orgId, {
+              subscriptionId: resolved.subscriptionId,
+              scheduledPreapprovalId: event.mpDataId,
+            });
+          } else if (resolved.action === 'clear_pending_change') {
+            await clearPendingPlanChangeIntent(resolved.subscriptionId, orgId);
+          }
         }
 
         await prisma.webhookEvent.update({
