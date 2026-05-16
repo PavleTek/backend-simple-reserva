@@ -7,6 +7,7 @@ const planService = require('../services/planService');
 const paymentReceiptService = require('../services/paymentReceiptService');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const whatsappService = require('../services/whatsappService');
+const { computePeriodEnd } = require('../lib/billingPeriod');
 
 const router = express.Router();
 
@@ -608,8 +609,15 @@ router.get('/subscriptions', async (req, res, next) => {
   try {
     const { page, limit, skip } = parsePagination(req.query);
 
+    // Por defecto mostrar solo suscripciones vigentes (isActiveSubscription = true):
+    // incluye activas, en gracia, en prueba, y canceladas-con-acceso-hasta-endDate.
+    // Con ?all=true se muestran también las históricas (canceladas/expiradas antiguas).
+    const showAll = req.query.all === 'true';
+    const relevantWhere = showAll ? {} : { isActiveSubscription: true };
+
     const [subscriptions, total] = await Promise.all([
       prisma.subscription.findMany({
+        where: relevantWhere,
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
@@ -618,7 +626,7 @@ router.get('/subscriptions', async (req, res, next) => {
           plan: true
         },
       }),
-      prisma.subscription.count(),
+      prisma.subscription.count({ where: relevantWhere }),
     ]);
 
     res.json(paginatedResponse(subscriptions, total, page, limit));
@@ -647,6 +655,21 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
     if (status !== undefined) subData.status = status;
     if (endDate !== undefined) subData.endDate = endDate ? new Date(endDate) : null;
     if (isActiveSubscription !== undefined) subData.isActiveSubscription = Boolean(isActiveSubscription);
+
+    // When admin activates a subscription manually, set status and compute currentPeriodEnd
+    if (isActiveSubscription === true) {
+      subData.status = 'active';
+      const effectivePlanId = planId ?? existing.planId;
+      if (effectivePlanId) {
+        const plan = await prisma.plan.findUnique({ where: { id: effectivePlanId } });
+        if (plan) {
+          const activatedAt = new Date();
+          const periodEnd = computePeriodEnd(activatedAt, plan);
+          if (periodEnd) subData.currentPeriodEnd = periodEnd;
+          subData.startDate = activatedAt;
+        }
+      }
+    }
 
     // When admin deactivates a subscription, cancel on MP immediately and set all dates to now
     if (isActiveSubscription === false) {
@@ -682,7 +705,9 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
 
       const orgUpdateData = {};
       if (isPlanChanging) orgUpdateData.planId = planId;
-      if (isActiveSubscription === false) orgUpdateData.trialEndsAt = null;
+      // Limpiar trialEndsAt al desactivar o al activar: evita que la UI muestre "Prueba gratuita"
+      // cuando ya hay una suscripción paga asignada manualmente.
+      if (isActiveSubscription === false || isActiveSubscription === true) orgUpdateData.trialEndsAt = null;
 
       if (Object.keys(orgUpdateData).length > 0) {
         await tx.restaurantOrganization.update({
@@ -694,11 +719,229 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
       return updated;
     });
 
-    if (isPlanChanging || isActiveSubscription === false) {
+    if (isPlanChanging || isActiveSubscription === false || isActiveSubscription === true) {
       planService.invalidateCache(existing.organizationId);
     }
 
     res.json(subscription);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /admin/subscriptions/:id/repair
+ *
+ * Repara datos faltantes o inconsistentes de una suscripción:
+ * - Recalcula currentPeriodEnd si está vacío o si se solicita forzar.
+ * - Si la sub tiene mercadopagoPreapprovalId, consulta MP y sincroniza status.
+ * - Limpia trialEndsAt de la organización si la suscripción está activa.
+ * - Invalida caché del plan.
+ */
+router.post('/subscriptions/:id/repair', async (req, res, next) => {
+  try {
+    const sub = await prisma.subscription.findUnique({
+      where: { id: req.params.id },
+      include: { plan: true },
+    });
+    if (!sub) throw new NotFoundError('Suscripción no encontrada');
+
+    const updates = {};
+    const log = [];
+
+    // 1. Recalcular currentPeriodEnd si está vacío o se pide forzar
+    if (sub.plan && (!sub.currentPeriodEnd || req.body?.force)) {
+      const refDate = sub.startDate ?? new Date();
+      const periodEnd = computePeriodEnd(refDate, sub.plan);
+      if (periodEnd) {
+        updates.currentPeriodEnd = periodEnd;
+        log.push(`currentPeriodEnd recalculado: ${periodEnd.toISOString()}`);
+      }
+    }
+
+    // 2. Sincronizar estado desde MercadoPago si tiene preapproval
+    if (sub.mercadopagoPreapprovalId) {
+      try {
+        const { getMercadoPagoAccessToken } = require('../lib/mercadopagoEnv');
+        const accessToken = getMercadoPagoAccessToken();
+        if (accessToken) {
+          const { MercadoPagoConfig, PreApproval } = require('mercadopago');
+          const mpClient = new MercadoPagoConfig({ accessToken });
+          const preApproval = new PreApproval(mpClient);
+          const mpSub = await preApproval.get({ id: sub.mercadopagoPreapprovalId });
+          const mpStatus = mpSub?.status ?? null;
+
+          if (mpStatus && mpStatus !== sub.status) {
+            const isActive = mpStatus === 'authorized' || mpStatus === 'approved';
+            if (isActive && sub.status !== 'active') {
+              updates.status = 'active';
+              updates.isActiveSubscription = true;
+              log.push(`status sincronizado desde MP: ${sub.status} → active`);
+            } else if ((mpStatus === 'cancelled' || mpStatus === 'expired') && sub.isActiveSubscription) {
+              updates.isActiveSubscription = false;
+              log.push(`acceso revocado por MP status: ${mpStatus}`);
+            }
+          }
+          log.push(`MP preapproval status: ${mpStatus ?? 'desconocido'}`);
+        }
+      } catch (mpErr) {
+        log.push(`MP sync fallido (no bloqueante): ${mpErr?.message ?? mpErr}`);
+        console.warn('[Admin repair] MP sync failed:', mpErr?.message ?? mpErr);
+      }
+    }
+
+    // 3. Aplicar actualizaciones a la suscripción
+    const fullInclude = {
+      plan: true,
+      organization: { include: { restaurants: { select: { name: true } } } },
+    };
+
+    let updated;
+    if (Object.keys(updates).length > 0) {
+      updated = await prisma.subscription.update({
+        where: { id: sub.id },
+        data: updates,
+        include: fullInclude,
+      });
+    } else {
+      updated = await prisma.subscription.findUnique({
+        where: { id: sub.id },
+        include: fullInclude,
+      });
+    }
+
+    // 4. Limpiar trialEndsAt si la sub quedó activa
+    const isNowActive = updates.isActiveSubscription ?? sub.isActiveSubscription;
+    if (isNowActive) {
+      await prisma.restaurantOrganization.update({
+        where: { id: sub.organizationId },
+        data: { trialEndsAt: null },
+      }).catch(() => {});
+      log.push('trialEndsAt limpiado en organización');
+    }
+
+    planService.invalidateCache(sub.organizationId);
+
+    res.json({ subscription: updated, log });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/subscriptions/:id/mp-check
+ *
+ * Verifica si la organización tiene pagos/preapprovals en MercadoPago no reflejados
+ * en el sistema. Útil antes de asignar un plan manualmente para evitar duplicar
+ * o solapar con un pago real ya procesado.
+ *
+ * Retorna:
+ * - checkoutSessions: sesiones recientes de checkout (pendientes/completadas)
+ * - preapprovals: estado de cada preapproval en MP
+ * - suggestion: 'activate' | 'manual' | 'none'
+ */
+router.get('/subscriptions/:id/mp-check', async (req, res, next) => {
+  try {
+    const sub = await prisma.subscription.findUnique({
+      where: { id: req.params.id },
+      select: { organizationId: true, mercadopagoPreapprovalId: true, status: true },
+    });
+    if (!sub) throw new NotFoundError('Suscripción no encontrada');
+
+    const { organizationId } = sub;
+
+    // Buscar CheckoutSessions recientes (últimos 30 días) para esta org
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const sessions = await prisma.checkoutSession.findMany({
+      where: {
+        organizationId,
+        createdAt: { gt: since },
+        mercadopagoPreapprovalId: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      include: { plan: { select: { name: true, productSKU: true } } },
+    });
+
+    const { getMercadoPagoAccessToken } = require('../lib/mercadopagoEnv');
+    const accessToken = getMercadoPagoAccessToken();
+
+    const results = [];
+    let suggestion = 'manual';
+
+    if (accessToken && sessions.length > 0) {
+      const { MercadoPagoConfig, PreApproval } = require('mercadopago');
+      const mpClient = new MercadoPagoConfig({ accessToken });
+      const preApprovalClient = new PreApproval(mpClient);
+
+      // Deduplicar preapproval IDs (puede haber varios sessions con el mismo preapproval)
+      const seen = new Set();
+      for (const session of sessions) {
+        if (!session.mercadopagoPreapprovalId || seen.has(session.mercadopagoPreapprovalId)) continue;
+        seen.add(session.mercadopagoPreapprovalId);
+
+        let mpStatus = null;
+        let mpError = null;
+        try {
+          const mpSub = await preApprovalClient.get({ id: session.mercadopagoPreapprovalId });
+          mpStatus = mpSub?.status ?? null;
+        } catch (e) {
+          mpError = e?.message ?? 'Error consultando MP';
+        }
+
+        const isAuthorized = mpStatus === 'authorized' || mpStatus === 'approved';
+        if (isAuthorized && sub.status !== 'active') {
+          suggestion = 'activate';
+        }
+
+        results.push({
+          preapprovalId: session.mercadopagoPreapprovalId,
+          sessionStatus: session.status,
+          sessionCreatedAt: session.createdAt.toISOString(),
+          planName: session.plan?.name ?? null,
+          planSKU: session.plan?.productSKU ?? null,
+          mpStatus,
+          mpError,
+          isAuthorized,
+        });
+      }
+    } else if (!accessToken) {
+      suggestion = 'none';
+    }
+
+    res.json({ organizationId, results, suggestion });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /admin/subscriptions/:id/activate-from-preapproval
+ *
+ * Activa la suscripción usando un preapproval autorizado en MercadoPago.
+ * Usa la misma lógica que el webhook de subscription_preapproval.
+ * body: { preapprovalId: string }
+ */
+router.post('/subscriptions/:id/activate-from-preapproval', async (req, res, next) => {
+  try {
+    const { preapprovalId } = req.body;
+    if (!preapprovalId) throw new ValidationError('preapprovalId requerido');
+
+    const sub = await prisma.subscription.findUnique({
+      where: { id: req.params.id },
+      select: { organizationId: true },
+    });
+    if (!sub) throw new NotFoundError('Suscripción no encontrada');
+
+    const mercadopagoService = require('../services/mercadopagoService');
+    const result = await mercadopagoService.confirmSubscriptionFromPreapproval(
+      sub.organizationId,
+      preapprovalId,
+    );
+
+    planService.invalidateCache(sub.organizationId);
+
+    res.json({ ok: true, result });
   } catch (error) {
     next(error);
   }

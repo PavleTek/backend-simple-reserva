@@ -47,12 +47,15 @@ router.get('/subscription', async (req, res, next) => {
     const cancelAtEndDate = sub?.status === 'cancelled' && sub?.endDate ? sub.endDate.toISOString() : null;
 
     let status;
-    if (trialing) {
-      status = 'trial';
+    // Una suscripción paga activa siempre tiene precedencia sobre el periodo de prueba.
+    // trialEndsAt puede quedar vigente en la org si el pago se procesó por rutas que no
+    // lo limpian (webhook de payment, asignación manual de admin, etc.).
+    if (sub?.status === 'active') {
+      status = 'active';
     } else if (inGrace) {
       status = 'grace';
-    } else if (sub?.status === 'active') {
-      status = 'active';
+    } else if (trialing) {
+      status = 'trial';
     } else if (cancelAtEndDate) {
       // Cancelada pero con acceso hasta endDate: mostrar como 'cancelled' para que
       // el UI ofrezca "Activar" en lugar de "Cambiar plan" (change-plan busca status='active')
@@ -177,7 +180,7 @@ router.get('/subscription', async (req, res, next) => {
       paymentGracePeriod: inGrace,
       gracePeriodEndsAt: sub?.gracePeriodEndsAt?.toISOString() ?? null,
       hasAccess,
-      canActivate: !hasAccess || inGrace || trialing,
+      canActivate: status !== 'active',
       canReactivate,
       renewalScheduledSamePlan,
       renewalScheduledAt,
@@ -454,15 +457,20 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
       orderBy: { startDate: 'desc' },
       include: { plan: true }
     });
-    if (!sub?.mercadopagoPreapprovalId) {
+    if (!sub) {
       res.status(400).json({ error: 'No hay suscripción activa para cancelar.' });
       return;
     }
-    const mercadopagoService = require('../services/mercadopagoService');
-    await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
-    
-    // Calcular el fin real del periodo ya pagado: anclar en startDate + periodicidad
-    const periodEnd = computePeriodEnd(sub.startDate, sub.plan);
+
+    // Cancelar en MercadoPago solo si hay un preapproval vinculado.
+    // Suscripciones asignadas manualmente por admin no tienen preapproval; se cancelan solo localmente.
+    if (sub.mercadopagoPreapprovalId) {
+      const mercadopagoService = require('../services/mercadopagoService');
+      await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
+    }
+
+    // Calcular el fin real del periodo ya pagado: anclar en currentPeriodEnd o startDate + periodicidad
+    const periodEnd = sub.currentPeriodEnd ?? computePeriodEnd(sub.startDate, sub.plan);
     if (!periodEnd) {
       return res.status(500).json({ error: 'No se pudo calcular el fin del periodo.' });
     }

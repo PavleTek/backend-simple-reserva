@@ -148,7 +148,7 @@ router.post('/mercadopago', express.json({
 
     // --- PROCESAR EVENTO ---
     try {
-      if (type === 'subscription_preapproval') {
+      if (type === 'subscription_preapproval' || type === 'subscription_authorized_payment') {
         const preapprovalId = dataId;
         const preApproval = new PreApproval(client);
         let mpSub;
@@ -178,11 +178,10 @@ router.post('/mercadopago', express.json({
         const plan = parts[1] || 'plan-profesional';
 
         const status = mpSub?.status ?? mpSub?.Status ?? null;
-        console.log('[Webhook] MercadoPago preapproval:', { status, external_reference: externalRef, organizationId, plan });
+        console.log('[Webhook] MercadoPago preapproval (%s):', type, { status, external_reference: externalRef, organizationId, plan });
 
         const isAuthorized = status === 'authorized' || status === 'approved';
         if (isAuthorized) {
-          // Si start_date del preapproval es futuro (>10 min), programar en vez de activar
           const mpStartDate = mpSub?.auto_recurring?.start_date || mpSub?.start_date || mpSub?.date_created;
           const THRESHOLD_MS = 10 * 60 * 1000;
           const isFutureStart = mpStartDate && (new Date(mpStartDate).getTime() - Date.now() > THRESHOLD_MS);
@@ -196,7 +195,6 @@ router.post('/mercadopago', express.json({
             console.log('[Webhook] MercadoPago subscription activated:', organizationId, plan);
           }
 
-          // Marcar CheckoutSession como completada
           await prisma.checkoutSession.updateMany({
             where: { mercadopagoPreapprovalId: preapprovalId, organizationId },
             data: { status: 'completed', completedAt: new Date() },
@@ -211,7 +209,6 @@ router.post('/mercadopago', express.json({
           console.log('[Webhook] MercadoPago status ignorado:', status);
         }
 
-        // Actualizar WebhookEvent como procesado
         await prisma.webhookEvent.update({
           where: { id: webhookEvent.id },
           data: {
@@ -272,6 +269,12 @@ router.post('/mercadopago', express.json({
             const planService = require('../services/planService');
             planService.invalidateCache(organizationId);
             console.log('[Webhook] MercadoPago payment approved → grace cleared, org:', organizationId);
+            // Limpiar trialEndsAt para que la UI no muestre "Prueba gratuita" si el pago
+            // se procesó mientras el periodo de prueba aún estaba vigente
+            await prisma.restaurantOrganization.update({
+              where: { id: organizationId },
+              data: { trialEndsAt: null },
+            }).catch((e) => console.warn('[Webhook] No se pudo limpiar trialEndsAt:', e?.message ?? e));
           }
 
           try {

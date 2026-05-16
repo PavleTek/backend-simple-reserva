@@ -221,8 +221,15 @@ async function runReconciliation() {
   try {
     failedEvents = await prisma.webhookEvent.findMany({
       where: {
-        processingStatus: 'failed',
-        createdAt: { gt: windowStart },
+        OR: [
+          { processingStatus: 'failed', createdAt: { gt: windowStart } },
+          // Recoger eventos subscription_authorized_payment que fueron descartados antes del fix
+          {
+            processingStatus: 'skipped',
+            mpEventType: 'subscription_authorized_payment',
+            createdAt: { gt: windowStart },
+          },
+        ],
       },
     });
   } catch (err) {
@@ -235,7 +242,7 @@ async function runReconciliation() {
   for (const event of failedEvents) {
     await sleep(100);
     try {
-      if (event.mpEventType === 'subscription_preapproval') {
+      if (event.mpEventType === 'subscription_preapproval' || event.mpEventType === 'subscription_authorized_payment') {
         const mpSub = await preApprovalClient.get({ id: event.mpDataId });
         const externalRef = mpSub?.external_reference;
         if (!externalRef) continue;

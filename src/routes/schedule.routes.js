@@ -3,6 +3,21 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { ValidationError } = require('../utils/errors');
 
+/**
+ * Reintenta una vez ante conflicto de transacción (Prisma P2034), típico con escrituras concurrentes.
+ */
+async function withTransactionConflictRetry(run) {
+  try {
+    return await run();
+  } catch (err) {
+    if (err && err.code === 'P2034') {
+      await new Promise((r) => setTimeout(r, 100));
+      return run();
+    }
+    throw err;
+  }
+}
+
 const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
@@ -31,10 +46,15 @@ router.put('/', async (req, res, next) => {
     }
 
     const timeRegex = /^\d{1,2}:\d{2}$/;
+    const seenDayOfWeek = new Set();
     for (const entry of entries) {
       if (entry.dayOfWeek === undefined || !entry.openTime || !entry.closeTime) {
         throw new ValidationError('Cada entrada requiere dayOfWeek, openTime y closeTime');
       }
+      if (seenDayOfWeek.has(entry.dayOfWeek)) {
+        throw new ValidationError('Cada día de la semana debe aparecer solo una vez en el horario');
+      }
+      seenDayOfWeek.add(entry.dayOfWeek);
       if (entry.dayOfWeek < 0 || entry.dayOfWeek > 6) {
         throw new ValidationError('dayOfWeek debe estar entre 0 (domingo) y 6 (sábado)');
       }
@@ -68,32 +88,59 @@ router.put('/', async (req, res, next) => {
       }
     }
 
-    const schedules = await prisma.$transaction(async (tx) => {
-      await tx.schedule.deleteMany({
-        where: { restaurantId: req.activeRestaurant.restaurantId },
-      });
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const dayOfWeeksInPayload = entries.map((e) => e.dayOfWeek);
 
-      await tx.schedule.createMany({
-        data: entries.map((entry) => ({
-          restaurantId: req.activeRestaurant.restaurantId,
-          dayOfWeek: entry.dayOfWeek,
-          openTime: entry.openTime,
-          closeTime: entry.closeTime,
-          breakfastStartTime: entry.breakfastStartTime || null,
-          breakfastEndTime: entry.breakfastEndTime || null,
-          lunchStartTime: entry.lunchStartTime || null,
-          lunchEndTime: entry.lunchEndTime || null,
-          dinnerStartTime: entry.dinnerStartTime || null,
-          dinnerEndTime: entry.dinnerEndTime || null,
-          isActive: entry.isActive ?? true,
-        })),
-      });
+    const schedules = await withTransactionConflictRetry(() =>
+      prisma.$transaction(async (tx) => {
+        await tx.schedule.deleteMany({
+          where: {
+            restaurantId,
+            dayOfWeek: { notIn: dayOfWeeksInPayload },
+          },
+        });
 
-      return tx.schedule.findMany({
-        where: { restaurantId: req.activeRestaurant.restaurantId },
-        orderBy: { dayOfWeek: 'asc' },
-      });
-    });
+        for (const entry of entries) {
+          await tx.schedule.upsert({
+            where: {
+              restaurantId_dayOfWeek: {
+                restaurantId,
+                dayOfWeek: entry.dayOfWeek,
+              },
+            },
+            create: {
+              restaurantId,
+              dayOfWeek: entry.dayOfWeek,
+              openTime: entry.openTime,
+              closeTime: entry.closeTime,
+              breakfastStartTime: entry.breakfastStartTime || null,
+              breakfastEndTime: entry.breakfastEndTime || null,
+              lunchStartTime: entry.lunchStartTime || null,
+              lunchEndTime: entry.lunchEndTime || null,
+              dinnerStartTime: entry.dinnerStartTime || null,
+              dinnerEndTime: entry.dinnerEndTime || null,
+              isActive: entry.isActive ?? true,
+            },
+            update: {
+              openTime: entry.openTime,
+              closeTime: entry.closeTime,
+              breakfastStartTime: entry.breakfastStartTime || null,
+              breakfastEndTime: entry.breakfastEndTime || null,
+              lunchStartTime: entry.lunchStartTime || null,
+              lunchEndTime: entry.lunchEndTime || null,
+              dinnerStartTime: entry.dinnerStartTime || null,
+              dinnerEndTime: entry.dinnerEndTime || null,
+              isActive: entry.isActive ?? true,
+            },
+          });
+        }
+
+        return tx.schedule.findMany({
+          where: { restaurantId },
+          orderBy: { dayOfWeek: 'asc' },
+        });
+      }),
+    );
 
     res.json(schedules);
   } catch (error) {

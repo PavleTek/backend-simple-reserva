@@ -422,6 +422,8 @@ model BookingEvent {
   @@index([timestamp])
 }
 
+/// Contadores diarios de reservas. Índices únicos parciales (fecha+restaurante y fecha agregado global)
+/// viven en la migración `20260515162000_reservation_analytics_partial_unique` para soportar ON CONFLICT en SQL raw.
 model ReservationAnalytics {
   id               String                  @id @default(cuid())
   date             DateTime                @db.Date

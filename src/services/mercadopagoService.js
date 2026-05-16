@@ -20,6 +20,7 @@ const {
 
 const CURRENCY = 'CLP';
 const MIN_AMOUNT_CLP = 950; // MP rechaza montos menores con 400/500
+const IVA_RATE = 0.19; // IVA Chile
 
 let preApprovalClient = null;
 /** Evita reutilizar cliente de MP si cambia el access token resuelto por entorno. */
@@ -146,7 +147,8 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
 
   const planAmount = Number(config.priceCLP);
   const mpFreq = planService.toMercadoPagoFrequency(config.billingFrequency, config.billingFrequencyType);
-  let amount = Math.round(planAmount);
+  // priceCLP es precio neto (sin IVA); el frontend lo muestra como "más IVA (19%)".
+  let amount = Math.round(planAmount * (1 + IVA_RATE));
   if (amount < MIN_AMOUNT_CLP) {
     amount = MIN_AMOUNT_CLP;
   }
@@ -448,9 +450,11 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   const nextPeriodEnd = computePeriodEnd(activatedAt, plan);
 
   await prisma.$transaction(async (tx) => {
-    // Cancelar suscripciones previas (trial, active, scheduled) para evitar duplicados
+    // Cancelar suscripciones previas para evitar duplicados.
+    // Incluye 'grace': cuando el cliente compra un plan nuevo durante periodo de gracia,
+    // la sub en grace queda reemplazada por la nueva activa.
     await tx.subscription.updateMany({
-      where: { organizationId, status: { in: ['trial', 'active', 'scheduled'] } },
+      where: { organizationId, status: { in: ['trial', 'active', 'scheduled', 'grace'] } },
       data: { status: 'cancelled', isActiveSubscription: false },
     });
     await tx.subscription.create({
