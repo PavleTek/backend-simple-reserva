@@ -38,6 +38,7 @@ async function runTrialReminders() {
   const organizations = await prisma.restaurantOrganization.findMany({
     where: {
       trialEndsAt: { not: null },
+      isDeleted: false,
     },
     include: {
       owner: { select: { id: true, email: true, name: true } },

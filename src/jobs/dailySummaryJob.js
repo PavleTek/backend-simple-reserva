@@ -22,7 +22,7 @@ async function runDailySummary() {
   try {
   const { start, end } = getTodayRange();
   const restaurants = await prisma.restaurant.findMany({
-    where: { isActive: true },
+    where: { isActive: true, isDeleted: false },
     include: {
       reservations: {
         where: {

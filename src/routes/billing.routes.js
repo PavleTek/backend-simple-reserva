@@ -6,6 +6,30 @@ const planService = require('../services/planService');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const { computePeriodEnd, estimateNextPaymentDate } = require('../lib/billingPeriod');
 
+/**
+ * Verifica que la organización puede suscribirse al plan.
+ * Los planes públicos (isDefault=true) siempre están disponibles.
+ * Los planes privados requieren que estén asignados via customPlanId (legacy)
+ * o que exista un CustomPlanOffer para esta org.
+ * Retorna true si está permitido, false si no.
+ */
+async function orgCanUsePlan(organizationId, plan) {
+  if (plan.isDefault) return true;
+
+  const org = await prisma.restaurantOrganization.findUnique({
+    where: { id: organizationId },
+    select: { customPlanId: true },
+  });
+
+  if (org?.customPlanId === plan.id) return true;
+
+  const offer = await prisma.customPlanOffer.findUnique({
+    where: { planId_organizationId: { planId: plan.id, organizationId } },
+  });
+
+  return !!offer;
+}
+
 /** True si la sub programada es renovación del mismo plan al vencer el periodo (no un cambio de plan). */
 function isSamePlanRenewalScheduled(sub, scheduledSub) {
   if (!sub || !scheduledSub) return false;
@@ -85,21 +109,33 @@ router.get('/subscription', async (req, res, next) => {
     const planConfig = hasAccess ? await planService.resolvePlanConfigForRestaurant(restaurantId, true) : null;
 
     // Restaurantes activos de la organización (para saber si puede agregar más)
-    const restaurantCount = await prisma.restaurant.count({ where: { organizationId } });
+    const restaurantCount = await prisma.restaurant.count({ where: { organizationId, isDeleted: false } });
 
-    // Planes disponibles para el owner: públicos + plan personalizado si tiene uno asignado
-    const orgWithCustomPlan = await prisma.restaurantOrganization.findUnique({
-      where: { id: organizationId },
-      include: { customPlan: true },
-    });
-    const publicPlans = await prisma.plan.findMany({ where: { isDefault: true } });
+    // Planes disponibles para el owner: públicos + plan personalizado (legacy) + planes ofrecidos
+    const [orgWithCustomPlan, publicPlans, planOffers] = await Promise.all([
+      prisma.restaurantOrganization.findUnique({
+        where: { id: organizationId },
+        include: { customPlan: true },
+      }),
+      prisma.plan.findMany({ where: { isDefault: true } }),
+      prisma.customPlanOffer.findMany({
+        where: { organizationId },
+        include: { plan: true },
+      }),
+    ]);
     const customPlan = orgWithCustomPlan?.customPlan ?? null;
 
-    // Si tiene plan personalizado y no está ya en la lista pública, agregarlo
+    // Si tiene plan personalizado (legacy) y no está ya en la lista pública, agregarlo
     let allPlansForOrg = [...publicPlans];
     if (customPlan && !publicPlans.some((p) => p.id === customPlan.id)) {
       allPlansForOrg = [...allPlansForOrg, customPlan];
     }
+
+    // Planes ofrecidos explícitamente via CustomPlanOffer (excluir duplicados ya en allPlans)
+    const allPlanIds = new Set(allPlansForOrg.map((p) => p.id));
+    const offeredPlans = sortPlansByDisplayOrder(
+      planOffers.map((o) => o.plan).filter((p) => !allPlanIds.has(p.id))
+    );
 
     const trialSubForDates = trialing
       ? await prisma.subscription.findFirst({
@@ -109,7 +145,7 @@ router.get('/subscription', async (req, res, next) => {
       : null;
 
     const restaurantRows = await prisma.restaurant.findMany({
-      where: { organizationId },
+      where: { organizationId, isDeleted: false },
       select: { id: true },
     });
     const restaurantIdList = restaurantRows.map((r) => r.id);
@@ -214,6 +250,7 @@ router.get('/subscription', async (req, res, next) => {
         prioritySupport: planConfig.prioritySupport,
       } : null,
       allPlans: sortPlansByDisplayOrder(allPlansForOrg),
+      offeredPlans,
     });
   } catch (error) {
     next(error);
@@ -275,16 +312,9 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       return res.status(400).json({ error: 'Este plan aún no está disponible. Pronto podrás contratarlo.' });
     }
 
-    // Verificar que el plan es accesible para esta org:
-    // debe ser público (isDefault) o ser el plan personalizado asignado a esta org
-    if (!plan.isDefault) {
-      const org = await prisma.restaurantOrganization.findUnique({
-        where: { id: organizationId },
-        select: { customPlanId: true },
-      });
-      if (org?.customPlanId !== plan.id) {
-        return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
-      }
+    // Verificar que el plan es accesible para esta org
+    if (!(await orgCanUsePlan(organizationId, plan))) {
+      return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
     }
 
     // Anti-doble-checkout: si ya existe una sesion pendiente no expirada para el MISMO plan, retornar esa URL
@@ -586,14 +616,8 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
       return res.status(400).json({ error: 'Este plan aún no está disponible. Pronto podrás contratarlo.' });
     }
 
-    if (!plan.isDefault) {
-      const org = await prisma.restaurantOrganization.findUnique({
-        where: { id: organizationId },
-        select: { customPlanId: true },
-      });
-      if (org?.customPlanId !== plan.id) {
-        return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
-      }
+    if (!(await orgCanUsePlan(organizationId, plan))) {
+      return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
     }
 
     // Limpiar sesiones pendientes previas para esta organización
@@ -686,14 +710,8 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       return res.status(400).json({ error: 'Este plan aún no está disponible. Pronto podrás contratarlo.' });
     }
 
-    if (!newPlan.isDefault) {
-      const orgCheck = await prisma.restaurantOrganization.findUnique({
-        where: { id: organizationId },
-        select: { customPlanId: true },
-      });
-      if (orgCheck?.customPlanId !== newPlan.id) {
-        return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
-      }
+    if (!(await orgCanUsePlan(organizationId, newPlan))) {
+      return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
     }
 
     const currentSub = await prisma.subscription.findFirst({

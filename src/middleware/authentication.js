@@ -134,6 +134,7 @@ const authorizeRestaurant = async (req, res, next) => {
     const ownedRestaurant = await prisma.restaurant.findFirst({
       where: {
         id: restaurantId,
+        isDeleted: false,
         organization: { ownerId: req.user.id }
       }
     });
@@ -148,6 +149,7 @@ const authorizeRestaurant = async (req, res, next) => {
     const managerAssignment = await prisma.managerRestaurantAssignment.findFirst({
       where: {
         restaurantId,
+        restaurant: { isDeleted: false },
         organizationManager: { userId: req.user.id }
       }
     });

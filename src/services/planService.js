@@ -236,7 +236,7 @@ async function getLimit(ownerId, limitKey, includeTrial = true) {
 async function canAddLocation(ownerId, includeTrial = true) {
   const config = await resolvePlanConfig(ownerId, includeTrial);
   const count = await prisma.restaurant.count({
-    where: { organization: { ownerId } },
+    where: { organization: { ownerId }, isDeleted: false },
   });
 
   if (!config) {

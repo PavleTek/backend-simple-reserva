@@ -177,6 +177,20 @@ router.post('/mercadopago', express.json({
         const organizationId = parts[0];
         const plan = parts[1] || 'plan-profesional';
 
+        // Skip processing for soft-deleted organizations
+        const orgCheck = await prisma.restaurantOrganization.findUnique({
+          where: { id: organizationId },
+          select: { isDeleted: true },
+        });
+        if (!orgCheck || orgCheck.isDeleted) {
+          console.warn('[Webhook] MercadoPago: skipping event for deleted/unknown org:', organizationId);
+          await prisma.webhookEvent.update({
+            where: { id: webhookEvent.id },
+            data: { processingStatus: 'skipped', errorMessage: 'organization is deleted or not found', organizationId },
+          });
+          return;
+        }
+
         const status = mpSub?.status ?? mpSub?.Status ?? null;
         console.log('[Webhook] MercadoPago preapproval (%s):', type, { status, external_reference: externalRef, organizationId, plan });
 
@@ -248,6 +262,20 @@ router.post('/mercadopago', express.json({
         const parts = String(externalRef).split('|');
         const organizationId = parts[0];
         const planSKU = parts[1] || 'plan-profesional';
+
+        // Skip processing for soft-deleted organizations
+        const orgCheckPayment = await prisma.restaurantOrganization.findUnique({
+          where: { id: organizationId },
+          select: { isDeleted: true },
+        });
+        if (!orgCheckPayment || orgCheckPayment.isDeleted) {
+          console.warn('[Webhook] MercadoPago: skipping payment event for deleted/unknown org:', organizationId);
+          await prisma.webhookEvent.update({
+            where: { id: webhookEvent.id },
+            data: { processingStatus: 'skipped', errorMessage: 'organization is deleted or not found', organizationId },
+          });
+          return;
+        }
 
         console.log('[Webhook] MercadoPago payment:', { 
           id: paymentId, 

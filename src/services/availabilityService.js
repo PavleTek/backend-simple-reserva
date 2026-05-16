@@ -228,7 +228,7 @@ async function getAvailabilitySlotsForRestaurant(restaurant, { dateStr, partySiz
  */
 async function findNextAvailableDateForSlug(slug, { fromDateStr, partySize, zoneId }) {
   const restaurant = await prisma.restaurant.findUnique({
-    where: { slug, isActive: true },
+    where: { slug, isActive: true, isDeleted: false },
     include: {
       organization: { include: { owner: { select: { country: true } } } },
     },

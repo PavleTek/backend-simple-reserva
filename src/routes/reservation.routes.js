@@ -298,7 +298,7 @@ router.post('/', async (req, res, next) => {
     }
 
     const restaurant = await prisma.restaurant.findUnique({
-      where: { slug: restaurantSlug, isActive: true },
+      where: { slug: restaurantSlug, isActive: true, isDeleted: false },
       include: {
         organization: { include: { owner: { select: { country: true } } } }
       }
@@ -531,7 +531,7 @@ router.post('/:slug/waitlist', async (req, res, next) => {
     }
 
     const restaurant = await prisma.restaurant.findUnique({
-      where: { slug, isActive: true },
+      where: { slug, isActive: true, isDeleted: false },
       include: { organization: true },
     });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
@@ -584,7 +584,7 @@ router.get('/:slug/day-snapshot', async (req, res, next) => {
     }
 
     const restaurant = await prisma.restaurant.findUnique({
-      where: { slug, isActive: true },
+      where: { slug, isActive: true, isDeleted: false },
       include: {
         organization: { include: { owner: { select: { country: true } } } },
       },
@@ -634,7 +634,7 @@ router.get('/:slug/availability', async (req, res, next) => {
     }
 
     const restaurant = await prisma.restaurant.findUnique({
-      where: { slug, isActive: true },
+      where: { slug, isActive: true, isDeleted: false },
       include: {
         organization: { include: { owner: { select: { country: true } } } }
       }
@@ -668,7 +668,7 @@ router.get('/:slug/availability', async (req, res, next) => {
 router.get('/:slug', async (req, res, next) => {
   try {
     const restaurant = await prisma.restaurant.findUnique({
-      where: { slug: req.params.slug },
+      where: { slug: req.params.slug, isDeleted: false },
       select: {
         id: true,
         name: true,
@@ -740,7 +740,7 @@ router.get('/:slug', async (req, res, next) => {
 router.get('/:slug/menus', async (req, res, next) => {
   try {
     const restaurant = await prisma.restaurant.findUnique({
-      where: { slug: req.params.slug },
+      where: { slug: req.params.slug, isDeleted: false },
       select: { id: true },
     });
 
@@ -766,7 +766,7 @@ router.get('/:slug/menu/:menuType', async (req, res, next) => {
     const { slug, menuType } = req.params;
 
     const restaurant = await prisma.restaurant.findUnique({
-      where: { slug },
+      where: { slug, isDeleted: false },
       select: { id: true },
     });
 

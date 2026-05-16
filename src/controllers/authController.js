@@ -35,25 +35,32 @@ async function getRestaurantsForUser(userId) {
     where: { id: userId },
     include: {
       ownedOrganization: {
-        include: { restaurants: { select: { id: true, name: true, slug: true } } }
+        include: {
+          restaurants: {
+            where: { isDeleted: false },
+            select: { id: true, name: true, slug: true },
+          },
+        },
       },
       managedOrganizations: {
         include: {
-          organization: true,
+          organization: { select: { id: true, isDeleted: true } },
           restaurantAssignments: {
-            include: { restaurant: { select: { id: true, name: true, slug: true } } }
-          }
-        }
-      }
-    }
+            include: {
+              restaurant: { select: { id: true, name: true, slug: true, isDeleted: true } },
+            },
+          },
+        },
+      },
+    },
   });
 
   if (!user) return [];
 
   const restaurants = [];
 
-  // If owner, they see all restaurants in their organization
-  if (user.ownedOrganization) {
+  // If owner, they see all non-deleted restaurants in their (non-deleted) organization
+  if (user.ownedOrganization && !user.ownedOrganization.isDeleted) {
     user.ownedOrganization.restaurants.forEach(r => {
       restaurants.push({
         id: r.id,
@@ -64,9 +71,11 @@ async function getRestaurantsForUser(userId) {
     });
   }
 
-  // If manager, they see assigned restaurants
+  // If manager, they see assigned non-deleted restaurants in non-deleted organizations
   user.managedOrganizations.forEach(mo => {
+    if (mo.organization?.isDeleted) return;
     mo.restaurantAssignments.forEach(ra => {
+      if (ra.restaurant?.isDeleted) return;
       restaurants.push({
         id: ra.restaurant.id,
         name: ra.restaurant.name,

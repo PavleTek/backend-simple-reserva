@@ -120,10 +120,12 @@ router.patch('/restaurants/:id', async (req, res, next) => {
  */
 router.get('/organizations', async (req, res, next) => {
   try {
-    const { search } = req.query;
+    const { search, includeDeleted } = req.query;
     const { page, limit, skip } = parsePagination(req.query);
 
-    const where = search
+    const deletedFilter = includeDeleted === 'true' ? {} : { isDeleted: false };
+
+    const searchFilter = search
       ? {
           OR: [
             { name: { contains: search, mode: 'insensitive' } },
@@ -132,6 +134,8 @@ router.get('/organizations', async (req, res, next) => {
           ],
         }
       : {};
+
+    const where = { ...deletedFilter, ...searchFilter };
 
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -167,7 +171,7 @@ router.get('/organizations', async (req, res, next) => {
 
     const data = orgs.map((org, i) => ({
       ...org,
-      usersCount: 1 + org._count.managers,
+      usersCount: (org.ownerId ? 1 : 0) + org._count.managers,
       reservationsThisMonth: monthlyResCounts[i],
     }));
 
@@ -265,6 +269,48 @@ router.get('/organizations/:id', async (req, res, next) => {
         },
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PATCH /admin/organizations/:id/billing
+ * Actualiza los datos de facturación de una organización.
+ */
+router.patch('/organizations/:id/billing', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { billingType, billingTaxId, billingBusinessName, billingAddress, billingEmail } = req.body;
+
+    const org = await prisma.restaurantOrganization.findUnique({ where: { id } });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    if (billingType !== undefined && !['boleta', 'factura'].includes(billingType)) {
+      throw new ValidationError('billingType debe ser "boleta" o "factura"');
+    }
+
+    const data = {};
+    if (billingType !== undefined) data.billingType = billingType;
+    if (billingTaxId !== undefined) data.billingTaxId = billingTaxId === '' ? null : billingTaxId;
+    if (billingBusinessName !== undefined) data.billingBusinessName = billingBusinessName === '' ? null : billingBusinessName;
+    if (billingAddress !== undefined) data.billingAddress = billingAddress === '' ? null : billingAddress;
+    if (billingEmail !== undefined) data.billingEmail = billingEmail === '' ? null : billingEmail;
+
+    const updated = await prisma.restaurantOrganization.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        billingType: true,
+        billingTaxId: true,
+        billingBusinessName: true,
+        billingAddress: true,
+        billingEmail: true,
+      },
+    });
+
+    res.json(updated);
   } catch (error) {
     next(error);
   }
@@ -375,7 +421,9 @@ router.get('/users', async (req, res, next) => {
 
 router.get('/plans', async (req, res, next) => {
   try {
-    const plans = sortPlansByDisplayOrder(await prisma.plan.findMany());
+    const plans = sortPlansByDisplayOrder(
+      await prisma.plan.findMany({ include: { _count: { select: { offers: true } } } })
+    );
     res.json(plans);
   } catch (error) {
     next(error);
@@ -467,6 +515,91 @@ router.delete('/plans/:id', async (req, res, next) => {
     await prisma.plan.delete({ where: { id } });
     planService.invalidateCache();
     res.json({ message: 'Plan eliminado' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Plan offers (many-to-many: plan ↔ organizations) ────────────────────────
+
+/**
+ * GET /admin/plans/:id/offers
+ * Lists the organizations this custom plan is currently offered to.
+ */
+router.get('/plans/:id/offers', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const plan = await prisma.plan.findUnique({ where: { id } });
+    if (!plan) throw new NotFoundError('Plan no encontrado');
+
+    const offers = await prisma.customPlanOffer.findMany({
+      where: { planId: id },
+      include: {
+        organization: { select: { id: true, name: true, owner: { select: { id: true, email: true } } } },
+        offeredBy: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json(offers);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PUT /admin/plans/:id/offers
+ * Full-sync the set of organizations this plan is offered to.
+ * Body: { organizationIds: string[] }
+ * Rejects with 400 if the plan is a default (public) plan.
+ */
+router.put('/plans/:id/offers', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { organizationIds } = req.body;
+
+    if (!Array.isArray(organizationIds)) {
+      throw new ValidationError('organizationIds debe ser un array');
+    }
+
+    const plan = await prisma.plan.findUnique({ where: { id } });
+    if (!plan) throw new NotFoundError('Plan no encontrado');
+
+    if (plan.isDefault) {
+      throw new ValidationError('No se pueden ofrecer planes públicos (isDefault=true) a organizaciones específicas');
+    }
+
+    const offeredById = req.user?.id ?? null;
+
+    await prisma.$transaction(async (tx) => {
+      // Remove offers not in the new set
+      await tx.customPlanOffer.deleteMany({
+        where: {
+          planId: id,
+          organizationId: { notIn: organizationIds },
+        },
+      });
+
+      // Upsert new ones
+      for (const organizationId of organizationIds) {
+        await tx.customPlanOffer.upsert({
+          where: { planId_organizationId: { planId: id, organizationId } },
+          create: { planId: id, organizationId, offeredById },
+          update: { offeredById },
+        });
+      }
+    });
+
+    const updated = await prisma.customPlanOffer.findMany({
+      where: { planId: id },
+      include: {
+        organization: { select: { id: true, name: true, owner: { select: { id: true, email: true } } } },
+        offeredBy: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json(updated);
   } catch (error) {
     next(error);
   }
@@ -600,6 +733,27 @@ router.put('/users/:id/role', async (req, res, next) => {
     res.json(updatedUser);
   } catch (error) {
     next(error);
+  }
+});
+
+router.delete('/users/:id', async (req, res, next) => {
+  try {
+    const { confirmEmail } = req.body || {};
+    if (typeof confirmEmail !== 'string' || !confirmEmail.trim()) {
+      return res.status(400).json({ error: 'confirmEmail requerido' });
+    }
+    const userDeletionService = require('../services/userDeletionService');
+    const result = await userDeletionService.deleteUserAsAdmin({
+      userId: req.params.id,
+      confirmEmail,
+      actingUser: req.user,
+    });
+    res.json(result);
+  } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    next(err);
   }
 });
 

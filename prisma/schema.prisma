@@ -30,6 +30,7 @@ model User {
   ownedOrganization             RestaurantOrganization? @relation("OrgOwner")
   managedOrganizations          OrganizationManager[]
   checkoutSessions              CheckoutSession[]
+  offeredPlans                  CustomPlanOffer[]
   
   @@index([role])
 }
@@ -37,8 +38,8 @@ model User {
 model RestaurantOrganization {
   id            String   @id @default(cuid())
   name          String
-  ownerId       String   @unique
-  owner         User     @relation("OrgOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  ownerId       String?  @unique
+  owner         User?    @relation("OrgOwner", fields: [ownerId], references: [id], onDelete: SetNull)
   
   planId        String
   plan          Plan @relation("OrgDefaultPlan", fields: [planId], references: [id])
@@ -49,6 +50,7 @@ model RestaurantOrganization {
   customPlan    Plan?    @relation("OrgCustomPlan", fields: [customPlanId], references: [id])
   
   trialEndsAt   DateTime?
+  isDeleted     Boolean  @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -58,6 +60,7 @@ model RestaurantOrganization {
   reservationAnalytics ReservationAnalytics[]
   paymentReceipts PaymentReceipt[]
   checkoutSessions CheckoutSession[]
+  customPlanOffers CustomPlanOffer[]
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -68,6 +71,7 @@ model RestaurantOrganization {
 
   @@index([ownerId])
   @@index([customPlanId])
+  @@index([isDeleted])
 }
 
 model OrganizationManager {
@@ -121,6 +125,7 @@ model Restaurant {
   menuPdfUrl                String?
   timezone                  String?   // IANA timezone string, e.g. "America/Santiago". If null, resolved from owner's country.
   isActive                  Boolean   @default(true)
+  isDeleted                 Boolean   @default(false)
   scheduleMode              String    @default("continuous") // "continuous" | "service_periods"
   dataVersion               Int       @default(0)
   onboardingCompletedAt     DateTime?
@@ -139,6 +144,7 @@ model Restaurant {
 
   @@index([organizationId])
   @@index([isActive])
+  @@index([isDeleted])
 }
 
 /// Lista de espera — cliente sin cupo deja datos para que el local contacte
@@ -403,6 +409,7 @@ model Plan {
   paymentReceipts          PaymentReceipt[]
   checkoutSessions         CheckoutSession[]
   promoCodes               PromoCode[]               @relation("PromoCodePlan")
+  offers                   CustomPlanOffer[]
 }
 
 // Booking analytics events - tracking user behavior on the booking page
@@ -547,6 +554,24 @@ model PromoCodeRedemption {
   @@index([promoCodeId])
   @@index([userId])
   @@index([organizationId])
+}
+
+/// Planes personalizados ofrecidos a organizaciones específicas.
+/// Permite que el admin ofrezca un plan no público a una o más organizaciones,
+/// y que esas organizaciones lo vean en su página de facturación.
+model CustomPlanOffer {
+  id             String                 @id @default(cuid())
+  planId         String
+  plan           Plan                   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  organizationId String
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  offeredById    String?
+  offeredBy      User?                  @relation(fields: [offeredById], references: [id], onDelete: SetNull)
+  createdAt      DateTime               @default(now())
+
+  @@unique([planId, organizationId])
+  @@index([organizationId])
+  @@index([planId])
 }
 
 /// Registro persistente de cada evento webhook recibido desde MercadoPago.
