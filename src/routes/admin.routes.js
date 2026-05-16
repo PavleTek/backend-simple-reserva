@@ -111,6 +111,164 @@ router.patch('/restaurants/:id', async (req, res, next) => {
   }
 });
 
+// ─── Organizations ───────────────────────────────────────────────
+
+/**
+ * GET /admin/organizations
+ * Lista paginada de organizaciones con plan efectivo, conteos y reservas del mes.
+ */
+router.get('/organizations', async (req, res, next) => {
+  try {
+    const { search } = req.query;
+    const { page, limit, skip } = parsePagination(req.query);
+
+    const where = search
+      ? {
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { owner: { email: { contains: search, mode: 'insensitive' } } },
+            { restaurants: { some: { name: { contains: search, mode: 'insensitive' } } } },
+          ],
+        }
+      : {};
+
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [orgs, total] = await Promise.all([
+      prisma.restaurantOrganization.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          owner: { select: { id: true, email: true, name: true, lastName: true } },
+          plan: { select: { id: true, name: true } },
+          customPlan: { select: { id: true, name: true } },
+          _count: { select: { restaurants: true, managers: true, subscriptions: true } },
+        },
+      }),
+      prisma.restaurantOrganization.count({ where }),
+    ]);
+
+    // Attach reservationsThisMonth for each org
+    const orgIds = orgs.map(o => o.id);
+    const monthlyResCounts = await Promise.all(
+      orgIds.map(id =>
+        prisma.reservation.count({
+          where: {
+            restaurant: { organizationId: id },
+            dateTime: { gte: startOfMonth },
+          },
+        })
+      )
+    );
+
+    const data = orgs.map((org, i) => ({
+      ...org,
+      usersCount: 1 + org._count.managers,
+      reservationsThisMonth: monthlyResCounts[i],
+    }));
+
+    res.json(paginatedResponse(data, total, page, limit));
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/organizations/:id
+ * Detalle completo de una organización: restaurantes, usuarios, plan, suscripciones,
+ * comprobantes de pago y estadísticas de reservas.
+ */
+router.get('/organizations/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id },
+      include: {
+        owner: {
+          select: { id: true, email: true, name: true, lastName: true, role: true, createdAt: true },
+        },
+        managers: {
+          include: {
+            user: { select: { id: true, email: true, name: true, lastName: true } },
+            restaurantAssignments: {
+              include: { restaurant: { select: { id: true, name: true } } },
+            },
+          },
+        },
+        restaurants: {
+          orderBy: { name: 'asc' },
+          include: {
+            _count: { select: { reservations: true } },
+            zones: {
+              include: { _count: { select: { tables: true } } },
+            },
+          },
+        },
+        plan: true,
+        customPlan: true,
+        subscriptions: {
+          orderBy: { createdAt: 'desc' },
+          include: { plan: { select: { id: true, name: true } } },
+        },
+        paymentReceipts: {
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          include: { plan: { select: { id: true, name: true } } },
+        },
+      },
+    });
+
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [totalReservations, reservationsThisMonth, reservationsByStatus, avgPartySize] =
+      await Promise.all([
+        prisma.reservation.count({ where: { restaurant: { organizationId: id } } }),
+        prisma.reservation.count({
+          where: { restaurant: { organizationId: id }, dateTime: { gte: startOfMonth } },
+        }),
+        prisma.reservation.groupBy({
+          by: ['status'],
+          where: { restaurant: { organizationId: id } },
+          _count: { _all: true },
+        }),
+        prisma.reservation.aggregate({
+          where: { restaurant: { organizationId: id } },
+          _avg: { partySize: true },
+        }),
+      ]);
+
+    // Compute total tables per restaurant from zones
+    const restaurantsWithTableCount = org.restaurants.map(r => ({
+      ...r,
+      tablesCount: r.zones.reduce((sum, z) => sum + z._count.tables, 0),
+    }));
+
+    res.json({
+      organization: { ...org, restaurants: restaurantsWithTableCount },
+      stats: {
+        reservations: {
+          total: totalReservations,
+          thisMonth: reservationsThisMonth,
+          byStatus: reservationsByStatus.reduce((acc, row) => {
+            acc[row.status] = row._count._all;
+            return acc;
+          }, {}),
+          avgPartySize: avgPartySize._avg.partySize ?? 0,
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── Planes personalizados por organización ────────────────────────────────
 
 /**
