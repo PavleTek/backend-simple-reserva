@@ -88,6 +88,9 @@ async function getRestaurantsForUser(userId) {
   return restaurants;
 }
 
+/** Mensaje genérico en login: no revelar si el correo existe o la contraseña falló. */
+const LOGIN_CREDENTIALS_ERROR = 'Usuario o Contraseña incorrecta';
+
 function generateSlug(restaurantName) {
   const base = restaurantName
     .toLowerCase()
@@ -122,7 +125,7 @@ const login = async (req, res) => {
 
     if (!user) {
       console.log('[AUTH] Login failed: no user found for email', identifier);
-      res.status(401).json({ error: 'No existe ninguna cuenta con ese correo electrónico.' });
+      res.status(401).json({ error: LOGIN_CREDENTIALS_ERROR });
       return;
     }
 
@@ -131,7 +134,7 @@ const login = async (req, res) => {
     const isPasswordValid = await comparePassword(password, user.hashedPassword);
     if (!isPasswordValid) {
       console.log('[AUTH] Login failed: invalid password for', user.email);
-      res.status(401).json({ error: 'Contraseña incorrecta.' });
+      res.status(401).json({ error: LOGIN_CREDENTIALS_ERROR });
       return;
     }
 

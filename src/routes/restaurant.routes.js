@@ -170,6 +170,8 @@ router.get('/tables/status', async (req, res, next) => {
     const zonesWithStatus = zones.map((zone) => ({
       id: zone.id,
       name: zone.name,
+      description: zone.description,
+      smokingZone: zone.smokingZone,
       tables: zone.tables.map((table) => {
         const tableReservations = filteredReservations.filter((r) => r.tableId === table.id);
         let status = 'free';
