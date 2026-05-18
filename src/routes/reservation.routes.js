@@ -282,14 +282,10 @@ router.post('/', async (req, res, next) => {
       preferredZoneId,
     } = req.body;
 
-    if (!restaurantSlug || !date || !time || !partySize || !customerName || !customerEmail) {
+    if (!restaurantSlug || !date || !time || !partySize || !customerName) {
       throw new ValidationError(
-        'Se requiere restaurantSlug, date, time, partySize, customerName y customerEmail'
+        'Se requiere restaurantSlug, date, time, partySize y customerName'
       );
-    }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(String(customerEmail).trim())) {
-      throw new ValidationError('El correo electrónico no tiene un formato válido');
     }
 
     const size = parseInt(partySize);
@@ -304,6 +300,24 @@ router.post('/', async (req, res, next) => {
       }
     });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+    const mustRequireEmail = restaurant.requireEmail ?? true;
+    const mustRequirePhone = restaurant.requirePhoneNumber ?? false;
+    const emailStr =
+      typeof customerEmail === 'string' && customerEmail.trim() ? customerEmail.trim() : '';
+    const phoneStr =
+      typeof customerPhone === 'string' && customerPhone.trim() ? customerPhone.trim() : '';
+
+    if (mustRequireEmail && !emailStr) {
+      throw new ValidationError('El correo electrónico es obligatorio');
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (emailStr && !emailRegex.test(emailStr)) {
+      throw new ValidationError('El correo electrónico no tiene un formato válido');
+    }
+    if (mustRequirePhone && !phoneStr) {
+      throw new ValidationError('El teléfono es obligatorio');
+    }
 
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
@@ -408,8 +422,8 @@ router.post('/', async (req, res, next) => {
             restaurantId: restaurant.id,
             tableId: selectedTable.id,
             customerName,
-            customerPhone: customerPhone?.trim() || null,
-            customerEmail: String(customerEmail).trim().toLowerCase(),
+            customerPhone: phoneStr || null,
+            customerEmail: emailStr ? emailStr.toLowerCase() : null,
             partySize: size,
             dateTime,
             durationMinutes: slotDuration,
@@ -684,6 +698,8 @@ router.get('/:slug', async (req, res, next) => {
         logoUrl: true,
         advanceBookingLimitDays: true,
         minimumNoticeMinutes: true,
+        requireEmail: true,
+        requirePhoneNumber: true,
         timezone: true,
         organizationId: true,
         organization: { include: { owner: { select: { country: true } } } },
@@ -725,6 +741,8 @@ router.get('/:slug', async (req, res, next) => {
       activeDays,
       advanceBookingLimitDays: restaurant.advanceBookingLimitDays ?? 30,
       minimumNoticeMinutes: restaurant.minimumNoticeMinutes ?? 60,
+      requireEmail: restaurant.requireEmail ?? true,
+      requirePhoneNumber: restaurant.requirePhoneNumber ?? false,
       bookingEnabled: access,
       effectiveTimezone,
     });

@@ -122,6 +122,8 @@ model Restaurant {
   advanceBookingLimitDays   Int      @default(30)
   minimumNoticeMinutes     Int      @default(60)
   noShowGracePeriodMinutes Int      @default(15)
+  requireEmail              Boolean   @default(true)
+  requirePhoneNumber        Boolean   @default(false)
   menuPdfUrl                String?
   timezone                  String?   // IANA timezone string, e.g. "America/Santiago". If null, resolved from owner's country.
   isActive                  Boolean   @default(true)
