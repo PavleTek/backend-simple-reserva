@@ -5,8 +5,12 @@ const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = 
 const { ValidationError } = require('../utils/errors');
 const r2Service = require('../services/r2Service');
 const planService = require('../services/planService');
+const { compressPdfBuffer } = require('../services/pdfCompressionService');
 
 const router = express.Router({ mergeParams: true });
+
+const MAX_MENU_PDF_BYTES = 50 * 1024 * 1024;
+const MAX_MENU_PDF_MB = 50;
 
 // Use memory storage for R2 uploads
 const storage = multer.memoryStorage();
@@ -21,8 +25,25 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: MAX_MENU_PDF_BYTES },
 });
+
+/** Wraps multer so LIMIT_FILE_SIZE returns a clear ValidationError (es-CL). */
+function uploadMenuPdf(req, res, next) {
+  upload.single('menu')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return next(
+          new ValidationError(
+            `El archivo supera el tamaño máximo permitido (${MAX_MENU_PDF_MB} MB).`
+          )
+        );
+      }
+      return next(err);
+    }
+    next();
+  });
+}
 
 const VALID_MENU_TYPES = ['main', 'drinks', 'dessert'];
 
@@ -57,7 +78,7 @@ router.post(
   authenticateToken,
   authorizeRestaurant,
   authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
-  upload.single('menu'),
+  uploadMenuPdf,
   async (req, res, next) => {
     try {
       const { menuType } = req.params;
@@ -93,22 +114,29 @@ router.post(
         });
       }
 
+      const { buffer: uploadBuffer } = await compressPdfBuffer(req.file.buffer);
+
+      if (uploadBuffer.length > MAX_MENU_PDF_BYTES) {
+        throw new ValidationError(
+          `El PDF sigue siendo demasiado grande después de optimizarlo (máx. ${MAX_MENU_PDF_MB} MB). ` +
+            'Prueba comprimirlo con otra herramienta o reducir las imágenes del documento.'
+        );
+      }
+
       const timestamp = Date.now();
       const r2Key = `menus/${restaurantId}/${menuType}-${timestamp}.pdf`;
-      
-      // Upload to R2
-      await r2Service.uploadFile(r2Key, req.file.buffer, req.file.mimetype);
+
+      await r2Service.uploadFile(r2Key, uploadBuffer, req.file.mimetype);
 
       const publicUrl = r2Service.getPublicUrl(r2Key) || `/api/public/restaurants/id/${restaurantId}/menu/${menuType}`;
 
-      // Upsert DB record
       const menu = await prisma.restaurantMenu.upsert({
         where: {
           restaurantId_menuType: { restaurantId, menuType },
         },
         update: {
           fileName: req.file.originalname,
-          fileSize: req.file.size,
+          fileSize: uploadBuffer.length,
           r2Key,
           url: publicUrl,
         },
@@ -116,7 +144,7 @@ router.post(
           restaurantId,
           menuType,
           fileName: req.file.originalname,
-          fileSize: req.file.size,
+          fileSize: uploadBuffer.length,
           r2Key,
           url: publicUrl,
         },
