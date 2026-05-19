@@ -8,6 +8,8 @@ const { ValidationError } = require('../utils/errors');
 
 const router = express.Router({ mergeParams: true });
 
+const MAX_MENU_PDF_BYTES = 50 * 1024 * 1024;
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const restaurantId = req.activeRestaurant?.restaurantId ?? req.params?.restaurantId;
@@ -32,7 +34,7 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: MAX_MENU_PDF_BYTES },
 });
 
 const logoStorage = multer.diskStorage({
@@ -60,7 +62,7 @@ const logoFileFilter = (req, file, cb) => {
 const uploadLogo = multer({
   storage: logoStorage,
   fileFilter: logoFileFilter,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: MAX_MENU_PDF_BYTES },
 });
 
 router.post(
