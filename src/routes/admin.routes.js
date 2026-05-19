@@ -2182,6 +2182,8 @@ router.get('/reservations', async (req, res, next) => {
         include: {
           restaurant: { select: { id: true, name: true } },
           table: { select: { id: true, label: true } },
+          confirmedByUser: { select: { id: true, name: true, lastName: true, email: true } },
+          updatedByUser: { select: { id: true, name: true, lastName: true, email: true } },
         },
         orderBy: { [resolvedSort]: resolvedOrder },
         skip,
@@ -2210,10 +2212,15 @@ router.patch('/reservations/:id/cancel', async (req, res, next) => {
     }
     const updated = await prisma.reservation.update({
       where: { id: req.params.id },
-      data: { status: 'cancelled' },
+      data: {
+        status: 'cancelled',
+        ...(req.user?.id && { updatedByUserId: req.user.id }),
+      },
       include: {
         restaurant: { select: { id: true, name: true } },
         table: { select: { id: true, label: true } },
+        confirmedByUser: { select: { id: true, name: true, lastName: true, email: true } },
+        updatedByUser: { select: { id: true, name: true, lastName: true, email: true } },
       },
     });
     res.json(updated);

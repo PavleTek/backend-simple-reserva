@@ -31,6 +31,8 @@ model User {
   managedOrganizations          OrganizationManager[]
   checkoutSessions              CheckoutSession[]
   offeredPlans                  CustomPlanOffer[]
+  reservationsConfirmed         Reservation[] @relation("ReservationConfirmedBy")
+  reservationsUpdated           Reservation[] @relation("ReservationUpdatedBy")
   
   @@index([role])
 }
@@ -284,11 +286,17 @@ model Reservation {
   source          String    @default("web")      // "web" (public booking), "manual" (admin panel), "phone"
   notes           String?
   secureToken     String    @unique @default(cuid())
+  confirmedByUserId String?
+  confirmedByUser   User?     @relation("ReservationConfirmedBy", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+  updatedByUserId   String?
+  updatedByUser     User?     @relation("ReservationUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   @@index([restaurantId, dateTime, status])
   @@index([secureToken])
+  @@index([confirmedByUserId])
+  @@index([updatedByUserId])
 }
 
 model Subscription {

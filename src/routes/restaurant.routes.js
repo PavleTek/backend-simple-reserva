@@ -746,6 +746,10 @@ router.post('/reservations', async (req, res, next) => {
             durationMinutes: slotDuration,
             notes: isWalkIn ? (typeof notes === 'string' && notes.trim() ? notes.trim() : 'Walk-in') : notes?.trim() || null,
             source: 'manual',
+            ...(req.user?.id && {
+              confirmedByUserId: req.user.id,
+              updatedByUserId: req.user.id,
+            }),
           },
           include: {
             restaurant: { select: { name: true } },
@@ -940,6 +944,7 @@ router.patch('/reservations/:id', async (req, res, next) => {
               tableId: selectedTable.id,
               durationMinutes: slotDuration,
               ...(notes !== undefined && { notes: notes === '' ? null : String(notes).trim() || null }),
+              ...(req.user?.id && { updatedByUserId: req.user.id }),
             },
             include: {
               restaurant: { select: { name: true } },
@@ -976,9 +981,18 @@ router.patch('/reservations/:id', async (req, res, next) => {
       throw new ValidationError('Estado no válido. Use: confirmed, completed, cancelled, no_show');
     }
 
+    const actorId = req.user?.id ?? null;
+    const statusData = { status };
+    if (actorId) {
+      statusData.updatedByUserId = actorId;
+      if (status === 'confirmed') {
+        statusData.confirmedByUserId = actorId;
+      }
+    }
+
     const updated = await prisma.reservation.update({
       where: { id: req.params.id },
-      data: { status },
+      data: statusData,
     });
 
     incrementDataVersion(reservation.restaurantId).catch(console.error);
