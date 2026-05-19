@@ -5,6 +5,7 @@ const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = 
 const { ValidationError } = require('../utils/errors');
 const r2Service = require('../services/r2Service');
 const planService = require('../services/planService');
+const { compressPdf, exceedsMaxSize } = require('../services/pdfCompressionService');
 
 const router = express.Router({ mergeParams: true });
 
@@ -21,7 +22,7 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
 });
 
 const VALID_MENU_TYPES = ['main', 'drinks', 'dessert'];
@@ -93,11 +94,32 @@ router.post(
         });
       }
 
+      // Compress the PDF before uploading to reduce storage size
+      const {
+        buffer: compressedBuffer,
+        originalSize,
+        compressedSize,
+        ratio,
+      } = await compressPdf(req.file.buffer);
+
+      console.log(
+        `[menu upload] PDF compression — original: ${(originalSize / 1024 / 1024).toFixed(2)} MB, ` +
+        `compressed: ${(compressedSize / 1024 / 1024).toFixed(2)} MB, ` +
+        `ratio: ${ratio.toFixed(1)}%`
+      );
+
+      // Reject if the compressed file still exceeds the 50 MB hard limit
+      if (exceedsMaxSize(compressedBuffer)) {
+        throw new ValidationError(
+          'El archivo PDF supera el límite de 50 MB incluso después de la compresión. Por favor, reduce el tamaño del archivo.'
+        );
+      }
+
       const timestamp = Date.now();
       const r2Key = `menus/${restaurantId}/${menuType}-${timestamp}.pdf`;
-      
-      // Upload to R2
-      await r2Service.uploadFile(r2Key, req.file.buffer, req.file.mimetype);
+
+      // Upload compressed buffer to R2
+      await r2Service.uploadFile(r2Key, compressedBuffer, req.file.mimetype);
 
       const publicUrl = r2Service.getPublicUrl(r2Key) || `/api/public/restaurants/id/${restaurantId}/menu/${menuType}`;
 
@@ -108,7 +130,7 @@ router.post(
         },
         update: {
           fileName: req.file.originalname,
-          fileSize: req.file.size,
+          fileSize: compressedSize,
           r2Key,
           url: publicUrl,
         },
@@ -116,7 +138,7 @@ router.post(
           restaurantId,
           menuType,
           fileName: req.file.originalname,
-          fileSize: req.file.size,
+          fileSize: compressedSize,
           r2Key,
           url: publicUrl,
         },
