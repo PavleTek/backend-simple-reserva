@@ -2173,7 +2173,7 @@ router.get('/reservations', async (req, res, next) => {
       if (!isNaN(sizeMax)) where.partySize.lte = sizeMax;
     }
 
-    const resolvedSort = RESERVATION_SORT_ALLOWLIST.has(String(sortField)) ? String(sortField) : 'dateTime';
+    const resolvedSort = RESERVATION_SORT_ALLOWLIST.has(String(sortField)) ? String(sortField) : 'createdAt';
     const resolvedOrder = sortOrder === 'asc' ? 'asc' : 'desc';
 
     const [reservations, total] = await Promise.all([
