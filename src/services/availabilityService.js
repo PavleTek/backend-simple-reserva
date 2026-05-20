@@ -1,5 +1,13 @@
 const prisma = require('../lib/prisma');
-const { generateTimeSlots, resolveDuration } = require('../utils/scheduleUtils');
+const {
+  AVAILABILITY_ENGINE_VERSION,
+  resolveEffectiveSlotMode,
+  resolveDuration,
+  generateTimeSlots,
+  compareEngines,
+  maybeLogShadowCompare,
+} = require('./reservationSlotService');
+const { isShadowSlotEngineEnabled } = require('../lib/slotEngineFlags');
 const {
   getEffectiveTimezone,
   parseInTimezone,
@@ -11,66 +19,67 @@ const { DateTime } = require('luxon');
 
 /**
  * Loads all data needed to compute slot availability for a restaurant on a given calendar day.
- *
- * Returns a "day snapshot" object that is party-size and zone agnostic.
- * Pass it to computeAvailability() to derive available slots for any (partySize, zoneId) pair
- * without making additional DB calls.
- *
- * @param {Object} restaurant - Prisma restaurant record (must include organizationId and scheduling fields)
- * @param {{ dateStr: string, timezone: string }} options
  */
 async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
   const dayStart = parseInTimezone(dateStr, '00:00', timezone);
-  // Extend look-back 12 h so long reservations starting the previous evening aren't missed
   const windowStart = new Date(dayStart.getTime() - 12 * 60 * 60000);
   const dayEnd = parseInTimezone(dateStr, '23:59', timezone);
 
-  // CRITICAL: compute day-of-week in the RESTAURANT's timezone, not the server's.
-  // Using dayStart.getDay() would silently fail when the server runs in a different
-  // timezone than the restaurant (e.g. UTC server + Santiago restaurant on a Saturday
-  // could return Friday because Santiago Saturday 00:00 is Friday evening UTC-or-EST).
   const dayOfWeek = getDayOfWeekInTimezone(dateStr, timezone);
+  const effectiveMode = resolveEffectiveSlotMode(restaurant);
 
-  const [schedule, allTables, allZones, durationRules, blockedSlots, reservations] =
-    await Promise.all([
-      prisma.schedule.findFirst({
-        where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
-      }),
-      prisma.restaurantTable.findMany({
-        where: {
-          isActive: true,
-          zone: { restaurantId: restaurant.id, isActive: true },
-        },
-        include: { zone: { select: { id: true, sortOrder: true } } },
-        orderBy: { maxCapacity: 'asc' },
-      }),
-      prisma.zone.findMany({
-        where: { restaurantId: restaurant.id, isActive: true },
-        orderBy: { sortOrder: 'asc' },
-        select: { id: true, name: true, sortOrder: true, smokingZone: true },
-      }),
-      prisma.durationRule.findMany({ where: { restaurantId: restaurant.id } }),
-      prisma.blockedSlot.findMany({
-        where: {
-          restaurantId: restaurant.id,
-          startDatetime: { lte: dayEnd },
-          endDatetime: { gte: dayStart },
-        },
-      }),
-      prisma.reservation.findMany({
-        where: {
-          restaurantId: restaurant.id,
-          status: 'confirmed',
-          dateTime: { gte: windowStart, lte: dayEnd },
-        },
-        select: { tableId: true, dateTime: true, durationMinutes: true },
-      }),
-    ]);
+  const [
+    schedule,
+    allTables,
+    allZones,
+    durationRules,
+    blockedSlots,
+    reservations,
+    reservationWindows,
+  ] = await Promise.all([
+    prisma.schedule.findFirst({
+      where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
+    }),
+    prisma.restaurantTable.findMany({
+      where: {
+        isActive: true,
+        zone: { restaurantId: restaurant.id, isActive: true },
+      },
+      include: { zone: { select: { id: true, sortOrder: true } } },
+      orderBy: { maxCapacity: 'asc' },
+    }),
+    prisma.zone.findMany({
+      where: { restaurantId: restaurant.id, isActive: true },
+      orderBy: { sortOrder: 'asc' },
+      select: { id: true, name: true, sortOrder: true, smokingZone: true },
+    }),
+    prisma.durationRule.findMany({ where: { restaurantId: restaurant.id } }),
+    prisma.blockedSlot.findMany({
+      where: {
+        restaurantId: restaurant.id,
+        startDatetime: { lte: dayEnd },
+        endDatetime: { gte: dayStart },
+      },
+    }),
+    prisma.reservation.findMany({
+      where: {
+        restaurantId: restaurant.id,
+        status: 'confirmed',
+        dateTime: { gte: windowStart, lte: dayEnd },
+      },
+      select: { tableId: true, dateTime: true, durationMinutes: true },
+    }),
+    prisma.reservationWindow.findMany({
+      where: { restaurantId: restaurant.id, dayOfWeek },
+      orderBy: { sortOrder: 'asc' },
+    }),
+  ]);
 
   const serverNow = nowInTimezone(timezone).toJSDate();
   const todayLocal = nowInTimezone(timezone).toFormat('yyyy-MM-dd');
 
   return {
+    restaurantId: restaurant.id,
     date: dateStr,
     timezone,
     schedule: schedule
@@ -88,11 +97,24 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
         }
       : null,
     defaults: {
+      availabilityEngineVersion: AVAILABILITY_ENGINE_VERSION,
       slotDurationMinutes: restaurant.defaultSlotDurationMinutes,
+      slotIntervalMinutes: restaurant.slotIntervalMinutes ?? restaurant.defaultSlotDurationMinutes,
+      slotGenerationMode: restaurant.slotGenerationMode ?? 'legacy',
+      effectiveSlotGenerationMode: effectiveMode,
+      reservationEndPolicy: restaurant.reservationEndPolicy ?? 'STRICT_END',
+      reservationWindowMode: restaurant.reservationWindowMode ?? 'same_as_schedule',
       bufferMinutesBetweenReservations: restaurant.bufferMinutesBetweenReservations ?? 0,
       minimumNoticeMinutes: restaurant.minimumNoticeMinutes ?? 60,
       advanceBookingLimitDays: restaurant.advanceBookingLimitDays ?? 30,
     },
+    reservationWindows: reservationWindows.map((w) => ({
+      dayOfWeek: w.dayOfWeek,
+      startTime: w.startTime,
+      endTime: w.endTime,
+      label: w.label,
+      sortOrder: w.sortOrder,
+    })),
     durationRules: durationRules.map((r) => ({
       minPartySize: r.minPartySize,
       maxPartySize: r.maxPartySize,
@@ -122,19 +144,23 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
 }
 
 /**
- * Pure, synchronous availability computation: given a day snapshot, returns available time
- * slots for the specified partySize / zoneId.  No DB calls — safe to call in a hot loop.
- *
- * Mirrors frontend computeSlots() in user-front-simple-reserva/src/lib/availability.ts.
- * Both must stay in sync.
- *
- * @param {ReturnType<loadDaySnapshot> extends Promise<infer R> ? R : never} snapshot
- * @param {{ partySize: number, zoneId?: string|null, now?: Date }} options
- * @returns {{ slots: Array<{time:string,available:boolean,availableTables:number}>, reason?: string }}
+ * Pure availability computation from a day snapshot.
+ * @param {{ walkIn?: boolean }} options
  */
-function computeAvailability(snapshot, { partySize, zoneId, now }) {
-  const { schedule, defaults, durationRules, tables, blockedSlots, reservations, isToday, timezone, date } =
-    snapshot;
+function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false }) {
+  const {
+    schedule,
+    defaults,
+    durationRules,
+    tables,
+    blockedSlots,
+    reservations,
+    reservationWindows,
+    isToday,
+    timezone,
+    date,
+    restaurantId,
+  } = snapshot;
 
   if (!schedule) return { slots: [], reason: 'no_schedule' };
 
@@ -146,13 +172,39 @@ function computeAvailability(snapshot, { partySize, zoneId, now }) {
   );
   if (candidateTables.length === 0) return { slots: [], reason: 'no_tables' };
 
-  const duration = resolveDuration(
-    { defaultSlotDurationMinutes: defaults.slotDurationMinutes },
-    partySize,
-    durationRules
-  );
+  const restaurantLike = {
+    defaultSlotDurationMinutes: defaults.slotDurationMinutes,
+    slotIntervalMinutes: defaults.slotIntervalMinutes,
+    slotGenerationMode: defaults.slotGenerationMode,
+    reservationEndPolicy: defaults.reservationEndPolicy,
+    reservationWindowMode: defaults.reservationWindowMode,
+  };
 
-  const slotDefs = generateTimeSlots(schedule, duration, schedule.scheduleMode);
+  const duration = resolveDuration(restaurantLike, partySize, durationRules);
+  const mode = defaults.effectiveSlotGenerationMode ?? 'legacy';
+  const intervalMinutes =
+    mode === 'clock_aligned' ? defaults.slotIntervalMinutes : duration;
+
+  const slotGenParams = {
+    mode,
+    schedule,
+    scheduleMode: schedule.scheduleMode,
+    intervalMinutes,
+    reservationDurationMinutes: duration,
+    reservationEndPolicy: defaults.reservationEndPolicy,
+    reservationWindowMode: defaults.reservationWindowMode,
+    customWindows: reservationWindows ?? [],
+  };
+
+  if (isShadowSlotEngineEnabled()) {
+    const shadow = compareEngines(slotGenParams);
+    maybeLogShadowCompare(
+      { restaurantId, date, partySize, mode },
+      shadow
+    );
+  }
+
+  const slotDefs = generateTimeSlots(slotGenParams);
   if (slotDefs.length === 0) return { slots: [], reason: 'no_slots' };
 
   const timeSlots = slotDefs.map(({ time }) => {
@@ -163,7 +215,11 @@ function computeAvailability(snapshot, { partySize, zoneId, now }) {
 
   const nowDate = now instanceof Date ? now : new Date(snapshot.serverNowUtc);
   const minNotice = defaults.minimumNoticeMinutes;
-  const minSlotTime = isToday ? new Date(nowDate.getTime() + minNotice * 60000) : null;
+  const minSlotTime = isToday
+    ? walkIn
+      ? nowDate
+      : new Date(nowDate.getTime() + minNotice * 60000)
+    : null;
   const minSlotMinute = minSlotTime ? Math.floor(minSlotTime.getTime() / 60000) : null;
 
   const parsedBlocked = blockedSlots.map((bs) => ({
@@ -205,27 +261,27 @@ function computeAvailability(snapshot, { partySize, zoneId, now }) {
   }
 
   if (available.length === 0) return { slots: [], reason: 'no_availability' };
-  return { slots: available };
+  return {
+    slots: available,
+    meta: {
+      availabilityEngineVersion: defaults.availabilityEngineVersion,
+      slotGenerationMode: mode,
+      slotStepMinutes: intervalMinutes,
+      reservationDurationMinutes: duration,
+    },
+  };
 }
 
-/**
- * Computes available time slots for a restaurant on a calendar date.
- * Kept for backward-compatibility; internally delegates to loadDaySnapshot + computeAvailability.
- *
- * @returns {{ slots: Array<{time: string, available: boolean, availableTables?: number}>, reason?: string }}
- */
-async function getAvailabilitySlotsForRestaurant(restaurant, { dateStr, partySize, zoneId, timezone }) {
+async function getAvailabilitySlotsForRestaurant(restaurant, { dateStr, partySize, zoneId, timezone, walkIn }) {
   const snapshot = await loadDaySnapshot(restaurant, { dateStr, timezone });
   return computeAvailability(snapshot, {
     partySize,
     zoneId: zoneId || null,
     now: new Date(snapshot.serverNowUtc),
+    walkIn: !!walkIn,
   });
 }
 
-/**
- * Finds the next calendar date (strictly after `fromDateStr`) with at least one open slot.
- */
 async function findNextAvailableDateForSlug(slug, { fromDateStr, partySize, zoneId }) {
   const restaurant = await prisma.restaurant.findUnique({
     where: { slug, isActive: true, isDeleted: false },

@@ -34,7 +34,32 @@ const getRestaurant = async (req, res, next) => {
 
 const updateRestaurant = async (req, res, next) => {
   try {
-    const { name, description, address, shortAddress, googlePlaceId, latitude, longitude, phone, email, slug, defaultSlotDurationMinutes, bufferMinutesBetweenReservations, advanceBookingLimitDays, minimumNoticeMinutes, noShowGracePeriodMinutes, requireEmail, requirePhoneNumber, logoUrl, timezone, scheduleMode } = req.body;
+    const {
+      name,
+      description,
+      address,
+      shortAddress,
+      googlePlaceId,
+      latitude,
+      longitude,
+      phone,
+      email,
+      slug,
+      defaultSlotDurationMinutes,
+      slotIntervalMinutes,
+      slotGenerationMode,
+      reservationEndPolicy,
+      reservationWindowMode,
+      bufferMinutesBetweenReservations,
+      advanceBookingLimitDays,
+      minimumNoticeMinutes,
+      noShowGracePeriodMinutes,
+      requireEmail,
+      requirePhoneNumber,
+      logoUrl,
+      timezone,
+      scheduleMode,
+    } = req.body;
 
     if (slug) {
       const existing = await prisma.restaurant.findUnique({
@@ -69,6 +94,21 @@ const updateRestaurant = async (req, res, next) => {
         ...(timezone !== undefined && { timezone }),
         ...(defaultSlotDurationMinutes !== undefined && {
           defaultSlotDurationMinutes: Math.min(240, Math.max(15, parseInt(defaultSlotDurationMinutes, 10) || 60)),
+        }),
+        ...(slotIntervalMinutes !== undefined && {
+          slotIntervalMinutes: Math.min(180, Math.max(5, parseInt(slotIntervalMinutes, 10) || 30)),
+        }),
+        ...(slotGenerationMode !== undefined && {
+          slotGenerationMode:
+            slotGenerationMode === 'clock_aligned' ? 'clock_aligned' : 'legacy',
+        }),
+        ...(reservationEndPolicy !== undefined && {
+          reservationEndPolicy:
+            reservationEndPolicy === 'ALLOW_OVERFLOW' ? 'ALLOW_OVERFLOW' : 'STRICT_END',
+        }),
+        ...(reservationWindowMode !== undefined && {
+          reservationWindowMode:
+            reservationWindowMode === 'custom' ? 'custom' : 'same_as_schedule',
         }),
         ...(bufferMinutesBetweenReservations !== undefined && {
           bufferMinutesBetweenReservations: Math.min(120, Math.max(0, parseInt(bufferMinutesBetweenReservations, 10) || 0)),

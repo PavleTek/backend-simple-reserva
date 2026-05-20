@@ -199,7 +199,29 @@ Key functions:
 
 ---
 
-## 4. Schedule windows & slot generation
+## 4. Schedule windows & slot generation (engine v2)
+
+**File**: `backend-simple-reserva/src/services/reservationSlotService.js` (replaces legacy `scheduleUtils.js` exports)
+
+### `slotGenerationMode`
+
+| Mode | Behavior |
+|------|----------|
+| `legacy` (default for existing restaurants after migration) | Same as pre-v2: slots start at window open, step = reservation duration |
+| `clock_aligned` | Slots align to wall clock using `slotIntervalMinutes`; duration may differ from interval |
+
+Effective mode also requires `ENABLE_CLOCK_ALIGNED_SLOTS=true` in production until rollout completes.
+
+### Shadow comparison
+
+Set `SHADOW_SLOT_ENGINE=true` to log diffs between legacy and clock_aligned without changing API responses.
+
+### `reservationEndPolicy`
+
+- `STRICT_END`: slot only if `start + duration ≤ windowEnd`
+- `ALLOW_OVERFLOW`: slot if `start < windowEnd`
+
+**Legacy reference** — `scheduleUtils.js` re-exports the service for backward compatibility.
 
 **File**: `backend-simple-reserva/src/utils/scheduleUtils.js`
 

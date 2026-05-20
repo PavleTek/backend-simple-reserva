@@ -1,6 +1,7 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
-const { isSlotInSchedule } = require('../utils/scheduleUtils');
+const { resolveDuration } = require('../utils/scheduleUtils');
+const { validateSlotInSchedule } = require('../services/reservationSlotService');
 const {
   loadDaySnapshot,
   getAvailabilitySlotsForRestaurant,
@@ -121,12 +122,30 @@ router.patch('/token/:secureToken', async (req, res, next) => {
       throw new ValidationError('El restaurante está cerrado este día');
     }
 
-    const slotDuration = restaurant.defaultSlotDurationMinutes;
+    const durationRules = await prisma.durationRule.findMany({
+      where: { restaurantId: restaurant.id },
+    });
     const [timeH, timeM] = time.split(':').map(Number);
     const timeMin = timeH * 60 + timeM;
-    if (!isSlotInSchedule(schedule, timeMin, slotDuration, restaurant.scheduleMode)) {
+    const customWindows =
+      restaurant.reservationWindowMode === 'custom'
+        ? await prisma.reservationWindow.findMany({
+            where: { restaurantId: restaurant.id, dayOfWeek },
+            orderBy: { sortOrder: 'asc' },
+          })
+        : [];
+    const slotCheck = validateSlotInSchedule(
+      schedule,
+      timeMin,
+      restaurant,
+      size,
+      durationRules,
+      customWindows
+    );
+    if (!slotCheck.valid) {
       throw new ValidationError('La hora solicitada está fuera del horario de atención');
     }
+    const slotDuration = slotCheck.durationMinutes;
 
     const dayStart = parseInTimezone(datePart, '00:00', timezone);
     const dayEnd = parseInTimezone(datePart, '23:59', timezone);
@@ -349,13 +368,9 @@ router.post('/', async (req, res, next) => {
       );
     }
 
-    const slotDuration = restaurant.defaultSlotDurationMinutes;
-    const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
-    // Day-of-week and slot minutes MUST be derived from the (date, time) request
-    // strings in the restaurant's timezone, NOT from dateTime.getDay()/getHours()
-    // which would use the server's local timezone and silently return the wrong
-    // values (e.g. allowing a Saturday booking when the restaurant is closed
-    // because the server reads it as Friday).
+    const durationRules = await prisma.durationRule.findMany({
+      where: { restaurantId: restaurant.id },
+    });
     const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
     const [reqH, reqM] = String(time).split(':').map(Number);
     const reqMinutes = reqH * 60 + reqM;
@@ -367,9 +382,26 @@ router.post('/', async (req, res, next) => {
         });
         if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
-        if (!isSlotInSchedule(schedule, reqMinutes, slotDuration, restaurant.scheduleMode)) {
+        const customWindows =
+          restaurant.reservationWindowMode === 'custom'
+            ? await tx.reservationWindow.findMany({
+                where: { restaurantId: restaurant.id, dayOfWeek },
+                orderBy: { sortOrder: 'asc' },
+              })
+            : [];
+        const slotCheck = validateSlotInSchedule(
+          schedule,
+          reqMinutes,
+          restaurant,
+          size,
+          durationRules,
+          customWindows
+        );
+        if (!slotCheck.valid) {
           throw new ValidationError('La hora solicitada está fuera del horario de atención');
         }
+        const slotDuration = slotCheck.durationMinutes;
+        const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
 
         const blocked = await tx.blockedSlot.findFirst({
           where: {

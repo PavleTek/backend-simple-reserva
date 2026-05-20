@@ -120,6 +120,10 @@ model Restaurant {
   phone                     String?
   email                     String?
   defaultSlotDurationMinutes Int      @default(60)
+  slotIntervalMinutes        Int      @default(30)
+  slotGenerationMode         String   @default("clock_aligned") // "legacy" | "clock_aligned"
+  reservationEndPolicy       String   @default("STRICT_END") // "STRICT_END" | "ALLOW_OVERFLOW"
+  reservationWindowMode      String   @default("same_as_schedule") // "same_as_schedule" | "custom"
   bufferMinutesBetweenReservations Int @default(0)
   advanceBookingLimitDays   Int      @default(30)
   minimumNoticeMinutes     Int      @default(60)
@@ -139,6 +143,7 @@ model Restaurant {
   zones                     Zone[]
   durationRules             DurationRule[]
   schedules                 Schedule[]
+  reservationWindows        ReservationWindow[]
   blockedSlots              BlockedSlot[]
   reservations              Reservation[]
   menus                     RestaurantMenu[]
@@ -256,6 +261,19 @@ model Schedule {
   dinnerEndTime       String?
 
   @@unique([restaurantId, dayOfWeek])
+}
+
+model ReservationWindow {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int        // 0=Sunday … 6=Saturday
+  startTime    String     // "15:00"
+  endTime      String     // "19:00"
+  label        String?
+  sortOrder    Int        @default(0)
+
+  @@index([restaurantId, dayOfWeek])
 }
 
 model BlockedSlot {

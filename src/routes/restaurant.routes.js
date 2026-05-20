@@ -5,7 +5,9 @@ const { sendReservationConfirmation, sendModificationAlertToCustomer } = require
 const { canCreateReservation, canSendConfirmations } = require('../services/subscriptionService');
 const { getRestaurant, updateRestaurant, completeOnboarding } = require('../controllers/restaurantController');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
-const { isSlotInSchedule, generateTimeSlots, resolveDuration } = require('../utils/scheduleUtils');
+const { resolveDuration } = require('../utils/scheduleUtils');
+const { validateSlotInSchedule } = require('../services/reservationSlotService');
+const { getAvailabilitySlotsForRestaurant } = require('../services/availabilityService');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const {
   getEffectiveTimezone,
@@ -289,65 +291,6 @@ router.get('/availability', async (req, res, next) => {
 
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
-
-    const requestedDate = parseInTimezone(date, '00:00', timezone);
-    // Day-of-week MUST be in the restaurant's timezone (see utils/timezone.js).
-    const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
-
-    const schedule = await prisma.schedule.findFirst({
-      where: { restaurantId, dayOfWeek, isActive: true },
-    });
-    if (!schedule) {
-      return res.json({ slots: [], reason: 'no_schedule' });
-    }
-
-    const tablesWhere = {
-      isActive: true,
-      minCapacity: { lte: size },
-      maxCapacity: { gte: size },
-      zone: { restaurantId, isActive: true },
-    };
-    const tables = await prisma.restaurantTable.findMany({
-      where: tablesWhere,
-      orderBy: { maxCapacity: 'asc' },
-    });
-
-    if (tables.length === 0) return res.json({ slots: [], reason: 'no_tables' });
-
-    const durationRules = await prisma.durationRule.findMany({
-      where: { restaurantId },
-    });
-    const duration = resolveDuration(restaurant, size, durationRules);
-    const slotDefs = generateTimeSlots(schedule, duration, restaurant.scheduleMode);
-    const timeSlots = slotDefs.map(({ time }) => {
-      const start = parseInTimezone(date, time, timezone);
-      const end = new Date(start.getTime() + duration * 60000);
-      return { time, start, end };
-    });
-    if (timeSlots.length === 0) return res.json({ slots: [], reason: 'no_slots' });
-
-    const dayStart = parseInTimezone(date, '00:00', timezone);
-    const dayEnd = parseInTimezone(date, '23:59', timezone);
-
-    const [blockedSlots, existingReservations] = await Promise.all([
-      prisma.blockedSlot.findMany({
-        where: {
-          restaurantId,
-          startDatetime: { lte: dayEnd },
-          endDatetime: { gte: dayStart },
-        },
-      }),
-      prisma.reservation.findMany({
-        where: {
-          restaurantId,
-          tableId: { in: tables.map((t) => t.id) },
-          status: 'confirmed',
-          dateTime: { gte: dayStart, lte: dayEnd },
-        },
-      }),
-    ]);
-
-    const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
     const minNotice = restaurant.minimumNoticeMinutes ?? 60;
     const now = nowInTimezone(timezone).toJSDate();
     const todayLocal = nowInTimezone(timezone).toFormat('yyyy-MM-dd');
@@ -358,54 +301,38 @@ router.get('/availability', async (req, res, next) => {
         : new Date(now.getTime() + minNotice * 60000)
       : null;
 
-    const available = [];
-    /** Comparar por minuto para evitar desfaces de ms entre slot y now+aviso */
-    const minSlotMinute = isToday && minSlotTime ? Math.floor(minSlotTime.getTime() / 60000) : null;
-    for (const slot of timeSlots) {
-      if (isToday && minSlotMinute != null) {
-        const slotMinute = Math.floor(slot.start.getTime() / 60000);
-        if (slotMinute < minSlotMinute) continue;
-      }
+    const result = await getAvailabilitySlotsForRestaurant(restaurant, {
+      dateStr: date,
+      partySize: size,
+      zoneId: null,
+      timezone,
+      walkIn,
+    });
 
-      const isBlocked = blockedSlots.some(
-        (bs) => slot.start < bs.endDatetime && slot.end > bs.startDatetime
-      );
-      if (isBlocked) continue;
-
-      let openTables = 0;
-      for (const table of tables) {
-        const booked = existingReservations.some((r) => {
-          if (r.tableId !== table.id) return false;
-          const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-          return slot.start < rEnd && slot.end > r.dateTime;
-        });
-        if (!booked) openTables++;
-      }
-
-      if (openTables > 0) {
-        available.push({ time: slot.time, available: true, availableTables: openTables });
-      }
-    }
+    const duration =
+      result.meta?.reservationDurationMinutes ??
+      resolveDuration(restaurant, size, []);
 
     const meta = {
       minNoticeMinutes: minNotice,
       timezone,
       isToday,
       walkIn,
-      /** Primera hora local (HH:mm) a la que aplica el aviso mínimo hoy; null si walk-in o no es hoy */
       earliestBookableTimeLocal:
         isToday && !walkIn && minSlotTime
           ? formatInTimezone(minSlotTime, timezone, 'HH:mm')
           : null,
-      /** Paso entre cupos (min), igual que duration usada para la grilla */
-      slotStepMinutes: duration,
+      slotStepMinutes: result.meta?.slotStepMinutes ?? duration,
+      reservationDurationMinutes: duration,
+      availabilityEngineVersion: result.meta?.availabilityEngineVersion ?? 2,
+      slotGenerationMode: result.meta?.slotGenerationMode ?? 'legacy',
     };
 
     res.json({
-      slots: available,
+      slots: result.slots,
       durationMinutes: duration,
       meta,
-      reason: available.length === 0 ? 'no_availability' : undefined,
+      reason: result.reason,
     });
   } catch (error) {
     next(error);
@@ -669,7 +596,22 @@ router.post('/reservations', async (req, res, next) => {
         });
         if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
-        if (!isSlotInSchedule(schedule, reqMinutes, slotDuration, restaurant.scheduleMode)) {
+        const customWindows =
+          restaurant.reservationWindowMode === 'custom'
+            ? await tx.reservationWindow.findMany({
+                where: { restaurantId, dayOfWeek },
+                orderBy: { sortOrder: 'asc' },
+              })
+            : [];
+        const slotCheck = validateSlotInSchedule(
+          schedule,
+          reqMinutes,
+          restaurant,
+          size,
+          durationRules,
+          customWindows
+        );
+        if (!slotCheck.valid) {
           throw new ValidationError('La hora solicitada está fuera del horario de atención');
         }
 
@@ -847,7 +789,22 @@ router.patch('/reservations/:id', async (req, res, next) => {
           });
           if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
-          if (!isSlotInSchedule(schedule, reqMinutes, slotDuration, restaurant.scheduleMode)) {
+          const customWindows =
+            restaurant.reservationWindowMode === 'custom'
+              ? await tx.reservationWindow.findMany({
+                  where: { restaurantId: restaurant.id, dayOfWeek },
+                  orderBy: { sortOrder: 'asc' },
+                })
+              : [];
+          const slotCheck = validateSlotInSchedule(
+            schedule,
+            reqMinutes,
+            restaurant,
+            size,
+            durationRules,
+            customWindows
+          );
+          if (!slotCheck.valid) {
             throw new ValidationError('La hora solicitada está fuera del horario de atención');
           }
 
