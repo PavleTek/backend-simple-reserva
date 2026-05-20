@@ -497,7 +497,11 @@ async function previewAvailabilityFromConfig(restaurant, timezone, { dateStr, pa
     snapshot.defaults.reservationWindowMode = reservationWindowMode;
   }
   if (Array.isArray(reservationWindows)) {
-    snapshot.reservationWindows = reservationWindows;
+    const previewDow = snapshot.schedule?.dayOfWeek;
+    snapshot.reservationWindows =
+      previewDow != null
+        ? reservationWindows.filter((w) => w.dayOfWeek === previewDow)
+        : reservationWindows;
   }
 
   if (Array.isArray(pacingRules)) {

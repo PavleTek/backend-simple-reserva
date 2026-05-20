@@ -85,19 +85,25 @@ function getReservationWindows(
   reservationWindowMode = 'same_as_schedule',
   customWindows = []
 ) {
-  if (
-    reservationWindowMode === 'custom' &&
-    Array.isArray(customWindows) &&
-    customWindows.length > 0
-  ) {
-    const windows = [];
-    for (const w of customWindows) {
-      if (!w.startTime || !w.endTime) continue;
-      const s = timeToMinutes(w.startTime);
-      const e = timeToMinutes(w.endTime);
-      if (s < e) windows.push([s, e]);
+  if (reservationWindowMode === 'custom' && Array.isArray(customWindows)) {
+    const scheduleDow = schedule?.dayOfWeek;
+    const forDay =
+      scheduleDow != null
+        ? customWindows.filter(
+            (w) => w.dayOfWeek === scheduleDow || w.dayOfWeek === undefined || w.dayOfWeek === null,
+          )
+        : customWindows;
+
+    if (forDay.length > 0) {
+      const windows = [];
+      for (const w of forDay) {
+        if (!w.startTime || !w.endTime) continue;
+        const s = timeToMinutes(w.startTime);
+        const e = timeToMinutes(w.endTime);
+        if (s < e) windows.push([s, e]);
+      }
+      if (windows.length > 0) return windows;
     }
-    if (windows.length > 0) return windows;
   }
   return getOperatingWindows(schedule, scheduleMode);
 }
