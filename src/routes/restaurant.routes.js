@@ -417,15 +417,23 @@ router.post('/availability/preview', async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
     const {
-      dayOfWeek = 1,           // 0=dom … 6=sáb (para buscar el schedule)
+      date,
       partySize = 2,
-      slotIntervalMinutes,
-      defaultSlotDurationMinutes,
-      reservationEndPolicy,
+      defaults,
+      durationRules,
+      reservationWindows,
       reservationWindowMode,
-      customWindows = [],
-      durationRules: durationRulesOverride,
+      pacingRules,
     } = req.body;
+
+    if (!date || typeof date !== 'string') {
+      throw new ValidationError('Se requiere date (YYYY-MM-DD)');
+    }
+
+    const size = parseInt(partySize, 10);
+    if (isNaN(size) || size < 1) {
+      throw new ValidationError('partySize debe ser un número positivo');
+    }
 
     const restaurant = await prisma.restaurant.findUnique({
       where: { id: restaurantId },
@@ -433,31 +441,27 @@ router.post('/availability/preview', async (req, res, next) => {
     });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
-    const schedule = await prisma.schedule.findFirst({
-      where: { restaurantId, dayOfWeek: Number(dayOfWeek), isActive: true },
-    });
+    const ownerCountry = restaurant.organization?.owner?.country || 'CL';
+    const timezone = getEffectiveTimezone(restaurant, ownerCountry);
 
-    const dbDurationRules = await prisma.durationRule.findMany({ where: { restaurantId } });
+    const { previewAvailabilityFromConfig, ENGINE_VERSION } = require('../services/slotEngine/index');
 
-    const { previewSlots } = require('../services/slotEngine/index');
-
-    const slots = previewSlots({
-      schedule: schedule ? { ...schedule, scheduleMode: restaurant.scheduleMode } : null,
-      scheduleMode: restaurant.scheduleMode ?? 'continuous',
-      slotIntervalMinutes: slotIntervalMinutes ?? restaurant.slotIntervalMinutes,
-      defaultSlotDurationMinutes: defaultSlotDurationMinutes ?? restaurant.defaultSlotDurationMinutes,
-      reservationEndPolicy: reservationEndPolicy ?? restaurant.reservationEndPolicy,
-      reservationWindowMode: reservationWindowMode ?? restaurant.reservationWindowMode,
-      customWindows,
-      partySize: Number(partySize),
-      durationRules: durationRulesOverride ?? dbDurationRules,
+    const result = await previewAvailabilityFromConfig(restaurant, timezone, {
+      dateStr: date,
+      partySize: size,
+      overrides: {
+        defaults,
+        durationRules,
+        reservationWindows,
+        reservationWindowMode,
+        pacingRules,
+      },
     });
 
     res.json({
-      slots,
-      dayOfWeek: Number(dayOfWeek),
-      partySize: Number(partySize),
-      hasSchedule: !!schedule,
+      slots: result.slots,
+      reason: result.reason,
+      engineVersion: ENGINE_VERSION,
     });
   } catch (err) {
     next(err);

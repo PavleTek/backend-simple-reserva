@@ -454,6 +454,63 @@ async function findNextAvailableDateForSlug(slug, { fromDateStr, partySize, zone
   return { ok: true, nextDate: null, reason: 'no_future_availability' };
 }
 
+// ─── Preview con config tentativa ─────────────────────────────────────────────
+
+/**
+ * Preview real de disponibilidad aplicando overrides de config sin persistir en DB.
+ * Usa el mismo computeAvailability que el portal comensal.
+ */
+async function previewAvailabilityFromConfig(restaurant, timezone, { dateStr, partySize, overrides = {} }) {
+  const snapshot = await loadDaySnapshot(restaurant, { dateStr, timezone });
+
+  const {
+    defaults,
+    durationRules,
+    reservationWindows,
+    reservationWindowMode,
+    pacingRules,
+  } = overrides;
+
+  if (defaults) {
+    if (defaults.slotIntervalMinutes != null) {
+      snapshot.defaults.slotIntervalMinutes = defaults.slotIntervalMinutes;
+    }
+    if (defaults.defaultSlotDurationMinutes != null) {
+      snapshot.defaults.slotDurationMinutes = defaults.defaultSlotDurationMinutes;
+    }
+    if (defaults.bufferMinutesBetweenReservations != null) {
+      snapshot.defaults.bufferMinutesBetweenReservations = defaults.bufferMinutesBetweenReservations;
+    }
+    if (defaults.minimumNoticeMinutes != null) {
+      snapshot.defaults.minimumNoticeMinutes = defaults.minimumNoticeMinutes;
+    }
+    if (defaults.advanceBookingLimitDays != null) {
+      snapshot.defaults.advanceBookingLimitDays = defaults.advanceBookingLimitDays;
+    }
+  }
+
+  if (Array.isArray(durationRules)) {
+    snapshot.durationRules = durationRules;
+  }
+
+  if (reservationWindowMode != null) {
+    snapshot.defaults.reservationWindowMode = reservationWindowMode;
+  }
+  if (Array.isArray(reservationWindows)) {
+    snapshot.reservationWindows = reservationWindows;
+  }
+
+  if (Array.isArray(pacingRules)) {
+    snapshot.pacingRules = pacingRules;
+  }
+
+  return computeAvailability(snapshot, {
+    partySize,
+    zoneId: null,
+    now: new Date(snapshot.serverNowUtc),
+  });
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -462,6 +519,7 @@ module.exports = {
   computeAvailability,
   validateSlotForBooking,
   previewSlots,
+  previewAvailabilityFromConfig,
   getAvailabilitySlotsForRestaurant,
   findNextAvailableDateForSlug,
   // Re-export helpers para uso en routes/controllers
