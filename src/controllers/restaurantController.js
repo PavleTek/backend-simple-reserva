@@ -47,7 +47,6 @@ const updateRestaurant = async (req, res, next) => {
       slug,
       defaultSlotDurationMinutes,
       slotIntervalMinutes,
-      slotGenerationMode,
       reservationEndPolicy,
       reservationWindowMode,
       bufferMinutesBetweenReservations,
@@ -56,6 +55,8 @@ const updateRestaurant = async (req, res, next) => {
       noShowGracePeriodMinutes,
       requireEmail,
       requirePhoneNumber,
+      holdsEnabled,
+      holdTtlSeconds,
       logoUrl,
       timezone,
       scheduleMode,
@@ -98,10 +99,6 @@ const updateRestaurant = async (req, res, next) => {
         ...(slotIntervalMinutes !== undefined && {
           slotIntervalMinutes: Math.min(180, Math.max(5, parseInt(slotIntervalMinutes, 10) || 30)),
         }),
-        ...(slotGenerationMode !== undefined && {
-          slotGenerationMode:
-            slotGenerationMode === 'clock_aligned' ? 'clock_aligned' : 'legacy',
-        }),
         ...(reservationEndPolicy !== undefined && {
           reservationEndPolicy:
             reservationEndPolicy === 'ALLOW_OVERFLOW' ? 'ALLOW_OVERFLOW' : 'STRICT_END',
@@ -124,6 +121,10 @@ const updateRestaurant = async (req, res, next) => {
         }),
         ...(requireEmail !== undefined && { requireEmail: Boolean(requireEmail) }),
         ...(requirePhoneNumber !== undefined && { requirePhoneNumber: Boolean(requirePhoneNumber) }),
+        ...(holdsEnabled !== undefined && { holdsEnabled: Boolean(holdsEnabled) }),
+        ...(holdTtlSeconds !== undefined && {
+          holdTtlSeconds: Math.min(900, Math.max(60, parseInt(holdTtlSeconds, 10) || 300)),
+        }),
         ...(scheduleMode !== undefined && { scheduleMode }),
         ...(logoUrl !== undefined && { logoUrl: logoUrl || null }),
       },

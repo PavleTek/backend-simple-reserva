@@ -1,17 +1,15 @@
 'use strict';
 
 /**
- * Unit tests for availabilityService.computeAvailability().
- *
- * These tests exercise the pure, synchronous computeAvailability() function with
- * pre-built snapshots so no DB connection is required.
+ * Unit tests for slotEngine v3 computeAvailability().
+ * Updated from availabilityService.test.js → slotEngine/index.js
  *
  * Run: node --test src/services/availabilityService.test.js
  */
 
 const { describe, it, before } = require('node:test');
 const assert = require('node:assert/strict');
-const { computeAvailability } = require('./availabilityService');
+const { computeAvailability } = require('./slotEngine/index');
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -46,23 +44,22 @@ function baseSnapshot(overrides = {}) {
       dinnerEndTime: null,
     },
     defaults: {
-      availabilityEngineVersion: 2,
+      engineVersion: 3,
       slotDurationMinutes: 60,
       slotIntervalMinutes: 60,
-      slotGenerationMode: 'legacy',
-      effectiveSlotGenerationMode: 'legacy',
       reservationEndPolicy: 'STRICT_END',
       reservationWindowMode: 'same_as_schedule',
       bufferMinutesBetweenReservations: 0,
       minimumNoticeMinutes: 60,
       advanceBookingLimitDays: 30,
+      holdsEnabled: true,
     },
     reservationWindows: [],
     restaurantId: 'R1',
     durationRules: [],
     tables: [
-      { id: 'T1', zoneId: 'Z1', minCapacity: 1, maxCapacity: 2, sortOrder: 0, zoneSortOrder: 0 },
-      { id: 'T2', zoneId: 'Z2', minCapacity: 2, maxCapacity: 4, sortOrder: 0, zoneSortOrder: 1 },
+      { id: 'T1', zoneId: 'Z1', minCapacity: 1, maxCapacity: 2, sortOrder: 0, zoneSortOrder: 0, zone: { id: 'Z1', sortOrder: 0 } },
+      { id: 'T2', zoneId: 'Z2', minCapacity: 2, maxCapacity: 4, sortOrder: 0, zoneSortOrder: 1, zone: { id: 'Z2', sortOrder: 1 } },
     ],
     zones: [
       { id: 'Z1', name: 'Salón', sortOrder: 0 },
@@ -70,6 +67,8 @@ function baseSnapshot(overrides = {}) {
     ],
     blockedSlots: [],
     reservations: [],
+    activeHolds: [],
+    pacingRules: [],
     ...overrides,
   };
 }
@@ -100,10 +99,10 @@ describe('computeAvailability', () => {
       assert.strictEqual(result.slots[9].time, '21:00');
     });
 
-    it('returns reason=no_tables when partySize fits no table', () => {
+    it('returns reason=party_size_exceeds_largest_table when partySize fits no table', () => {
       const result = computeAvailability(baseSnapshot(), { partySize: 10, zoneId: null });
       assert.strictEqual(result.slots.length, 0);
-      assert.strictEqual(result.reason, 'no_tables');
+      assert.strictEqual(result.reason, 'party_size_exceeds_largest_table');
     });
   });
 
@@ -157,10 +156,15 @@ describe('computeAvailability', () => {
       // So the 13:00 slot (13:00–14:00) should still be counted as T1 being booked
       const sn = baseSnapshot({
         defaults: {
+          engineVersion: 3,
           slotDurationMinutes: 60,
+          slotIntervalMinutes: 60,
+          reservationEndPolicy: 'STRICT_END',
+          reservationWindowMode: 'same_as_schedule',
           bufferMinutesBetweenReservations: 30,
           minimumNoticeMinutes: 60,
           advanceBookingLimitDays: 30,
+          holdsEnabled: true,
         },
         reservations: [
           {
@@ -232,9 +236,9 @@ describe('computeAvailability', () => {
   });
 
   describe('g) party size fits no table', () => {
-    it('returns reason=no_tables when no table can seat the party', () => {
+    it('returns reason=party_size_exceeds_largest_table when no table can seat the party', () => {
       const result = computeAvailability(baseSnapshot(), { partySize: 5, zoneId: null });
-      assert.strictEqual(result.reason, 'no_tables');
+      assert.strictEqual(result.reason, 'party_size_exceeds_largest_table');
       assert.strictEqual(result.slots.length, 0);
     });
   });
@@ -249,17 +253,20 @@ describe('computeAvailability', () => {
   });
 
   describe('i) durationRules override default duration', () => {
-    it('applies the matching rule to generate shorter slots', () => {
+    it('aplica la regla de duración (intervalo es independiente en v3)', () => {
+      // En v3: intervalo = 60 min (defaults.slotIntervalMinutes), duración = 30 min por regla.
+      // Los cupos son cada 60 min (grilla independiente de duración).
+      // Con STRICT_END: 12:00+30=12:30 ≤ 22:00 → ok; 21:00+30=21:30 ≤ 22:00 → ok → 10 slots
       const sn = baseSnapshot({
         durationRules: [
           { minPartySize: 1, maxPartySize: 2, durationMinutes: 30 },
         ],
       });
       const result = computeAvailability(sn, { partySize: 1, zoneId: null });
-      // 12:00–22:00, 30 min slots = 20 slots
-      assert.strictEqual(result.slots.length, 20);
+      // Intervalo 60 min, 12:00–22:00 → 10 slots (duración afecta cuánto bloquea la mesa, no el intervalo)
+      assert.strictEqual(result.slots.length, 10);
       assert.strictEqual(result.slots[0].time, '12:00');
-      assert.strictEqual(result.slots[1].time, '12:30');
+      assert.strictEqual(result.slots[1].time, '13:00');
     });
   });
 

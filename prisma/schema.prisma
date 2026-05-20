@@ -121,13 +121,14 @@ model Restaurant {
   email                     String?
   defaultSlotDurationMinutes Int      @default(60)
   slotIntervalMinutes        Int      @default(30)
-  slotGenerationMode         String   @default("clock_aligned") // "legacy" | "clock_aligned"
   reservationEndPolicy       String   @default("STRICT_END") // "STRICT_END" | "ALLOW_OVERFLOW"
   reservationWindowMode      String   @default("same_as_schedule") // "same_as_schedule" | "custom"
   bufferMinutesBetweenReservations Int @default(0)
   advanceBookingLimitDays   Int      @default(30)
   minimumNoticeMinutes     Int      @default(60)
   noShowGracePeriodMinutes Int      @default(15)
+  holdTtlSeconds             Int      @default(300)
+  holdsEnabled               Boolean  @default(true)
   requireEmail              Boolean   @default(true)
   requirePhoneNumber        Boolean   @default(false)
   menuPdfUrl                String?
@@ -146,6 +147,8 @@ model Restaurant {
   reservationWindows        ReservationWindow[]
   blockedSlots              BlockedSlot[]
   reservations              Reservation[]
+  holds                     ReservationHold[]
+  pacingRules               PacingRule[]
   menus                     RestaurantMenu[]
   managerAssignments        ManagerRestaurantAssignment[]
   reservationAnalytics      ReservationAnalytics[]
@@ -241,6 +244,7 @@ model RestaurantTable {
   height        Int       @default(1) // alto en celdas
 
   reservations  Reservation[]
+  holds         ReservationHold[]
 
   @@index([zoneId])
 }
@@ -274,6 +278,43 @@ model ReservationWindow {
   sortOrder    Int        @default(0)
 
   @@index([restaurantId, dayOfWeek])
+}
+
+/// Regla de pacing por intervalo — tope opcional de comensales o reservas por cupo.
+/// Si no hay reglas, la disponibilidad solo depende de mesas libres (comportamiento default).
+model PacingRule {
+  id                     String     @id @default(cuid())
+  restaurantId           String
+  restaurant             Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dayOfWeek              Int?       // null = aplica a todos los días
+  maxCoversPerSlot       Int?       // tope de personas totales por intervalo
+  maxReservationsPerSlot Int?       // tope de reservas totales por intervalo
+  createdAt              DateTime   @default(now())
+
+  @@index([restaurantId])
+}
+
+/// Hold temporal de slot — reserva preventiva durante el checkout (TTL configurable por restaurante).
+/// Una reserva = una mesa; el hold bloquea esa mesa hasta que se confirme o expire.
+model ReservationHold {
+  id              String          @id @default(cuid())
+  restaurantId    String
+  restaurant      Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  tableId         String
+  table           RestaurantTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  partySize       Int
+  dateTime        DateTime        // inicio del slot en UTC
+  durationMinutes Int             // duración calculada al crear el hold
+  expiresAt       DateTime        // createdAt + holdTtlSeconds
+  holdToken       String          @unique @default(cuid())
+  sessionId       String?         // fingerprint anónimo del comensal (cookie)
+  source          String          @default("web") // "web" | "staff" | "api"
+  status          String          @default("active") // "active" | "consumed" | "released" | "expired"
+  createdAt       DateTime        @default(now())
+
+  @@index([restaurantId, dateTime, status])
+  @@index([expiresAt, status])
+  @@index([holdToken])
 }
 
 model BlockedSlot {

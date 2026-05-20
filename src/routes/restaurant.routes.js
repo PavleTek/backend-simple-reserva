@@ -5,9 +5,13 @@ const { sendReservationConfirmation, sendModificationAlertToCustomer } = require
 const { canCreateReservation, canSendConfirmations } = require('../services/subscriptionService');
 const { getRestaurant, updateRestaurant, completeOnboarding } = require('../controllers/restaurantController');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
-const { resolveDuration } = require('../utils/scheduleUtils');
-const { validateSlotInSchedule } = require('../services/reservationSlotService');
-const { getAvailabilitySlotsForRestaurant } = require('../services/availabilityService');
+const {
+  validateSlotForBooking,
+  getAvailabilitySlotsForRestaurant,
+  resolveDuration,
+} = require('../services/slotEngine/index');
+const { pickTable, parseReservations, parseHolds } = require('../services/slotEngine/capacity');
+const { sortFreeTablesForUi } = require('../lib/tableAssignment');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const {
   getEffectiveTimezone,
@@ -18,7 +22,30 @@ const {
 } = require('../utils/timezone');
 const { incrementDataVersion } = require('../utils/dataVersion');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
-const { pickAutoTable, sortFreeTablesForUi } = require('../lib/tableAssignment');
+
+async function withSerializableRetry(fn, maxRetries = 3) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err.code === 'P2034' && attempt < maxRetries) {
+        attempt++;
+        await new Promise((r) => setTimeout(r, 50 * attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+function dayLookbackMs(defaultSlotDurationMinutes, durationRules = []) {
+  const maxDuration = durationRules.reduce(
+    (max, r) => Math.max(max, r.durationMinutes),
+    defaultSlotDurationMinutes ?? 60
+  );
+  return Math.max(maxDuration, 12 * 60) * 60000;
+}
 
 /** Walk-in desde el panel — alineado con `isWalkInReservation` en restaurant-front */
 function reservationIsWalkIn(r) {
@@ -109,6 +136,47 @@ router.put('/duration-rules', authenticateRestaurantRoles(['restaurant_owner']),
     const updated = await prisma.durationRule.findMany({
       where: { restaurantId },
       orderBy: { minPartySize: 'asc' },
+    });
+    res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/pacing-rules', async (req, res, next) => {
+  try {
+    const rules = await prisma.pacingRule.findMany({
+      where: { restaurantId: req.activeRestaurant.restaurantId },
+      orderBy: [{ dayOfWeek: 'asc' }, { createdAt: 'asc' }],
+    });
+    res.json(rules);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put('/pacing-rules', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const { rules } = req.body;
+    if (!Array.isArray(rules)) throw new ValidationError('rules debe ser un array');
+
+    await prisma.$transaction(async (tx) => {
+      await tx.pacingRule.deleteMany({ where: { restaurantId } });
+      if (rules.length > 0) {
+        const valid = rules.map((r) => ({
+          restaurantId,
+          dayOfWeek: r.dayOfWeek != null ? parseInt(r.dayOfWeek, 10) : null,
+          maxCoversPerSlot: r.maxCoversPerSlot != null ? Math.max(1, parseInt(r.maxCoversPerSlot, 10)) : null,
+          maxReservationsPerSlot: r.maxReservationsPerSlot != null ? Math.max(1, parseInt(r.maxReservationsPerSlot, 10)) : null,
+        }));
+        await tx.pacingRule.createMany({ data: valid });
+      }
+    });
+
+    const updated = await prisma.pacingRule.findMany({
+      where: { restaurantId },
+      orderBy: [{ dayOfWeek: 'asc' }, { createdAt: 'asc' }],
     });
     res.json(updated);
   } catch (error) {
@@ -322,10 +390,9 @@ router.get('/availability', async (req, res, next) => {
         isToday && !walkIn && minSlotTime
           ? formatInTimezone(minSlotTime, timezone, 'HH:mm')
           : null,
-      slotStepMinutes: result.meta?.slotStepMinutes ?? duration,
+      slotStepMinutes: result.meta?.slotIntervalMinutes ?? duration,
       reservationDurationMinutes: duration,
-      availabilityEngineVersion: result.meta?.availabilityEngineVersion ?? 2,
-      slotGenerationMode: result.meta?.slotGenerationMode ?? 'legacy',
+      availabilityEngineVersion: result.meta?.engineVersion ?? 3,
     };
 
     res.json({
@@ -336,6 +403,64 @@ router.get('/availability', async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+});
+
+/**
+ * POST /api/restaurant/:restaurantId/availability/preview
+ *
+ * Genera una vista previa de cupos usando config tentativa (sin guardar en DB).
+ * Usa slotEngine v3 con los datos que el restaurante envía en el body.
+ * No requiere que la config esté guardada → el restaurante puede ver el impacto antes de guardar.
+ */
+router.post('/availability/preview', async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const {
+      dayOfWeek = 1,           // 0=dom … 6=sáb (para buscar el schedule)
+      partySize = 2,
+      slotIntervalMinutes,
+      defaultSlotDurationMinutes,
+      reservationEndPolicy,
+      reservationWindowMode,
+      customWindows = [],
+      durationRules: durationRulesOverride,
+    } = req.body;
+
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      include: { organization: { include: { owner: { select: { country: true } } } } },
+    });
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+    const schedule = await prisma.schedule.findFirst({
+      where: { restaurantId, dayOfWeek: Number(dayOfWeek), isActive: true },
+    });
+
+    const dbDurationRules = await prisma.durationRule.findMany({ where: { restaurantId } });
+
+    const { previewSlots } = require('../services/slotEngine/index');
+
+    const slots = previewSlots({
+      schedule: schedule ? { ...schedule, scheduleMode: restaurant.scheduleMode } : null,
+      scheduleMode: restaurant.scheduleMode ?? 'continuous',
+      slotIntervalMinutes: slotIntervalMinutes ?? restaurant.slotIntervalMinutes,
+      defaultSlotDurationMinutes: defaultSlotDurationMinutes ?? restaurant.defaultSlotDurationMinutes,
+      reservationEndPolicy: reservationEndPolicy ?? restaurant.reservationEndPolicy,
+      reservationWindowMode: reservationWindowMode ?? restaurant.reservationWindowMode,
+      customWindows,
+      partySize: Number(partySize),
+      durationRules: durationRulesOverride ?? dbDurationRules,
+    });
+
+    res.json({
+      slots,
+      dayOfWeek: Number(dayOfWeek),
+      partySize: Number(partySize),
+      hasSchedule: !!schedule,
+    });
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -577,103 +702,135 @@ router.post('/reservations', async (req, res, next) => {
       throw new ValidationError('Formato de fecha u hora inválido');
     }
 
-    const durationRules = await prisma.durationRule.findMany({
-      where: { restaurantId },
-    });
-    const slotDuration = resolveDuration(restaurant, size, durationRules);
-    const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
-    // Day-of-week and slot minutes derived from the request strings interpreted in
-    // the restaurant's timezone — never via dateTime.getDay()/getHours() (which use
-    // the server's local timezone, see utils/timezone.js).
     const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
-    const [reqH, reqM] = String(time).split(':').map(Number);
-    const reqMinutes = reqH * 60 + reqM;
+    const now = nowInTimezone(timezone).toJSDate();
 
-    const reservation = await prisma.$transaction(
-      async (tx) => {
+    const reservation = await withSerializableRetry(() =>
+      prisma.$transaction(async (tx) => {
         const schedule = await tx.schedule.findFirst({
           where: { restaurantId, dayOfWeek, isActive: true },
         });
         if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
-        const customWindows =
-          restaurant.reservationWindowMode === 'custom'
-            ? await tx.reservationWindow.findMany({
-                where: { restaurantId, dayOfWeek },
-                orderBy: { sortOrder: 'asc' },
-              })
-            : [];
-        const slotCheck = validateSlotInSchedule(
-          schedule,
-          reqMinutes,
-          restaurant,
-          size,
-          durationRules,
-          customWindows
-        );
-        if (!slotCheck.valid) {
-          throw new ValidationError('La hora solicitada está fuera del horario de atención');
+        const [durationRules, customWindows, blockedSlot, allTables, activeHolds, pacingRules] =
+          await Promise.all([
+            tx.durationRule.findMany({ where: { restaurantId } }),
+            restaurant.reservationWindowMode === 'custom'
+              ? tx.reservationWindow.findMany({
+                  where: { restaurantId, dayOfWeek },
+                  orderBy: { sortOrder: 'asc' },
+                })
+              : [],
+            tx.blockedSlot.findFirst({
+              where: {
+                restaurantId,
+                startDatetime: { lt: new Date(dateTime.getTime() + 4 * 60 * 60000) },
+                endDatetime: { gt: dateTime },
+              },
+            }),
+            tx.restaurantTable.findMany({
+              where: { isActive: true, zone: { restaurantId, isActive: true } },
+              include: { zone: { select: { id: true, sortOrder: true } } },
+            }),
+            restaurant.holdsEnabled
+              ? tx.reservationHold.findMany({
+                  where: {
+                    restaurantId,
+                    status: 'active',
+                    expiresAt: { gt: now },
+                    dateTime: {
+                      gte: new Date(dateTime.getTime() - 4 * 60 * 60000),
+                      lte: new Date(dateTime.getTime() + 4 * 60 * 60000),
+                    },
+                  },
+                  select: { tableId: true, dateTime: true, durationMinutes: true, holdToken: true },
+                })
+              : [],
+            tx.pacingRule.findMany({ where: { restaurantId } }),
+          ]);
+
+        if (blockedSlot) {
+          throw new ValidationError('Este horario está bloqueado' + (blockedSlot.reason ? ': ' + blockedSlot.reason : ''));
         }
 
-        const blocked = await tx.blockedSlot.findFirst({
-          where: {
-            restaurantId,
-            startDatetime: { lt: slotEnd },
-            endDatetime: { gt: dateTime },
-          },
+        const tables = allTables.map((t) => ({
+          id: t.id, zoneId: t.zone.id, minCapacity: t.minCapacity, maxCapacity: t.maxCapacity,
+          sortOrder: t.sortOrder ?? 0, zoneSortOrder: t.zone.sortOrder ?? 0,
+          zone: { id: t.zone.id, sortOrder: t.zone.sortOrder ?? 0 },
+        }));
+
+        const lb = dayLookbackMs(restaurant.defaultSlotDurationMinutes, durationRules);
+        const windowStart = new Date(dateTime.getTime() - lb);
+        const windowEnd = parseInTimezone(date, '23:59', timezone);
+        const dayReservations = await tx.reservation.findMany({
+          where: { restaurantId, status: 'confirmed', dateTime: { gte: windowStart, lte: windowEnd } },
+          select: { tableId: true, dateTime: true, durationMinutes: true },
         });
-        if (blocked) {
-          throw new ValidationError(
-            'Este horario está bloqueado' + (blocked.reason ? ': ' + blocked.reason : '')
-          );
-        }
 
-        const tablesWhere = {
-          isActive: true,
-          minCapacity: { lte: size },
-          maxCapacity: { gte: size },
-          zone: { restaurantId, isActive: true },
-        };
+        const reservationsRaw = dayReservations.map((r) => ({
+          tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes,
+        }));
+        const holdsRaw = activeHolds.map((h) => ({
+          tableId: h.tableId, startUtc: h.dateTime.toISOString(), durationMinutes: h.durationMinutes, holdToken: h.holdToken,
+        }));
+
+        const slotDuration = resolveDuration(restaurant, size, durationRules);
+        const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
 
         let selectedTable = null;
+
         if (tableId) {
-          const table = await tx.restaurantTable.findUnique({
-            where: { id: tableId },
-            include: { zone: true },
-          });
-          if (!table || table.zone.restaurantId !== restaurantId) {
-            throw new ValidationError('Mesa no válida');
-          }
-          if (table.minCapacity > size || table.maxCapacity < size) {
-            throw new ValidationError('La mesa no admite este número de comensales');
-          }
+          // Reserva manual con mesa explícita — chequear conflicto vía slotEngine
+          const table = await tx.restaurantTable.findUnique({ where: { id: tableId }, include: { zone: true } });
+          if (!table || table.zone.restaurantId !== restaurantId) throw new ValidationError('Mesa no válida');
+          if (table.minCapacity > size || table.maxCapacity < size) throw new ValidationError('La mesa no admite este número de comensales');
+          const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
+          const parsedRes = parseReservations(reservationsRaw);
+          const parsedHoldsArr = parseHolds(holdsRaw);
+          // Verificar conflicto en la mesa específica
+          const { countFreeTables } = require('../services/slotEngine/capacity');
+          const specificFree = countFreeTables(
+            [{ id: table.id, zoneId: table.zone.id, minCapacity: table.minCapacity, maxCapacity: table.maxCapacity }],
+            dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null
+          );
+          if (specificFree === 0) throw new ValidationError('Esa mesa ya está reservada en ese horario. Elige otra mesa o cambia la hora.');
           selectedTable = table;
         } else {
-          const tables = await tx.restaurantTable.findMany({
-            where: tablesWhere,
-            include: { zone: { select: { id: true, sortOrder: true } } },
-          });
-          if (tables.length === 0) {
-            throw new ValidationError('No hay mesas disponibles para este número de comensales');
+          // Walk-in u otro: usar slotEngine para validar y asignar (walk-in bypasea grid/notice)
+          if (!isWalkIn) {
+            const validation = validateSlotForBooking({
+              time,
+              partySize: size,
+              schedule: { ...schedule, scheduleMode: restaurant.scheduleMode },
+              restaurant,
+              durationRules,
+              customWindows,
+              tables,
+              reservations: reservationsRaw,
+              activeHolds: holdsRaw,
+              blockedSlots: [],
+              pacingRules: pacingRules.map((p) => ({ dayOfWeek: p.dayOfWeek, maxCoversPerSlot: p.maxCoversPerSlot, maxReservationsPerSlot: p.maxReservationsPerSlot })),
+              slotDateTime: dateTime,
+              now,
+              isToday: date === nowInTimezone(timezone).toFormat('yyyy-MM-dd'),
+              walkIn: false,
+              zoneId: null,
+              excludeHoldToken: null,
+              dayOfWeek,
+            });
+            if (!validation.valid) {
+              throw new ValidationError(
+                validation.reason === 'blocked' ? 'Este horario está bloqueado' :
+                validation.reason === 'party_size_exceeds_largest_table' ? 'No hay mesas para este número de comensales' :
+                'La hora solicitada no está disponible'
+              );
+            }
           }
-
-          const dayStart = parseInTimezone(date, '00:00', timezone);
-          const dayEnd = parseInTimezone(date, '23:59', timezone);
-
-          const dayReservations = await tx.reservation.findMany({
-            where: {
-              tableId: { in: tables.map((t) => t.id) },
-              status: 'confirmed',
-              dateTime: { gte: dayStart, lte: dayEnd },
-            },
-          });
 
           const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-          selectedTable = pickAutoTable(tables, size, dayReservations, dateTime, slotEnd, bufferMs, null);
-
-          if (!selectedTable) {
-            throw new ValidationError('No hay mesas disponibles en este horario');
-          }
+          selectedTable = pickTable(tables, size, dateTime, slotEnd, bufferMs,
+            parseReservations(reservationsRaw), parseHolds(holdsRaw), null, null);
+          if (!selectedTable) throw new ValidationError('No hay mesas disponibles en este horario');
         }
 
         return tx.reservation.create({
@@ -688,18 +845,14 @@ router.post('/reservations', async (req, res, next) => {
             durationMinutes: slotDuration,
             notes: isWalkIn ? (typeof notes === 'string' && notes.trim() ? notes.trim() : 'Walk-in') : notes?.trim() || null,
             source: 'manual',
-            ...(req.user?.id && {
-              confirmedByUserId: req.user.id,
-              updatedByUserId: req.user.id,
-            }),
+            ...(req.user?.id && { confirmedByUserId: req.user.id, updatedByUserId: req.user.id }),
           },
           include: {
             restaurant: { select: { name: true } },
             table: { select: { id: true, label: true } },
           },
         });
-      },
-      { isolationLevel: 'Serializable' }
+      }, { isolationLevel: 'Serializable' })
     );
 
     if (!isWalkIn) {
@@ -771,126 +924,106 @@ router.patch('/reservations/:id', async (req, res, next) => {
         throw new ValidationError('Formato de fecha u hora inválido');
       }
 
-      const durationRules = await prisma.durationRule.findMany({
-        where: { restaurantId: restaurant.id },
-      });
-      const slotDuration = resolveDuration(restaurant, size, durationRules);
-      const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
-      // Day-of-week and slot minutes in the restaurant's timezone
-      // (see utils/timezone.js — never use dateTime.getDay()/getHours() here).
       const dayOfWeek = getDayOfWeekInTimezone(dateStr, timezone);
-      const [reqH, reqM] = String(timeStr).split(':').map(Number);
-      const reqMinutes = reqH * 60 + reqM;
+      const now = nowInTimezone(timezone).toJSDate();
 
-      const updated = await prisma.$transaction(
-        async (tx) => {
+      const updated = await withSerializableRetry(() =>
+        prisma.$transaction(async (tx) => {
           const schedule = await tx.schedule.findFirst({
             where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
           });
           if (!schedule) throw new ValidationError('El restaurante está cerrado este día');
 
-          const customWindows =
-            restaurant.reservationWindowMode === 'custom'
-              ? await tx.reservationWindow.findMany({
-                  where: { restaurantId: restaurant.id, dayOfWeek },
-                  orderBy: { sortOrder: 'asc' },
-                })
-              : [];
-          const slotCheck = validateSlotInSchedule(
-            schedule,
-            reqMinutes,
-            restaurant,
-            size,
-            durationRules,
-            customWindows
-          );
-          if (!slotCheck.valid) {
-            throw new ValidationError('La hora solicitada está fuera del horario de atención');
+          const [durationRules, customWindows, blockedSlot, allTables, activeHolds, pacingRules] =
+            await Promise.all([
+              tx.durationRule.findMany({ where: { restaurantId: restaurant.id } }),
+              restaurant.reservationWindowMode === 'custom'
+                ? tx.reservationWindow.findMany({
+                    where: { restaurantId: restaurant.id, dayOfWeek },
+                    orderBy: { sortOrder: 'asc' },
+                  })
+                : [],
+              tx.blockedSlot.findFirst({
+                where: {
+                  restaurantId: restaurant.id,
+                  startDatetime: { lt: new Date(dateTime.getTime() + 4 * 60 * 60000) },
+                  endDatetime: { gt: dateTime },
+                },
+              }),
+              tx.restaurantTable.findMany({
+                where: { isActive: true, zone: { restaurantId: restaurant.id, isActive: true } },
+                include: { zone: { select: { id: true, sortOrder: true } } },
+              }),
+              restaurant.holdsEnabled
+                ? tx.reservationHold.findMany({
+                    where: {
+                      restaurantId: restaurant.id,
+                      status: 'active',
+                      expiresAt: { gt: now },
+                      dateTime: {
+                        gte: new Date(dateTime.getTime() - 4 * 60 * 60000),
+                        lte: new Date(dateTime.getTime() + 4 * 60 * 60000),
+                      },
+                    },
+                    select: { tableId: true, dateTime: true, durationMinutes: true, holdToken: true },
+                  })
+                : [],
+              tx.pacingRule.findMany({ where: { restaurantId: restaurant.id } }),
+            ]);
+
+          if (blockedSlot) {
+            throw new ValidationError('Este horario está bloqueado' + (blockedSlot.reason ? ': ' + blockedSlot.reason : ''));
           }
 
-          const blocked = await tx.blockedSlot.findFirst({
+          const tables = allTables.map((t) => ({
+            id: t.id, zoneId: t.zone.id, minCapacity: t.minCapacity, maxCapacity: t.maxCapacity,
+            sortOrder: t.sortOrder ?? 0, zoneSortOrder: t.zone.sortOrder ?? 0,
+            zone: { id: t.zone.id, sortOrder: t.zone.sortOrder ?? 0 },
+          }));
+
+          const lb = dayLookbackMs(restaurant.defaultSlotDurationMinutes, durationRules);
+          const windowStart = new Date(dateTime.getTime() - lb);
+          const windowEnd = parseInTimezone(dateStr, '23:59', timezone);
+          const dayReservations = await tx.reservation.findMany({
             where: {
-              restaurantId: restaurant.id,
-              startDatetime: { lt: slotEnd },
-              endDatetime: { gt: dateTime },
+              restaurantId: restaurant.id, status: 'confirmed',
+              dateTime: { gte: windowStart, lte: windowEnd },
+              id: { not: reservation.id },
             },
+            select: { tableId: true, dateTime: true, durationMinutes: true },
           });
-          if (blocked) {
-            throw new ValidationError(
-              'Este horario está bloqueado' + (blocked.reason ? ': ' + blocked.reason : '')
-            );
-          }
 
-          const tablesWhere = {
-            isActive: true,
-            minCapacity: { lte: size },
-            maxCapacity: { gte: size },
-            zone: { restaurantId: restaurant.id, isActive: true },
-          };
+          const slotDuration = resolveDuration(restaurant, size, durationRules);
+          const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
+          const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
+
+          const reservationsRaw = dayReservations.map((r) => ({
+            tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes,
+          }));
+          const holdsRaw = activeHolds.map((h) => ({
+            tableId: h.tableId, startUtc: h.dateTime.toISOString(), durationMinutes: h.durationMinutes, holdToken: h.holdToken,
+          }));
+
+          let tableIdVal = tableId;
+          if (tableId != null && typeof tableId === 'object' && 'value' in tableId) tableIdVal = tableId.value;
+          const tableIdStr = (tableIdVal != null && String(tableIdVal).trim()) || null;
 
           let selectedTable = null;
-          let tableIdVal = tableId;
-          if (tableId != null && typeof tableId === 'object' && 'value' in tableId) {
-            tableIdVal = tableId.value;
-          }
-          const tableIdStr = (tableIdVal != null && String(tableIdVal).trim()) || null;
           if (tableIdStr) {
-            const table = await tx.restaurantTable.findUnique({
-              where: { id: tableIdStr },
-              include: { zone: true },
-            });
-            if (!table || table.zone.restaurantId !== restaurant.id) {
-              throw new ValidationError('Mesa no válida');
-            }
-            if (table.minCapacity > size || table.maxCapacity < size) {
-              throw new ValidationError('La mesa no admite este número de comensales');
-            }
-            const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-            const conflictingSlots = await tx.reservation.findMany({
-              where: {
-                tableId: table.id,
-                status: 'confirmed',
-                id: { not: reservation.id },
-                dateTime: { gte: parseInTimezone(dateStr, '00:00', timezone), lte: parseInTimezone(dateStr, '23:59', timezone) },
-              },
-            });
-            const hasConflict = conflictingSlots.some((r) => {
-              const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-              return dateTime < rEnd && slotEnd > r.dateTime;
-            });
-            if (hasConflict) {
-              throw new ValidationError(
-                'Esa mesa ya tiene una reserva en ese horario. Elige otra mesa o cambia la hora.'
-              );
-            }
+            const table = await tx.restaurantTable.findUnique({ where: { id: tableIdStr }, include: { zone: true } });
+            if (!table || table.zone.restaurantId !== restaurant.id) throw new ValidationError('Mesa no válida');
+            if (table.minCapacity > size || table.maxCapacity < size) throw new ValidationError('La mesa no admite este número de comensales');
+            const { countFreeTables } = require('../services/slotEngine/capacity');
+            const specificFree = countFreeTables(
+              [{ id: table.id, zoneId: table.zone.id, minCapacity: table.minCapacity, maxCapacity: table.maxCapacity }],
+              dateTime, slotEnd, bufferMs, parseReservations(reservationsRaw), parseHolds(holdsRaw), null
+            );
+            if (specificFree === 0) throw new ValidationError('Esa mesa ya tiene una reserva en ese horario. Elige otra mesa o cambia la hora.');
             selectedTable = table;
           } else {
-            const tables = await tx.restaurantTable.findMany({
-              where: tablesWhere,
-              include: { zone: { select: { id: true, sortOrder: true } } },
-            });
-            if (tables.length === 0) {
-              throw new ValidationError('No hay mesas disponibles para este número de comensales');
-            }
-
-            const dayStart = parseInTimezone(dateStr, '00:00', timezone);
-            const dayEnd = parseInTimezone(dateStr, '23:59', timezone);
-
-            const dayReservations = await tx.reservation.findMany({
-              where: {
-                tableId: { in: tables.map((t) => t.id) },
-                status: 'confirmed',
-                dateTime: { gte: dayStart, lte: dayEnd },
-                id: { not: reservation.id },
-              },
-            });
-
-            const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-            selectedTable = pickAutoTable(tables, size, dayReservations, dateTime, slotEnd, bufferMs, null);
-
-            if (!selectedTable) {
-              throw new ValidationError('No hay mesas disponibles en este horario');
-            }
+            selectedTable = pickTable(tables, size, dateTime, slotEnd, bufferMs,
+              parseReservations(reservationsRaw), parseHolds(holdsRaw), null, null);
+            if (!selectedTable) throw new ValidationError('No hay mesas disponibles en este horario');
           }
 
           return tx.reservation.update({
@@ -908,8 +1041,7 @@ router.patch('/reservations/:id', async (req, res, next) => {
               table: { select: { id: true, label: true } },
             },
           });
-        },
-        { isolationLevel: 'Serializable' }
+        }, { isolationLevel: 'Serializable' })
       );
 
       if (date !== undefined || time !== undefined || partySize !== undefined) {

@@ -1,30 +1,22 @@
 'use strict';
 
-function envFlag(name, defaultValue = false) {
-  const v = process.env[name];
-  if (v === undefined || v === '') return defaultValue;
-  return v === 'true' || v === '1';
-}
-
-function isClockAlignedEnabled() {
-  return envFlag('ENABLE_CLOCK_ALIGNED_SLOTS', false);
-}
-
-function isReservationWindowsEnabled() {
-  return envFlag('ENABLE_RESERVATION_WINDOWS', false);
-}
-
-function isSlotSimulatorEnabled() {
-  return envFlag('ENABLE_SLOT_SIMULATOR', false);
-}
-
-function isShadowSlotEngineEnabled() {
-  return envFlag('SHADOW_SLOT_ENGINE', false);
-}
+/**
+ * slotEngineFlags.js
+ *
+ * Feature flags del motor de slots. En v3 todos los flags legacy fueron eliminados.
+ * Este archivo se mantiene por compatibilidad con imports existentes pero
+ * solo exporta valores constantes (sin lectura de env vars).
+ *
+ * Flags eliminados:
+ * - ENABLE_CLOCK_ALIGNED_SLOTS → motor v3 siempre es clock-aligned
+ * - SHADOW_SLOT_ENGINE → el motor es único, sin shadow
+ * - ENABLE_RESERVATION_WINDOWS → ventanas disponibles para todos los restaurantes
+ * - ENABLE_SLOT_SIMULATOR → reemplazado por AvailabilityPreview
+ */
 
 module.exports = {
-  isClockAlignedEnabled,
-  isReservationWindowsEnabled,
-  isSlotSimulatorEnabled,
-  isShadowSlotEngineEnabled,
+  isClockAlignedEnabled: () => true,
+  isReservationWindowsEnabled: () => true,
+  isSlotSimulatorEnabled: () => false,
+  isShadowSlotEngineEnabled: () => false,
 };

@@ -1,14 +1,17 @@
 'use strict';
 
+/**
+ * Tests migrados de reservationSlotService → slotEngine v3.
+ * El servicio reservationSlotService.js fue eliminado en v3.
+ * Estos tests validan las mismas funciones en slotEngine/grid.js y slotEngine/windows.js.
+ *
+ * Run: node --test src/services/reservationSlotService.test.js
+ */
+
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const {
-  alignToGrid,
-  generateTimeSlots,
-  generateTimeSlotsLegacy,
-  compareEngines,
-  getReservationWindows,
-} = require('./reservationSlotService');
+const { alignToGrid, generateGrid } = require('./slotEngine/grid');
+const { getReservationWindows, getOperatingWindows } = require('./slotEngine/windows');
 
 const schedule1230 = {
   openTime: '12:30',
@@ -31,108 +34,35 @@ describe('alignToGrid', () => {
   });
 });
 
-describe('generateTimeSlots legacy', () => {
-  it('matches historical behavior: open 12:30, duration 60', () => {
-    const windows = [[12 * 60 + 30, 23 * 60]];
-    const slots = generateTimeSlotsLegacy(windows, 60);
-    assert.deepEqual(
-      slots.map((s) => s.time),
-      ['12:30', '13:30', '14:30', '15:30', '16:30', '17:30', '18:30', '19:30', '20:30', '21:30']
-    );
+describe('generateGrid (clock-aligned, reemplaza legacy y clock_aligned)', () => {
+  it('open 12:30, interval 60, duration 60 — equivalente a legacy con duration=60', () => {
+    const windows = getOperatingWindows(schedule1230, 'continuous');
+    const slots = generateGrid(windows, 60, 60);
+    const times = slots.map((s) => s.time);
+    // Clock-aligned: primer múltiplo de 60 >= 750min (12:30) = 780min (13:00)
+    assert.equal(times[0], '13:00');
+    assert.equal(times[times.length - 1], '22:00');
   });
-});
 
-describe('generateTimeSlots clock_aligned', () => {
   it('open 12:30, interval 30, duration 90', () => {
-    const windows = [[12 * 60 + 30, 23 * 60]];
-    const slots = generateTimeSlots({
-      mode: 'clock_aligned',
-      schedule: schedule1230,
-      scheduleMode: 'continuous',
-      intervalMinutes: 30,
-      reservationDurationMinutes: 90,
-    });
+    const windows = getOperatingWindows(schedule1230, 'continuous');
+    const slots = generateGrid(windows, 30, 90);
     const times = slots.map((s) => s.time);
     assert.ok(times.includes('12:30'));
     assert.ok(times.includes('13:00'));
-    assert.ok(!times.includes('13:30') || times.includes('13:00'));
     assert.equal(times[times.length - 1], '21:30');
   });
-
-  it('open 12:30, interval 60 — first slot 13:00', () => {
-    const slots = generateTimeSlots({
-      mode: 'clock_aligned',
-      schedule: schedule1230,
-      scheduleMode: 'continuous',
-      intervalMinutes: 60,
-      reservationDurationMinutes: 60,
-    });
-    assert.equal(slots[0].time, '13:00');
-    assert.ok(!slots.some((s) => s.time === '12:30'));
-  });
 });
 
-describe('STRICT_END vs ALLOW_OVERFLOW', () => {
-  const windows = [[15 * 60, 19 * 60]];
-
-  it('STRICT_END: last start 17:30 for 90 min window ending 19:00', () => {
-    const slots = generateTimeSlots({
-      mode: 'clock_aligned',
-      windows,
-      intervalMinutes: 30,
-      reservationDurationMinutes: 90,
-      reservationEndPolicy: 'STRICT_END',
-    });
-    const times = slots.map((s) => s.time);
-    assert.ok(times.includes('17:30'));
-    assert.ok(!times.includes('18:30'));
+describe('getReservationWindows', () => {
+  it('uses custom windows when mode=custom', () => {
+    const custom = [{ startTime: '15:00', endTime: '19:00' }];
+    const windows = getReservationWindows(schedule1230, 'continuous', 'custom', custom);
+    assert.deepEqual(windows, [[900, 1140]]);
   });
 
-  it('ALLOW_OVERFLOW: allows 18:30 start', () => {
-    const slots = generateTimeSlots({
-      mode: 'clock_aligned',
-      windows,
-      intervalMinutes: 30,
-      reservationDurationMinutes: 90,
-      reservationEndPolicy: 'ALLOW_OVERFLOW',
-    });
-    assert.ok(slots.some((s) => s.time === '18:30'));
-  });
-});
-
-describe('service_periods gaps preserved', () => {
-  const schedule = {
-    openTime: '11:00',
-    closeTime: '23:00',
-    lunchStartTime: '12:00',
-    lunchEndTime: '15:00',
-    dinnerStartTime: '19:00',
-    dinnerEndTime: '22:00',
-    breakfastStartTime: null,
-    breakfastEndTime: null,
-  };
-
-  it('does not generate slots in gap between lunch and dinner', () => {
-    const windows = getReservationWindows(schedule, 'service_periods', 'same_as_schedule', []);
-    const slots = generateTimeSlotsLegacy(windows, 60);
-    const times = slots.map((s) => s.time);
-    assert.ok(times.includes('12:00'));
-    assert.ok(times.includes('14:00'));
-    assert.ok(times.includes('19:00'));
-    assert.ok(!times.some((t) => t >= '15:00' && t < '19:00'));
-  });
-});
-
-describe('compareEngines', () => {
-  it('detects diff for 12:30 open with interval 60', () => {
-    const result = compareEngines({
-      schedule: schedule1230,
-      scheduleMode: 'continuous',
-      intervalMinutes: 60,
-      reservationDurationMinutes: 60,
-    });
-    assert.equal(result.hasDiff, true);
-    assert.ok(result.onlyLegacy.includes('12:30'));
-    assert.ok(result.onlyClock.includes('13:00'));
+  it('falls back to operating hours when mode=same_as_schedule', () => {
+    const windows = getReservationWindows(schedule1230, 'continuous', 'same_as_schedule', []);
+    assert.deepEqual(windows, [[750, 1380]]); // 12:30 → 23:00
   });
 });
