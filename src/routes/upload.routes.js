@@ -5,10 +5,12 @@ const fs = require('fs');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { ValidationError } = require('../utils/errors');
+const r2LogosService = require('../services/r2LogosService');
 
 const router = express.Router({ mergeParams: true });
 
 const MAX_MENU_PDF_BYTES = 50 * 1024 * 1024;
+const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -37,19 +39,6 @@ const upload = multer({
   limits: { fileSize: MAX_MENU_PDF_BYTES },
 });
 
-const logoStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const restaurantId = req.activeRestaurant?.restaurantId ?? req.params?.restaurantId;
-    const dir = path.join('uploads', 'logos', restaurantId);
-    fs.mkdirSync(dir, { recursive: true });
-    cb(null, dir);
-  },
-  filename: (req, file, cb) => {
-    const ext = (file.originalname.match(/\.(jpg|jpeg|png|webp)$/i) || ['', 'png'])[1]?.toLowerCase() || 'png';
-    cb(null, `logo-${Date.now()}.${ext}`);
-  },
-});
-
 const logoFileFilter = (req, file, cb) => {
   const allowed = ['image/jpeg', 'image/png', 'image/webp'];
   if (allowed.includes(file.mimetype)) {
@@ -59,11 +48,44 @@ const logoFileFilter = (req, file, cb) => {
   }
 };
 
-const uploadLogo = multer({
-  storage: logoStorage,
+const uploadLogoMulter = multer({
+  storage: multer.memoryStorage(),
   fileFilter: logoFileFilter,
-  limits: { fileSize: MAX_MENU_PDF_BYTES },
+  limits: { fileSize: MAX_LOGO_BYTES },
 });
+
+/**
+ * Shared handler: upload logo buffer to R2, delete old logo, persist absolute URL to DB.
+ * @param {string} restaurantId
+ * @param {Express.Multer.File} file
+ * @returns {Promise<string>} new absolute logoUrl
+ */
+async function handleLogoUpload(restaurantId, file) {
+  const ext = (file.originalname.match(/\.(jpg|jpeg|png|webp)$/i) || ['', 'png'])[1]?.toLowerCase() || 'png';
+  const key = `${restaurantId}/logo-${Date.now()}.${ext}`;
+
+  await r2LogosService.uploadLogo(key, file.buffer, file.mimetype);
+
+  const current = await prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: { logoUrl: true },
+  });
+
+  if (current?.logoUrl) {
+    const oldKey = r2LogosService.keyFromLogoUrl(current.logoUrl);
+    if (oldKey) {
+      r2LogosService.deleteLogo(oldKey).catch(() => {});
+    }
+  }
+
+  const logoUrl = r2LogosService.getLogosPublicUrl(key);
+  const restaurant = await prisma.restaurant.update({
+    where: { id: restaurantId },
+    data: { logoUrl },
+  });
+
+  return restaurant.logoUrl;
+}
 
 router.post(
   '/menu',
@@ -108,33 +130,17 @@ router.post(
   authenticateToken,
   authorizeRestaurant,
   authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
-  uploadLogo.single('logo'),
+  uploadLogoMulter.single('logo'),
   async (req, res, next) => {
     try {
       if (!req.file) {
         throw new ValidationError('No se subió ninguna imagen');
       }
 
-      const logoUrl = `/${req.file.path.replace(/\\/g, '/')}`;
+      const restaurantId = req.activeRestaurant.restaurantId;
+      const logoUrl = await handleLogoUpload(restaurantId, req.file);
 
-      const current = await prisma.restaurant.findUnique({
-        where: { id: req.activeRestaurant.restaurantId },
-        select: { logoUrl: true },
-      });
-      if (current?.logoUrl) {
-        const oldPath = path.join(__dirname, '..', '..', current.logoUrl);
-        fs.unlink(oldPath, () => {});
-      }
-
-      const restaurant = await prisma.restaurant.update({
-        where: { id: req.activeRestaurant.restaurantId },
-        data: { logoUrl },
-      });
-
-      res.json({
-        message: 'Logo subido correctamente',
-        logoUrl: restaurant.logoUrl,
-      });
+      res.json({ message: 'Logo subido correctamente', logoUrl });
     } catch (error) {
       next(error);
     }
@@ -142,3 +148,5 @@ router.post(
 );
 
 module.exports = router;
+module.exports.handleLogoUpload = handleLogoUpload;
+module.exports.uploadLogoMulter = uploadLogoMulter;

@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authenticateRoles } = require('../middleware/authentication');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
@@ -8,6 +9,8 @@ const paymentReceiptService = require('../services/paymentReceiptService');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const whatsappService = require('../services/whatsappService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
+const r2LogosService = require('../services/r2LogosService');
+const { handleLogoUpload, uploadLogoMulter } = require('./upload.routes');
 
 const router = express.Router();
 
@@ -107,6 +110,49 @@ router.patch('/restaurants/:id', async (req, res, next) => {
     });
 
     res.json(restaurant);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post(
+  '/restaurants/:id/logo',
+  uploadLogoMulter.single('logo'),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        throw new ValidationError('No se subió ninguna imagen');
+      }
+      const restaurant = await prisma.restaurant.findUnique({ where: { id: req.params.id }, select: { id: true } });
+      if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+      const logoUrl = await handleLogoUpload(req.params.id, req.file);
+      res.json({ message: 'Logo actualizado correctamente', logoUrl });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.delete('/restaurants/:id/logo', async (req, res, next) => {
+  try {
+    const current = await prisma.restaurant.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, logoUrl: true },
+    });
+    if (!current) throw new NotFoundError('Restaurante no encontrado');
+
+    if (current.logoUrl) {
+      const oldKey = r2LogosService.keyFromLogoUrl(current.logoUrl);
+      if (oldKey) r2LogosService.deleteLogo(oldKey).catch(() => {});
+    }
+
+    await prisma.restaurant.update({
+      where: { id: req.params.id },
+      data: { logoUrl: null },
+    });
+
+    res.json({ message: 'Logo eliminado correctamente' });
   } catch (error) {
     next(error);
   }

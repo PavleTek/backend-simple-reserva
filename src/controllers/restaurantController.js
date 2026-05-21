@@ -1,6 +1,7 @@
 const prisma = require('../lib/prisma');
 const { ValidationError } = require('../utils/errors');
 const { getEffectiveTimezone, COUNTRY_TIMEZONES } = require('../utils/timezone');
+const r2LogosService = require('../services/r2LogosService');
 
 const getRestaurant = async (req, res, next) => {
   try {
@@ -50,6 +51,18 @@ const updateRestaurant = async (req, res, next) => {
       const validTimezones = Object.values(COUNTRY_TIMEZONES);
       if (!validTimezones.includes(timezone)) {
         throw new ValidationError('Zona horaria no válida');
+      }
+    }
+
+    // If the owner is clearing the logo, delete the old R2 object (best-effort).
+    if (logoUrl === null || logoUrl === '') {
+      const current = await prisma.restaurant.findUnique({
+        where: { id: req.activeRestaurant.restaurantId },
+        select: { logoUrl: true },
+      });
+      if (current?.logoUrl) {
+        const oldKey = r2LogosService.keyFromLogoUrl(current.logoUrl);
+        if (oldKey) r2LogosService.deleteLogo(oldKey).catch(() => {});
       }
     }
 
