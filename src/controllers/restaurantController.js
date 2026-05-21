@@ -35,7 +35,33 @@ const getRestaurant = async (req, res, next) => {
 
 const updateRestaurant = async (req, res, next) => {
   try {
-    const { name, description, address, shortAddress, googlePlaceId, latitude, longitude, phone, email, slug, defaultSlotDurationMinutes, bufferMinutesBetweenReservations, advanceBookingLimitDays, minimumNoticeMinutes, noShowGracePeriodMinutes, requireEmail, requirePhoneNumber, logoUrl, timezone, scheduleMode } = req.body;
+    const {
+      name,
+      description,
+      address,
+      shortAddress,
+      googlePlaceId,
+      latitude,
+      longitude,
+      phone,
+      email,
+      slug,
+      defaultSlotDurationMinutes,
+      slotIntervalMinutes,
+      reservationEndPolicy,
+      reservationWindowMode,
+      bufferMinutesBetweenReservations,
+      advanceBookingLimitDays,
+      minimumNoticeMinutes,
+      noShowGracePeriodMinutes,
+      requireEmail,
+      requirePhoneNumber,
+      holdsEnabled,
+      holdTtlSeconds,
+      logoUrl,
+      timezone,
+      scheduleMode,
+    } = req.body;
 
     if (slug) {
       const existing = await prisma.restaurant.findUnique({
@@ -83,6 +109,17 @@ const updateRestaurant = async (req, res, next) => {
         ...(defaultSlotDurationMinutes !== undefined && {
           defaultSlotDurationMinutes: Math.min(240, Math.max(15, parseInt(defaultSlotDurationMinutes, 10) || 60)),
         }),
+        ...(slotIntervalMinutes !== undefined && {
+          slotIntervalMinutes: Math.min(180, Math.max(5, parseInt(slotIntervalMinutes, 10) || 30)),
+        }),
+        ...(reservationEndPolicy !== undefined && {
+          reservationEndPolicy:
+            reservationEndPolicy === 'ALLOW_OVERFLOW' ? 'ALLOW_OVERFLOW' : 'STRICT_END',
+        }),
+        ...(reservationWindowMode !== undefined && {
+          reservationWindowMode:
+            reservationWindowMode === 'custom' ? 'custom' : 'same_as_schedule',
+        }),
         ...(bufferMinutesBetweenReservations !== undefined && {
           bufferMinutesBetweenReservations: Math.min(120, Math.max(0, parseInt(bufferMinutesBetweenReservations, 10) || 0)),
         }),
@@ -97,6 +134,10 @@ const updateRestaurant = async (req, res, next) => {
         }),
         ...(requireEmail !== undefined && { requireEmail: Boolean(requireEmail) }),
         ...(requirePhoneNumber !== undefined && { requirePhoneNumber: Boolean(requirePhoneNumber) }),
+        ...(holdsEnabled !== undefined && { holdsEnabled: Boolean(holdsEnabled) }),
+        ...(holdTtlSeconds !== undefined && {
+          holdTtlSeconds: Math.min(900, Math.max(60, parseInt(holdTtlSeconds, 10) || 300)),
+        }),
         ...(scheduleMode !== undefined && { scheduleMode }),
         ...(logoUrl !== undefined && { logoUrl: logoUrl || null }),
       },

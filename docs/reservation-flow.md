@@ -1,660 +1,365 @@
-# Reservation Flow — System Documentation
+# Flujo de Reservas — Documentación del Sistema (v3)
 
-This document covers the end-to-end online booking flow for SimpleReserva: from the moment a user opens the booking page to the creation of a confirmed reservation, including all DB models, backend services, API endpoints, frontend components, and the key design decisions.
+Este documento cubre el flujo de reservas en línea de SimpleReserva: desde que el usuario abre la página de reserva hasta la confirmación, incluyendo modelos de BD, servicios de backend, endpoints de API, componentes de frontend y las decisiones de diseño clave.
 
----
-
-## Table of contents
-
-1. [High-level overview](#1-high-level-overview)
-2. [DB structure for reservations](#2-db-structure-for-reservations)
-3. [Effective timezone resolution](#3-effective-timezone-resolution)
-4. [Schedule windows & slot generation](#4-schedule-windows--slot-generation)
-5. [Availability computation — how it works](#5-availability-computation--how-it-works)
-6. [Public API endpoints](#6-public-api-endpoints)
-7. [Table assignment algorithm](#7-table-assignment-algorithm)
-8. [Subscription gating](#8-subscription-gating)
-9. [Notification fan-out](#9-notification-fan-out)
-10. [Frontend booking flow](#10-frontend-booking-flow)
-11. [Bug: "slots shown that aren't really available" — root cause & fix](#11-bug-slots-shown-that-arent-really-available--root-cause--fix)
-12. [Timezone policy (frontend)](#12-timezone-policy-frontend)
-13. [Known follow-ups](#13-known-follow-ups)
-14. [File-by-file reference](#14-file-by-file-reference)
+**Motor activo:** Slot Engine v3 (clock-aligned, siempre activo). No hay modo legacy ni feature flags.
 
 ---
 
-## 1. High-level overview
+## Tabla de contenidos
+
+1. [Resumen de la arquitectura v3](#1-resumen-de-la-arquitectura-v3)
+2. [Los cuatro ejes ortogonales](#2-los-cuatro-ejes-ortogonales)
+3. [Modelos de base de datos](#3-modelos-de-base-de-datos)
+4. [Invariante: una reserva = una mesa](#4-invariante-una-reserva--una-mesa)
+5. [Slot Engine v3 — módulos](#5-slot-engine-v3--módulos)
+6. [loadDaySnapshot — fuente de verdad](#6-loaddaysnapshot--fuente-de-verdad)
+7. [computeAvailability — flujo](#7-computeavailability--flujo)
+8. [Sistema de Holds (bloqueo temporal)](#8-sistema-de-holds-bloqueo-temporal)
+9. [Transacciones y prevención de carreras](#9-transacciones-y-prevención-de-carreras)
+10. [PacingRule — límites por intervalo](#10-pacingrule--límites-por-intervalo)
+11. [Endpoints públicos](#11-endpoints-públicos)
+12. [Endpoints staff/restaurant](#12-endpoints-staffrestaurant)
+13. [Frontend: portal comensal](#13-frontend-portal-comensal)
+14. [Frontend: portal restaurante](#14-frontend-portal-restaurante)
+15. [Restricciones explícitas (no soportado)](#15-restricciones-explícitas-no-soportado)
+16. [Referencia de archivos](#16-referencia-de-archivos)
+
+---
+
+## 1. Resumen de la arquitectura v3
 
 ```
-User opens /book/:slug
+Usuario abre /book/:slug
     │
     ▼
-GET /api/public/restaurants/:slug          ← restaurant info, zones, active days
+GET /api/public/restaurants/:slug        ← info restaurante, zonas, holdsEnabled
     │
     ▼
 BookingPage.tsx
-  ├── DatePartyPicker  (date, party size)
-  ├── ZoneSelector     (optional zone preference)
-  └── TimeSlotGrid     (available times)
+  ├── DatePartyPicker
+  ├── ZoneSelector
+  └── TimeSlotGrid
          │
-         ▼  (one fetch per date change)
-GET /api/public/restaurants/:slug/day-snapshot?date=YYYY-MM-DD
-         │
-         ▼  (synchronous, no network)
-computeSlots(snapshot, partySize, zoneId, clientNow)   ← src/lib/availability.ts
+         ▼ (re-fetch por cada cambio de fecha / party size / zona)
+GET /api/public/restaurants/:slug/availability?date=&partySize=&zoneId=
          │
          ▼
-User selects time → ContactForm
+slotEngine.getAvailabilitySlotsForRestaurant()
          │
-         ▼
+         └── loadDaySnapshot → computeAvailability → slots[]
+    │
+    ▼ (usuario selecciona hora → crea hold si holdsEnabled)
+POST /api/public/restaurants/:slug/reservation-holds
+         │
+         └── ReservationHold (soft-lock temporal, TTL = holdTtlSeconds)
+    │
+    ▼ (usuario llena formulario y confirma)
 POST /api/reservations
-  ├── Subscription check
-  ├── Schedule / blocked-slot validation
-  ├── Table assignment (Serializable transaction)
-  └── reservation created → secureToken
          │
-         ▼
-Redirect to /reservation/:secureToken
-  + WhatsApp / email confirmations sent async
+         ├── si holdToken → consume hold → asigna tabla del hold
+         └── si no → validateSlotForBooking + pickTable
+                 │
+                 └── Serializable TX + retry P2034
 ```
 
----
-
-## 2. DB structure for reservations
-
-All models live in `prisma/schema.prisma`.
-
-### `Restaurant`
-
-Key fields relevant to reservations:
-
-| Field | Type | Purpose |
-|-------|------|---------|
-| `slug` | String (unique) | Public URL identifier |
-| `defaultSlotDurationMinutes` | Int (default 60) | Length of each time slot |
-| `bufferMinutesBetweenReservations` | Int (default 0) | Dead-time between consecutive bookings on the same table |
-| `advanceBookingLimitDays` | Int (default 30) | How far ahead a user can book |
-| `minimumNoticeMinutes` | Int (default 60) | Earliest a user may book (relative to now) |
-| `scheduleMode` | String | `"continuous"` or `"service_periods"` |
-| `timezone` | String? | IANA timezone override; if null, derived from owner's country |
-| `isActive` | Boolean | Soft-delete flag |
-
-Index: `@@index([organizationId])`, `@@index([isActive])`
-
-### `Zone`
-
-One restaurant → many zones (e.g. "Salón", "Terraza"). Zones group tables logically.
-
-| Field | Purpose |
-|-------|---------|
-| `restaurantId` | Owner |
-| `sortOrder` | Display order (used in table-assignment priority) |
-| `isActive` | Soft-delete |
-
-### `RestaurantTable`
-
-Each table belongs to one zone.
-
-| Field | Purpose |
-|-------|---------|
-| `zoneId` | Parent zone |
-| `minCapacity` | Minimum group size this table can seat |
-| `maxCapacity` | Maximum group size |
-| `sortOrder` | Within-zone ordering (used in auto-assignment) |
-| `isActive` | Soft-delete |
-
-**Capacity filtering**: when computing availability for `partySize = N`, only tables where `minCapacity ≤ N ≤ maxCapacity` are considered.
-
-Index: `@@index([zoneId])`
-
-### `Schedule`
-
-One row per active day of week per restaurant.
-
-| Field | Purpose |
-|-------|---------|
-| `dayOfWeek` | 0 = Sunday … 6 = Saturday |
-| `openTime` / `closeTime` | `"HH:mm"` — used when `scheduleMode = "continuous"` |
-| `breakfastStartTime` / `breakfastEndTime` | Used when `scheduleMode = "service_periods"` |
-| `lunchStartTime` / `lunchEndTime` | — |
-| `dinnerStartTime` / `dinnerEndTime` | — |
-| `isActive` | Whether this day is active |
-
-Unique constraint: `@@unique([restaurantId, dayOfWeek])` — only one schedule row per restaurant/day.
-
-### `BlockedSlot`
-
-An explicit range during which no new reservations are allowed (e.g. private event, maintenance).
-
-| Field | Purpose |
-|-------|---------|
-| `startDatetime` / `endDatetime` | UTC timestamps of the blocked range |
-| `reason` | Optional text shown to staff |
-
-Index: `@@index([restaurantId, startDatetime, endDatetime])`
-
-### `DurationRule`
-
-Overrides `defaultSlotDurationMinutes` for specific party-size ranges.
-
-| Field | Purpose |
-|-------|---------|
-| `minPartySize` / `maxPartySize` | Inclusive range |
-| `durationMinutes` | Duration for groups in this range |
-
-Unique: `@@unique([restaurantId, minPartySize])`
-
-### `Reservation`
-
-| Field | Purpose |
-|-------|---------|
-| `tableId` | Assigned table (nullable — auto-assigned at create time) |
-| `partySize` | Number of guests |
-| `dateTime` | UTC start time |
-| `durationMinutes` | Slot length at booking time |
-| `status` | `"confirmed"` `"cancelled"` `"completed"` `"no_show"` |
-| `source` | `"web"` (public booking) · `"manual"` (admin panel) · `"phone"` |
-| `secureToken` | Unique cuid for sharing/modifying the reservation (no auth required) |
-
-Availability queries only look at `status = 'confirmed'` reservations.
-
-Index: `@@index([restaurantId, dateTime, status])` — primary index for availability queries.
-
-### `BookingWaitlistEntry`
-
-Created when a user submits the waitlist form (no slots available).
-
-| Field | Purpose |
-|-------|---------|
-| `partySize` / `preferredDate` | What they wanted |
-| `customerName` / `customerPhone` / `customerEmail` | Contact info |
-| `status` | `"pending"` by default |
+**Principio clave:** toda la lógica de disponibilidad vive en el backend (`slotEngine`). El frontend nunca calcula slots localmente.
 
 ---
 
-## 3. Effective timezone resolution
+## 2. Los cuatro ejes ortogonales
 
-**File**: `backend-simple-reserva/src/utils/timezone.js`
+| Eje | Campo / Modelo | Descripción |
+|-----|----------------|-------------|
+| **Horario de operación** | `Schedule.openTime/closeTime` o períodos de servicio | Cuándo está abierto el restaurante |
+| **Ventana de reserva** | `ReservationWindow` o horario operativo | Cuándo se pueden tomar reservas (subconjunto del horario) |
+| **Intervalo de slots** | `Restaurant.slotIntervalMinutes` | Cada cuánto aparece un cupo (independiente de la duración) |
+| **Duración de reserva** | `Restaurant.defaultSlotDurationMinutes` + `DurationRule` | Cuánto ocupa la mesa (puede variar por tamaño de grupo) |
 
-```
-getEffectiveTimezone(restaurant, ownerCountry)
-  ↓
-  if restaurant.timezone is set → use it
-  else → COUNTRY_TIMEZONES[ownerCountry]
-          CL → America/Santiago
-          AR → America/Argentina/Buenos_Aires
-          UY → America/Montevideo
-```
-
-This timezone is used everywhere: generating slot times, comparing reservations, computing `isToday`, enforcing `minimumNoticeMinutes`.
-
-Key functions:
-
-| Function | Purpose |
-|----------|---------|
-| `getEffectiveTimezone(restaurant, country)` | Resolves the IANA timezone string |
-| `parseInTimezone(date, time, timezone)` | `"YYYY-MM-DD"` + `"HH:mm"` → UTC `Date` (uses Luxon) |
-| `nowInTimezone(timezone)` | Returns a Luxon `DateTime` for the current moment in the given TZ |
-| `formatInTimezone(date, timezone, format)` | Formats a UTC date in a given timezone |
+La separación de estos cuatro ejes es la diferencia fundamental con el sistema legacy.
 
 ---
 
-## 4. Schedule windows & slot generation
+## 3. Modelos de base de datos
 
-**File**: `backend-simple-reserva/src/utils/scheduleUtils.js`
+### Restaurant (campos relevantes)
+- `slotIntervalMinutes` — intervalo del grid en minutos (ej. 30)
+- `defaultSlotDurationMinutes` — duración base por reserva (ej. 60)
+- `bufferMinutesBetweenReservations` — tiempo extra entre fin de reserva e inicio de la siguiente
+- `minimumNoticeMinutes` — aviso mínimo para que el cupo aparezca hoy
+- `advanceBookingLimitDays` — cuántos días hacia adelante puede reservar un comensal
+- `holdsEnabled` — activa/desactiva el sistema de holds
+- `holdTtlSeconds` — tiempo de vida del hold (default 300 seg)
 
-### `getScheduleWindows(schedule, scheduleMode)`
+### DurationRule
+Reglas de duración por rango de tamaño de grupo. Si `partySize` cae en un rango, se usa `durationMinutes` en vez del default.
 
-Returns an array of `[startMin, endMin]` pairs (minutes from midnight) representing valid service windows for the day.
+### ReservationWindow
+Ventanas personalizadas de toma de reservas por día de la semana. Si no hay ventanas customizadas, se usa el horario operativo completo.
 
-- **continuous**: a single window `[openTime, closeTime]`.
-- **service_periods**: up to three windows — breakfast, lunch, dinner. Missing periods are skipped.
+### PacingRule
+Límites opcionales de cobertura/reservas por intervalo de slot. Campos: `dayOfWeek` (null = todos los días), `maxCoversPerSlot`, `maxReservationsPerSlot`.
 
-### `generateTimeSlots(schedule, slotDuration, scheduleMode)`
-
-Iterates each window in steps of `slotDuration`. A slot is emitted only if `startMin + slotDuration ≤ endMin` (i.e. the slot fits entirely within the window). Returns `[{ time: "HH:mm", startMin }]`.
-
-### `isSlotInSchedule(schedule, timeMin, slotDuration, scheduleMode)`
-
-Returns `true` if a slot starting at `timeMin` (minutes) and lasting `slotDuration` fits within any window. Used at booking-create time to validate the requested time.
-
-### `resolveDuration(restaurant, partySize, durationRules)`
-
-Picks the duration for a given party size:
-1. Find the first `DurationRule` where `minPartySize ≤ partySize ≤ maxPartySize` (sorted ascending by `minPartySize`).
-2. If none match, fall back to `restaurant.defaultSlotDurationMinutes`.
-
----
-
-## 5. Availability computation — how it works
-
-**File**: `backend-simple-reserva/src/services/availabilityService.js`
-
-### Step 1 — Load the day snapshot (`loadDaySnapshot`)
-
-Fetches all data for a calendar day in a single parallel query burst:
-
-- The `Schedule` for the requested day-of-week
-- All active `RestaurantTable` rows (with zone info)
-- All active `Zone` rows
-- All `DurationRule` rows
-- All `BlockedSlot` rows that overlap the day
-- All `confirmed` `Reservation` rows in the day window (start of day − 12 h, to catch long reservations from the previous evening)
-
-Returns a plain object containing these lists plus `serverNowUtc` and `isToday`.
-
-### Step 2 — Compute availability (`computeAvailability`)
-
-Pure, synchronous — no DB calls. Given a snapshot, `partySize`, and optional `zoneId`:
-
-1. **No schedule** → `{ slots: [], reason: 'no_schedule' }`
-2. **Candidate tables** = tables where `minCapacity ≤ partySize ≤ maxCapacity` and (if `zoneId` set) `zoneId` matches. If empty → `{ slots: [], reason: 'no_tables' }`
-3. **Duration** = `resolveDuration(defaults, durationRules, partySize)`
-4. **Slot defs** = `generateTimeSlots(schedule, duration, scheduleMode)`. If empty → `{ slots: [], reason: 'no_slots' }`
-5. For each slot:
-   - **Today cutoff**: if `isToday` and `slotStart < now + minimumNoticeMinutes` → skip
-   - **Blocked**: if any `BlockedSlot` overlaps `[slotStart, slotEnd)` → skip
-   - **Open tables**: count how many candidate tables have no `confirmed` reservation overlapping `[slotStart, slotEnd + bufferMinutes)`
-   - If `openTables > 0` → emit `{ time, available: true, availableTables: openTables }`
-6. If nothing emitted → `{ slots: [], reason: 'no_availability' }`
-
-### The key insight
-
-Because `computeAvailability` is pure and cheap, the frontend can call it synchronously for **any** `(partySize, zoneId)` combination after loading the snapshot once per date — eliminating the race condition that caused stale slots to appear.
+### ReservationHold
+Bloqueo temporal de una mesa durante el checkout. Campos clave:
+- `holdToken` — UUID único para referenciar el hold
+- `expiresAt` — `createdAt + holdTtlSeconds`
+- `status` — `active | consumed | released | expired`
+- `tableId` — mesa asignada al crear el hold
 
 ---
 
-## 6. Public API endpoints
+## 4. Invariante: una reserva = una mesa
 
-All public endpoints are mounted at `/api/public/restaurants/` and `/api/public/reservations/` (same router, no auth required).
+**`Reservation.tableId` es NOT NULL.** No hay combinaciones automáticas de mesas ni table joins. El invariante se aplica en tres capas:
 
-**File**: `backend-simple-reserva/src/routes/reservation.routes.js`
+1. **`capacity.pickTable()`** — selecciona la mesa individual de menor tamaño que cumple (`minCapacity ≤ partySize ≤ maxCapacity`). Si no existe ninguna mesa individual para el grupo, retorna `null`.
+2. **`validate.validateSlotForBooking()`** — si `pickTable` retorna `null`, devuelve `reason: 'party_size_exceeds_largest_table'`.
+3. **API endpoints** — si la validación falla, el endpoint responde HTTP 409 con el reason correspondiente.
 
----
-
-### `GET /api/public/restaurants/:slug`
-
-Returns restaurant metadata for the booking page.
-
-**Key response fields**:
-
-| Field | Source |
-|-------|--------|
-| `zones[].tables[]` | Active zones with capacity ranges |
-| `activeDays` | Distinct `dayOfWeek` values from active schedules |
-| `bookingEnabled` | `hasActiveAccess(organizationId)` |
-| `effectiveTimezone` | From `getEffectiveTimezone(...)` |
-| `advanceBookingLimitDays` | From restaurant record (default 30) |
-| `minimumNoticeMinutes` | From restaurant record (default 60) |
+Cuando ninguna mesa individual puede acomodar al grupo, el portal comensal muestra la opción de lista de espera (waitlist).
 
 ---
 
-### `GET /api/public/restaurants/:slug/day-snapshot?date=YYYY-MM-DD`  *(new)*
+## 5. Slot Engine v3 — módulos
 
-Returns everything needed to compute available slots for **any** `(partySize, zoneId)` on the specified day — without additional API calls. The client calls `computeSlots()` (see §10) on this data.
+Todos los módulos viven en `backend-simple-reserva/src/services/slotEngine/`.
 
-**Example response**:
+| Módulo | Responsabilidad |
+|--------|----------------|
+| `windows.js` | Calcula ventanas de operación y de reserva (en minutos del día) |
+| `grid.js` | Genera el grid clock-aligned con `alignToGrid`, `generateGrid`, `isOnGrid` |
+| `duration.js` | Resuelve la duración de reserva para un tamaño de grupo vía `resolveDuration` |
+| `capacity.js` | Verifica mesas libres, parsea reservas y holds activos, aplica buffer y pacing |
+| `policies.js` | Aplica políticas: aviso mínimo, límite avanzado, slots bloqueados |
+| `validate.js` | Validación completa de un slot para crear/modificar reserva |
+| `index.js` | API pública: `loadDaySnapshot`, `computeAvailability`, `validateSlotForBooking`, `previewSlots`, `getAvailabilitySlotsForRestaurant`, `findNextAvailableDateForSlug`, `resolveDuration` |
 
-```json
+**Versión del motor:** `ENGINE_VERSION = 3` (exportada desde `index.js`).
+
+---
+
+## 6. loadDaySnapshot — fuente de verdad
+
+`loadDaySnapshot(restaurantId, dateStr)` carga desde la BD todo lo necesario para calcular disponibilidad de un día:
+
+```js
 {
-  "date": "2026-04-17",
-  "timezone": "America/Santiago",
-  "subscriptionActive": true,
-  "isToday": true,
-  "serverNowUtc": "2026-04-17T15:42:00.000Z",
-  "schedule": {
-    "dayOfWeek": 5,
-    "scheduleMode": "continuous",
-    "openTime": "12:00",
-    "closeTime": "22:00",
-    ...
-  },
-  "defaults": {
-    "slotDurationMinutes": 60,
-    "bufferMinutesBetweenReservations": 0,
-    "minimumNoticeMinutes": 60,
-    "advanceBookingLimitDays": 30
-  },
-  "durationRules": [
-    { "minPartySize": 5, "maxPartySize": 12, "durationMinutes": 90 }
-  ],
-  "tables": [
-    { "id": "t1", "zoneId": "z1", "minCapacity": 1, "maxCapacity": 2, "sortOrder": 0, "zoneSortOrder": 0 }
-  ],
-  "zones": [{ "id": "z1", "name": "Salón", "sortOrder": 0 }],
-  "blockedSlots": [
-    { "startUtc": "2026-04-17T18:00:00.000Z", "endUtc": "2026-04-17T20:00:00.000Z" }
-  ],
-  "reservations": [
-    { "tableId": "t1", "startUtc": "2026-04-17T16:00:00.000Z", "durationMinutes": 60 }
-  ]
+  engineVersion: 3,
+  date: '2026-05-20',
+  timezone: 'America/Santiago',
+  subscriptionActive: true,
+  isToday: false,
+  serverNowUtc: '...',
+  schedule: { scheduleMode, openTime, closeTime, ... },
+  defaults: { slotIntervalMinutes, slotDurationMinutes, bufferMinutesBetweenReservations, ... },
+  durationRules: [...],
+  tables: [{ id, zoneId, minCapacity, maxCapacity, ... }],
+  zones: [...],
+  blockedSlots: [{ startUtc, endUtc }],
+  reservations: [{ tableId, startUtc, durationMinutes }],
+  activeHolds: [{ tableId, dateTime, durationMinutes, expiresAt }],
+  pacingRules: [{ dayOfWeek, maxCoversPerSlot, maxReservationsPerSlot }],
+  reservationWindows: [{ startTime, endTime }],
+  holdsEnabled: true,
 }
 ```
 
-> **Privacy**: `reservations` contains only `tableId`, `startUtc`, `durationMinutes` — no customer name, phone, or email.
-
-When `subscriptionActive = false`, all data fields are null/empty and the client shows the "subscription expired" state.
+La ventana de lookback para reservas/holds es `max(defaultSlotDurationMinutes, maxDurationRule) * 2` minutos antes del inicio del día, para capturar reservas que empezaron el día anterior y siguen activas.
 
 ---
 
-### `GET /api/public/restaurants/:slug/availability?date=YYYY-MM-DD&partySize=N[&zoneId=Z]`
-
-Legacy endpoint — kept for backward compatibility. Internally calls `loadDaySnapshot` + `computeAvailability` for the given `(partySize, zoneId)`. Use the day-snapshot endpoint for new integrations.
-
----
-
-### `GET /api/public/restaurants/:slug/next-available?date=YYYY-MM-DD&partySize=N[&zoneId=Z]`
-
-Searches forward from `date` (exclusive) up to `advanceBookingLimitDays`, returning the first date with at least one available slot for the given `partySize`/`zoneId`.
-
-Uses `loadDaySnapshot` + `computeAvailability` in a sequential loop (one DB query per day candidate).
-
----
-
-### `POST /api/public/restaurants/:slug/waitlist`
-
-Creates a `BookingWaitlistEntry`. Notifies the restaurant via WhatsApp/email asynchronously.
-
-Required body: `partySize`, `customerName`, `customerPhone`.
-Optional: `preferredDate`, `customerEmail`, `notes`.
-
----
-
-### `POST /api/reservations`
-
-Creates a reservation. Runs inside a **Serializable** transaction to prevent double-booking.
-
-**Validation sequence** (before transaction):
-1. Required fields present
-2. Restaurant exists and is active
-3. `canCreateReservation(restaurant.id)` — subscription check
-4. `dateTime` in the future, within `advanceBookingLimitDays`
-5. `dateTime` ≥ `now + minimumNoticeMinutes`
-
-**Inside the transaction**:
-1. Schedule exists for that day of week
-2. `isSlotInSchedule` — time falls within the schedule window
-3. No overlapping `BlockedSlot`
-4. Tables exist for `partySize`
-5. `pickAutoTable(...)` — selects the best available table (see §7)
-6. `reservation.create(...)` with `isolationLevel: 'Serializable'`
-
-**Post-commit (async, non-blocking)**:
-- `incrementDataVersion(restaurantId)` — bumps a version counter used by the admin panel's polling
-- `incrementReservationAnalytics(...)` — daily analytics counter
-- `sendReservationConfirmation` (WhatsApp) + `sendReservationConfirmationEmail` (if email provided)
-
-Response: `201` with the full reservation record including `secureToken`.
-
----
-
-### `GET /api/reservations/token/:secureToken`
-
-Returns the reservation by its `secureToken`. Includes `restaurant.effectiveTimezone` for correct local time display.
-
----
-
-### `PATCH /api/reservations/token/:secureToken`
-
-Modifies date/time/partySize of an existing `confirmed` reservation.
-
-Runs the same validation as create (schedule check, blocked-slot check, table availability — excluding the reservation itself from conflict detection). Picks a new table via `pickAutoTable`. Sends a modification alert to the customer.
-
----
-
-### `PATCH /api/reservations/token/:secureToken/cancel`
-
-Sets `status = 'cancelled'`. Sends a cancellation notification to the restaurant (email) and to the customer (WhatsApp).
-
----
-
-## 7. Table assignment algorithm
-
-**File**: `backend-simple-reserva/src/lib/tableAssignment.js`
-
-### `pickAutoTable(tables, partySize, dayReservations, dateTime, slotEnd, bufferMs, preferredZoneId)`
-
-1. Filters tables to those **free** at `[dateTime, slotEnd + bufferMs)` using `hasConflictOnTable`.
-2. Sorts free tables with `compareTablesForAutoAssign`:
-   - **Zone preference first**: if `preferredZoneId` is set, tables in that zone rank ahead of others.
-   - **Least slack**: `maxCapacity − partySize` ascending — avoids wasting large tables on small groups.
-   - **Zone sort order**: ties broken by `zone.sortOrder` ascending.
-   - **Table sort order**: then `table.sortOrder` ascending.
-   - **maxCapacity** ascending, then `id` lexicographic (deterministic tie-breaker).
-3. Returns the first element (best match), or `null` if no free table exists.
-
-### `hasConflictOnTable(tableId, dayReservations, dateTime, slotEnd, bufferMs)`
-
-Returns `true` if any reservation on this table overlaps the window `[dateTime, slotEnd + bufferMs)`:
+## 7. computeAvailability — flujo
 
 ```
-conflict when: dateTime < rEnd + bufferMs  AND  slotEnd > r.dateTime
+computeAvailability(snapshot, partySize, zoneId?)
+│
+├── subscriptionActive? → no → reason: 'subscription_expired'
+├── schedule? → no → reason: 'no_schedule'
+├── isDateClosed(snapshot, date)? → yes → reason: 'date_closed'
+│
+├── applyPolicies(snapshot, partySize) → policies
+│   ├── validateBookingPolicies → reason si fuera de rango
+│   └── parsedBlockedSlots
+│
+├── resolveDuration(defaults, durationRules, partySize) → durationMinutes
+├── getReservationWindows(snapshot) → windows[]
+├── generateGrid(windows, slotIntervalMinutes) → gridSlots[]
+│   └── isOnGrid → filtra sólo slots clock-aligned
+│
+├── getCandidateTables(tables, partySize, zoneId) → candidateTables[]
+│   └── ninguna → reason: 'party_size_exceeds_largest_table'
+│
+├── parseReservations(reservations) → parsedReservations[]
+├── parseHolds(activeHolds) → parsedHolds[]
+│
+└── por cada gridSlot:
+    ├── minNotice / advanceBooking → filtra
+    ├── blockedSlots overlap → filtra
+    ├── checkPacing(slot, ...) → excede límite → filtra
+    └── countFreeTables(slot, candidateTables, parsedReservations, parsedHolds, buffer)
+        └── > 0 → slot disponible
 ```
 
 ---
 
-## 8. Subscription gating
+## 8. Sistema de Holds (bloqueo temporal)
 
-**File**: `backend-simple-reserva/src/services/subscriptionService.js`
+### Objetivo
+Prevenir race conditions durante el checkout: cuando un comensal selecciona un horario, se bloquea una mesa específica temporalmente mientras llena el formulario.
 
-`hasActiveAccess(organizationId)` — returns `true` if the organization has at least one `Subscription` row with `isActiveSubscription = true`. This is the **sole source of truth** for access; the `status` field on `Subscription` is informational only.
+### Flujo
+1. Usuario selecciona hora → `POST /api/public/restaurants/:slug/reservation-holds`
+   - Backend: `validateSlotForBooking` + `pickTable` → crea `ReservationHold`
+   - Retorna: `{ holdToken, expiresAt, tableId, durationMinutes }`
+2. `capacity.js` incluye holds activos (no expirados) como ocupados al calcular disponibilidad
+3. Usuario confirma → `POST /api/reservations` con `holdToken`
+   - Backend consume el hold (`status = consumed`), usa la mesa pre-asignada
+4. Usuario abandona → `DELETE /api/public/reservation-holds/:holdToken`
+   - También se libera via `fetch keepalive` en `beforeunload`
+5. Cron job (`reservationHoldCleanup.js`, corre cada minuto): marca holds expirados, purga registros viejos
 
-Gating points in the reservation flow:
-
-| Where | What happens if inactive |
-|-------|--------------------------|
-| `GET /:slug` | `bookingEnabled = false` — frontend shows "not accepting reservations" |
-| `GET /:slug/day-snapshot` | `subscriptionActive: false` — frontend shows same disabled state |
-| `GET /:slug/availability` | `{ slots: [], reason: 'subscription_expired' }` |
-| `GET /:slug/next-available` | `{ nextDate: null, reason: 'subscription_expired' }` |
-| `POST /api/reservations` | `canCreateReservation` throws `ValidationError` |
-
----
-
-## 9. Notification fan-out
-
-**File**: `backend-simple-reserva/src/services/notificationService.js`
-
-All notifications are fire-and-forget — called after the transaction commits, failures are caught and logged but never surface to the user.
-
-| Function | Trigger | Channel |
-|----------|---------|---------|
-| `sendReservationConfirmation` | Reservation created | WhatsApp to customer |
-| `sendReservationConfirmationEmail` | Reservation created (if email provided) | HTML email to customer (branded template in `src/templates/reservationConfirmationEmail.js`, date/time in restaurant IANA timezone; palette mirrors [user-front-simple-reserva/docs/STYLING.md](../user-front-simple-reserva/docs/STYLING.md)) |
-| `sendModificationAlertToCustomer` | Reservation modified or cancelled | WhatsApp to customer |
-| `sendCancellationNotification` | Reservation cancelled | Email to restaurant owner |
-| `notifyRestaurantWaitlistEntry` | Waitlist entry created | WhatsApp/email to restaurant |
-
-WhatsApp uses the Meta Business Cloud API (credentials in `Configuration` DB table or env vars).
-
----
-
-## 10. Frontend booking flow
-
-**Entry point**: `user-front-simple-reserva/src/pages/BookingPage.tsx`
-
-### Component tree
-
+### Endpoint de creación
+`POST /api/public/restaurants/:slug/reservation-holds`
+```json
+{ "date": "2026-05-20", "time": "20:00", "partySize": 2, "zoneId": "..." }
 ```
-BookingPage
-  ├── Navbar (minimal)
-  ├── Restaurant header card
-  │     └── expandable details (address, phone, menus)
-  └── Booking card (AnimatePresence)
-        ├── view = 'selection'
-        │     ├── DatePartyPicker    ← date tabs + calendar + party-size buttons
-        │     ├── TimeSlotGrid       ← derived available slots; scarcity badge
-        │     ├── ZoneSelector       ← optional zone preference
-        │     └── BookingWaitlistForm (shown when no slots for that date)
-        └── view = 'contact'
-              └── ContactForm        ← name, phone, email, notes + submit
+Respuesta: `{ holdToken, expiresAt, tableId, durationMinutes }`
+
+---
+
+## 9. Transacciones y prevención de carreras
+
+Todos los endpoints críticos de creación/modificación de reservas usan:
+
+```js
+withSerializableRetry(prisma, async (tx) => { ... }, { maxRetries: 3 })
 ```
 
-### Data flow
+Esto aplica `Serializable` isolation level y reintenta automáticamente en errores `P2034` (conflicto de serialización en PostgreSQL). Aplica a:
+- `POST /api/reservations` (creación pública)
+- `PATCH /api/reservations/token/:token` (modificación del comensal)
+- `POST /api/restaurant/:id/reservations` (creación manual staff)
+- `PATCH /api/restaurant/:id/reservations/:id` (modificación manual staff)
+- `POST /api/public/restaurants/:slug/reservation-holds` (creación de hold)
 
+---
+
+## 10. PacingRule — límites por intervalo
+
+Permite limitar la cantidad de reservas o de personas por intervalo de slot, independientemente de las mesas disponibles. Útil para controlar la carga de cocina.
+
+- `dayOfWeek: null` → aplica a todos los días
+- `maxCoversPerSlot` → tope de personas totales en ese slot
+- `maxReservationsPerSlot` → tope de reservas en ese slot
+
+Si un slot supera cualquiera de estos límites, `checkPacing()` lo marca como no disponible.
+
+---
+
+## 11. Endpoints públicos
+
+| Método | Path | Descripción |
+|--------|------|-------------|
+| GET | `/api/public/restaurants/:slug` | Info del restaurante + `holdsEnabled`, `holdTtlSeconds` |
+| GET | `/api/public/restaurants/:slug/availability` | Slots disponibles (`?date=&partySize=&zoneId=`) |
+| GET | `/api/public/restaurants/:slug/next-available` | Próxima fecha con disponibilidad |
+| POST | `/api/reservations` | Crear reserva (acepta `holdToken` opcional) |
+| PATCH | `/api/reservations/token/:token` | Modificar reserva como comensal |
+| POST | `/api/public/restaurants/:slug/reservation-holds` | Crear hold |
+| DELETE | `/api/public/reservation-holds/:holdToken` | Liberar hold |
+
+---
+
+## 12. Endpoints staff/restaurant
+
+| Método | Path | Descripción |
+|--------|------|-------------|
+| GET | `/api/restaurant/:id/availability` | Disponibilidad (vista staff) |
+| POST | `/api/restaurant/:id/availability/preview` | Preview con config tentativa (sin tocar BD) |
+| GET | `/api/restaurant/:id/duration-rules` | Reglas de duración |
+| PUT | `/api/restaurant/:id/duration-rules` | Actualizar reglas de duración |
+| GET | `/api/restaurant/:id/pacing-rules` | Reglas de pacing |
+| PUT | `/api/restaurant/:id/pacing-rules` | Actualizar reglas de pacing |
+| GET | `/api/restaurant/:id/reservation-windows` | Ventanas de reserva |
+| PUT | `/api/restaurant/:id/reservation-windows` | Actualizar ventanas |
+| GET | `/api/restaurant/:id/holds` | Holds activos (vista staff) |
+
+---
+
+## 13. Frontend: portal comensal
+
+### BookingPage.tsx
+- Usa `getAvailability()` (server-side) en vez de `getDaySnapshot()` + `computeSlots()` (eliminado)
+- Re-fetch automático al cambiar `date`, `partySize` o `zoneId`
+- Flujo de hold:
+  - Al seleccionar hora → `createReservationHold()` → muestra countdown en ContactForm
+  - Al ir atrás → `releaseReservationHold()` (async)
+  - En `beforeunload` → `releaseReservationHoldBeacon()` (fetch keepalive)
+  - Al expirar el hold → vuelve a selección con mensaje de error
+
+### Archivos eliminados
+- `user-front-simple-reserva/src/lib/availability.ts` (cálculo client-side, reemplazado por API server-side)
+- `user-front-simple-reserva/src/lib/availability.test.ts` (tests de paridad ya no necesarios)
+
+---
+
+## 14. Frontend: portal restaurante
+
+### Nuevas páginas/componentes
+- `/settings/availability` → `AvailabilityPage.tsx` — 6 secciones: horario, intervalo, duración, ventanas, pacing, políticas + preview integrada
+- `AvailabilityPreview.tsx` — selector de día/party size + timeline visual de cupos, llama al endpoint de preview
+
+### Archivos eliminados
+- `restaurant-front-simple-reserva/src/components/ReservationSlotSimulator.tsx`
+- `restaurant-front-simple-reserva/src/components/SlotEngineUpgradeBanner.tsx`
+- `restaurant-front-simple-reserva/src/pages/SettingsPage.tsx` (página huérfana)
+- `restaurant-front-simple-reserva/src/lib/reservationSlots.ts`
+
+---
+
+## 15. Restricciones explícitas (no soportado)
+
+- **Sin combinaciones automáticas de mesas** — una reserva = una mesa física. Si ninguna mesa individual acomoda al grupo, se ofrece waitlist.
+- **Sin shifts/turnos** — el motor no maneja conceptos de "turno almuerzo" o "turno cena" como entidades separadas. Las ventanas de reserva cubren ese caso de uso.
+- **Sin modo legacy** — `slotGenerationMode` fue eliminado. Todos los restaurantes usan el motor clock-aligned v3.
+- **Sin feature flags** — `ENABLE_CLOCK_ALIGNED_SLOTS`, `SHADOW_SLOT_ENGINE`, `ENABLE_RESERVATION_WINDOWS`, `ENABLE_SLOT_SIMULATOR` fueron removidos.
+
+---
+
+## 16. Referencia de archivos
+
+### Backend
 ```
-restaurant loaded (once on mount)
-    ↓
-date changes (user selects today/tomorrow/other)
-    ↓  AbortController cancels any in-flight request
-GET /day-snapshot?date=...    → setSnapshot(snap)
-    ↓
-useMemo: computeSlots(snapshot, partySize, selectedZoneId, clientNow)
-    ↓
-TimeSlotGrid renders available slots (instant, no network)
-    ↓
-partySize / zone changes → useMemo re-runs synchronously
-    ↓
-setInterval(60s) → setClientNow(new Date()) → useMemo re-runs, drops past slots
+backend-simple-reserva/
+├── prisma/
+│   └── migrations/20260520000000_slot_engine_v3/migration.sql
+├── src/
+│   ├── services/slotEngine/
+│   │   ├── index.js          # API pública del motor
+│   │   ├── windows.js        # Ventanas de operación/reserva
+│   │   ├── grid.js           # Grid clock-aligned
+│   │   ├── duration.js       # Resolución de duración por grupo
+│   │   ├── capacity.js       # Capacidad, holds, pacing
+│   │   ├── policies.js       # Políticas: notice, advance, blocked
+│   │   ├── validate.js       # Validación completa de slot
+│   │   └── __tests__/slotEngine.test.js
+│   ├── jobs/reservationHoldCleanup.js
+│   └── routes/
+│       ├── reservationHold.routes.js
+│       ├── reservation.routes.js
+│       └── restaurant.routes.js
 ```
 
-### Key state
+### Frontend
+```
+restaurant-front-simple-reserva/src/
+├── pages/settings/
+│   └── AvailabilityPage.tsx
+├── components/
+│   ├── AvailabilityPreview.tsx
+│   └── onboarding/ReservationRulesStep.tsx
 
-| State | Type | Set by |
-|-------|------|--------|
-| `date` | `string` (YYYY-MM-DD) | DatePartyPicker, initial value from `getTodayInTZ` |
-| `partySize` | `number` | DatePartyPicker |
-| `selectedZoneId` | `string\|null` | ZoneSelector |
-| `snapshot` | `DaySnapshot\|null` | Snapshot fetch effect |
-| `snapshotLoading` | `boolean` | Snapshot fetch effect |
-| `clientNow` | `Date` | 60 s interval |
-| `slots` / `availabilityReason` | derived | `useMemo` from snapshot |
-| `selectedTime` | `string` | TimeSlotGrid |
-| `view` | `'selection'\|'contact'` | Continue / Back buttons |
-
-### `computeSlots` — frontend mirror of backend `computeAvailability`
-
-**File**: `user-front-simple-reserva/src/lib/availability.ts`
-
-Implements the exact same rules as the backend (see §5), using native `Intl.DateTimeFormat` for timezone-aware date parsing (two-pass approach for DST accuracy). Both implementations must stay in sync.
-
----
-
-## 11. Bug: "slots shown that aren't really available" — root cause & fix
-
-### Root cause
-
-The old `BookingPage.tsx` called `getAvailability(slug, date, partySize, zoneId)` inside a `useEffect` keyed on `[slug, date, partySize, selectedZoneId]`. It had **no AbortController** and **no cleanup function**.
-
-When a user clicked party sizes quickly (e.g. 2 → 3 → 4 → 2), four parallel requests fired. Whichever resolved **last** "won" and set the slot list — regardless of which party size was currently selected. A slow earlier request for partySize=4 could arrive after the user had already switched back to partySize=2, displaying slots that are only available for 4 people.
-
-Secondary issue: `minimumNoticeMinutes` was evaluated at request time. If a user left the page open, slots that had become too recent would still appear (until the next date change triggered a new request).
-
-### Fix
-
-1. **Fetch once per date** — the new `GET /day-snapshot` endpoint returns all tables, reservations, and blocked slots without any party-size/zone filtering.
-2. **Derive on the client** — `computeSlots(snapshot, partySize, zoneId, clientNow)` runs synchronously (no network, ~1 ms) in a `useMemo`. Party-size and zone changes now update the slot grid **instantly** with zero race risk.
-3. **AbortController** — the snapshot fetch is cancelled on unmount or when the date changes, preventing any stale network responses from being processed.
-4. **Live `clientNow`** — a `setInterval(60_000)` bumps `clientNow`, which causes the `useMemo` to re-run and drop the earliest slot once it enters the minimum-notice window.
-
-### Server is still the final authority
-
-`computeSlots` is best-effort — two users may both see the same slot as available. The `POST /api/reservations` transaction runs at `Serializable` isolation level and calls `pickAutoTable` inside the transaction. If all tables are taken by the time the user submits, the server returns `"No hay mesas disponibles en este horario"` and the user can pick another slot.
-
----
-
-## 12. Timezone policy (frontend)
-
-### The rule
-
-> **All time logic that touches a restaurant's date, time, schedule, day-of-week, or displayed reservation MUST go through `lib/tz.ts` and receive the restaurant's `effectiveTimezone`.**
-
-Browser timezone is NEVER used for restaurant-scoped logic. A customer in Madrid booking a Santiago restaurant, or a staff member in Mexico City managing a Buenos Aires panel, must always see and operate in the restaurant's local time — not their own.
-
-### Why it matters
-
-`Date.prototype.getDay()` and friends return values in the **server's** (or browser's) local timezone. When a server runs in UTC and the restaurant is in `America/Santiago` (UTC-4), a Saturday midnight booking (`2026-04-18T04:00:00Z`) gets `dateTime.getDay() = 6` on UTC — but a server in US-Eastern time sees `getDay() = 5` (Friday), allowing the booking to pass schedule validation on a closed day.
-
-### How it is enforced
-
-Both frontend apps (`user-front-simple-reserva` and `restaurant-front-simple-reserva`) have:
-
-1. **`src/lib/tz.ts`** — the canonical module. All booking-flow code imports time functions exclusively from here.
-2. **`@deprecated` JSDoc** on `formatDateLocal`, `formatTime`, `formatDateDisplay`, `formatDateTime` in `src/lib/utils.ts` — these use browser timezone and must not be used in reservation contexts.
-3. **ESLint `no-restricted-syntax` guardrail** in `eslint.config.js` — emits a `warn` when `.getDay()`, `.getHours()`, `.getMinutes()`, `.getDate()`, `.getMonth()`, or `.getFullYear()` are called inside `pages/` or `components/booking/`. Use `// eslint-disable-next-line` with an explanatory comment for the (rare) legitimate exceptions.
-
-### `lib/tz.ts` API surface (identical on both frontends)
-
-| Function | Returns | Notes |
-|----------|---------|-------|
-| `nowInTZ(tz)` | Luxon `DateTime` | Current moment in restaurant TZ |
-| `todayInTZ(tz)` | `"YYYY-MM-DD"` | Restaurant's today |
-| `tomorrowInTZ(tz)` | `"YYYY-MM-DD"` | Restaurant's tomorrow |
-| `addDaysInTZ(dateStr, n, tz)` | `"YYYY-MM-DD"` | Calendar-day arithmetic in restaurant TZ; handles DST |
-| `dayOfWeekInTZ(dateOrStr, tz)` | `0..6` | 0=Sunday. Mirrors backend `getDayOfWeekInTimezone()` |
-| `parseInTZ(dateStr, timeStr, tz)` | `Date` (UTC) | Restaurant local "date + HH:mm" → UTC moment. Mirrors backend `parseInTimezone()` |
-| `weekRangeInTZ(tz, anchor?)` | `{from, to}` | Monday–Sunday week containing anchor (or today) in restaurant TZ |
-| `formatDateStrDisplay(dateStr)` | `"dd/mm/yyyy"` | Pure string reformat of `YYYY-MM-DD`; no TZ conversion |
-| `dateStrToPickerDate(dateStr)` | `Date` | Noon-UTC trick for `react-datepicker`'s `selected` prop |
-| `restaurantTodayForPicker(tz)` | `Date` | Restaurant today as a picker-compatible Date for `minDate`/`highlightDates` |
-| `formatDateLocalInTZ(d, tz)` | `"YYYY-MM-DD"` | Re-exported from `utils.ts` |
-| `formatTimeInTZ(d, tz)` | `"HH:mm"` | Re-exported from `utils.ts` |
-| `formatDateDisplayInTZ(d, tz)` | `"dd/mm/yyyy"` | Re-exported from `utils.ts` |
-| `formatDateTimeInTZ(d, tz)` | `"dd/mm/yyyy HH:mm"` | Re-exported from `utils.ts` |
-
-### Do / Don't table
-
-| Don't | Do |
-|-------|----|
-| `new Date().getDay()` | `dayOfWeekInTZ(todayInTZ(tz), tz)` |
-| `new Date().toISOString().split('T')[0]` | `todayInTZ(restaurantTZ)` |
-| `dateTime.getHours() * 60 + dateTime.getMinutes()` | derive from the `time` string directly: `const [h, m] = time.split(':').map(Number)` |
-| `formatDateLocal(new Date(r.dateTime))` | `formatDateLocalInTZ(new Date(r.dateTime), restaurantTZ)` |
-| `formatDateDisplay(new Date(dateStr + 'T12:00:00'))` | `formatDateStrDisplay(dateStr)` |
-| `new Date(); d.setDate(d.getDate() + 1)` | `tomorrowInTZ(restaurantTZ)` |
-| Week range via `getDay()` + `setDate()` | `weekRangeInTZ(restaurantTZ)` |
-
-### react-datepicker caveat
-
-`react-datepicker` always renders in the **browser's** local timezone — this cannot be overridden. The workaround:
-
-- Feed it `dateStrToPickerDate(restaurantDateStr)` for `selected` (noon-UTC → browser sees correct calendar day in any UTC±12 timezone).
-- Feed it `restaurantTodayForPicker(restaurantTZ)` for `minDate` and `highlightDates` (same trick, derived from the restaurant's today).
-- When the user picks a date, read it back via `d.getUTCFullYear/Month/Date()` (not `getFullYear/Month/Date()`) since we fed it a UTC noon value.
-
-### Mirrors
-
-This policy aligns all three layers:
-
-| Layer | Module | Key function |
-|-------|--------|-------------|
-| Backend | `src/utils/timezone.js` | `getDayOfWeekInTimezone`, `parseInTimezone`, `nowInTimezone` |
-| User-front | `src/lib/tz.ts` | `dayOfWeekInTZ`, `parseInTZ`, `nowInTZ` |
-| Admin-front | `src/lib/tz.ts` | (same API as user-front) |
-
-Any logic change to availability computation must be applied to all three.
-
----
-
-## 13. Known follow-ups
-
-- **Modify-reservation race**: `PATCH /token/:secureToken` on the confirmation page (`ConfirmationPage.tsx`) has the same "no AbortController" pattern as the old availability fetch. Same fix applies.
-- **Cross-midnight reservation edge case**: the snapshot's reservation window extends 12 h before midnight of the selected day, which covers most practical cases (restaurants rarely have 12+ hour seatings). If a future requirement calls for overnight bookings, increase this buffer.
-- **BookingEvent analytics polling**: `BookingEvent` rows are inserted client-side. If the backend is unreachable (network partition), those events are silently dropped. Consider a retry queue.
-
----
-
-## 14. File-by-file reference
-
-| File | What it does | Key exports / routes |
-|------|-------------|---------------------|
-| `backend-simple-reserva/prisma/schema.prisma` | Full DB schema | All models |
-| `src/services/availabilityService.js` | Day-snapshot loading + availability computation | `loadDaySnapshot`, `computeAvailability`, `getAvailabilitySlotsForRestaurant`, `findNextAvailableDateForSlug` |
-| `src/services/availabilityService.test.js` | Unit tests for `computeAvailability` | 11 test cases (a–j) |
-| `src/routes/reservation.routes.js` | All public reservation & restaurant routes | `GET /:slug`, `GET /:slug/day-snapshot`, `GET /:slug/availability`, `GET /:slug/next-available`, `POST /`, `PATCH /token/:t`, `GET /token/:t`, `POST /:slug/waitlist` |
-| `src/utils/scheduleUtils.js` | Schedule window & slot generation | `getScheduleWindows`, `generateTimeSlots`, `isSlotInSchedule`, `resolveDuration` |
-| `src/lib/tableAssignment.js` | Best-fit table selection | `pickAutoTable`, `hasConflictOnTable`, `compareTablesForAutoAssign` |
-| `src/utils/timezone.js` | Timezone resolution and parsing | `getEffectiveTimezone`, `parseInTimezone`, `nowInTimezone` |
-| `src/services/subscriptionService.js` | Subscription & feature gating | `hasActiveAccess`, `canCreateReservation`, `canSendConfirmations` |
-| `src/services/notificationService.js` | WhatsApp / email notifications | `sendReservationConfirmation`, `sendReservationConfirmationEmail`, `sendModificationAlertToCustomer`, `sendCancellationNotification`, `notifyRestaurantWaitlistEntry` |
-| `src/index.js` | Express app entry, route mounting | `app.use('/api/public/restaurants', reservationRouter)` |
-| `user-front-simple-reserva/src/pages/BookingPage.tsx` | Main booking UI orchestrator | All state, effects, handlers |
-| `user-front-simple-reserva/src/lib/availability.ts` | Frontend mirror of `computeAvailability` | `computeSlots(snapshot, partySize, zoneId, clientNow)` |
-| `user-front-simple-reserva/src/api/restaurants.ts` | Backend API client | `getRestaurant`, `getDaySnapshot`, `getAvailability`, `getNextAvailable`, types |
-| `user-front-simple-reserva/src/api/reservations.ts` | Reservation API client | `createReservation`, `getReservationByToken`, `updateReservation`, `cancelReservation` |
-| `user-front-simple-reserva/src/components/booking/DatePartyPicker.tsx` | Date + party-size + zone UI | Props: `date`, `partySize`, `onDateChange`, `onPartySizeChange` |
-| `user-front-simple-reserva/src/components/booking/TimeSlotGrid.tsx` | Slot grid + scarcity badge | Props: `slots`, `selectedTime`, `loading`, `onSelect`, `onNext` |
-| `user-front-simple-reserva/src/components/booking/ZoneSelector.tsx` | Zone preference selector | Props: `zones`, `partySize`, `selectedZoneId`, `onZoneChange` |
-| `user-front-simple-reserva/src/components/booking/ContactForm.tsx` | Guest contact form | Props: `onSubmit`, `summary`, `submitting` |
-| `user-front-simple-reserva/src/components/booking/ConfirmationCard.tsx` | Post-booking confirmation | Props: `reservation` |
-| `user-front-simple-reserva/src/components/booking/BookingWaitlistForm.tsx` | Waitlist signup (no slots available) | Props: `slug`, `partySize`, `preferredDate` |
+user-front-simple-reserva/src/
+└── pages/BookingPage.tsx     # consume getAvailability() + hold flow
+```

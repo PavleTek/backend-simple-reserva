@@ -17,6 +17,7 @@ const scheduleRouter = require("./routes/schedule.routes");
 const reservationRouter = require("./routes/reservation.routes");
 const teamRouter = require("./routes/team.routes");
 const menuRouter = require("./routes/menu.routes");
+const reservationWindowRouter = require("./routes/reservationWindow.routes");
 const adminRouter = require("./routes/admin.routes");
 const uploadRouter = require("./routes/upload.routes");
 const billingRouter = require("./routes/billing.routes");
@@ -30,6 +31,8 @@ const { startTrialReminderJob } = require("./jobs/trialReminderJob");
 const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
 const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
 const { startReconciliationJob } = require("./jobs/reconciliationJob");
+const { startReservationHoldCleanupJob } = require("./jobs/reservationHoldCleanup");
+const { publicRestaurantRouter: holdRestaurantRouter, publicHoldRouter, staffRouter: holdStaffRouter } = require("./routes/reservationHold.routes");
 const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
 const { getClpPerUsd } = require("./services/clpUsdRateService");
 
@@ -186,6 +189,10 @@ app.get("/api/public/fx", async (req, res, next) => {
   }
 });
 
+// Hold system (soft-locks durante checkout)
+app.use("/api/public/restaurants", holdRestaurantRouter);
+app.use("/api/public/reservation-holds", publicHoldRouter);
+
 // Public alias for user-front
 app.use("/api/public/restaurants", reservationRouter);
 app.use("/api/public/reservations", reservationRouter);
@@ -200,6 +207,8 @@ app.use("/api/restaurant/:restaurantId/tables", tableRouter);
 app.use("/api/restaurant/:restaurantId/schedules", scheduleRouter);
 app.use("/api/restaurant/:restaurantId/team", teamRouter);
 app.use("/api/restaurant/:restaurantId/menus", menuRouter);
+app.use("/api/restaurant/:restaurantId/reservation-windows", reservationWindowRouter);
+app.use("/api/restaurant/:restaurantId/holds", holdStaffRouter);
 app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/analytics", analyticsRouter);
@@ -221,4 +230,5 @@ app.listen(PORT, "0.0.0.0", () => {
   startTrialExpiryJob();
   startGracePeriodExpiryJob();
   startReconciliationJob();
+  startReservationHoldCleanupJob();
 });
