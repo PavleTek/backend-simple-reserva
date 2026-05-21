@@ -91,6 +91,14 @@ async function canSendReminders(restaurantId) {
   return hasActiveAccess(restaurant.organizationId);
 }
 
+/**
+ * Check if restaurant can send post-visit feedback emails.
+ */
+async function canSendFeedback(restaurantId) {
+  if (process.env.FEEDBACK_ENABLED_GLOBAL === 'false') return false;
+  return canSendReminders(restaurantId);
+}
+
 module.exports = {
   getActiveSubscription,
   getOrganizationWithTrial,
@@ -99,4 +107,5 @@ module.exports = {
   canCreateReservation,
   canSendConfirmations,
   canSendReminders,
+  canSendFeedback,
 };

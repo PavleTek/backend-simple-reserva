@@ -597,6 +597,97 @@ async function notifyRestaurantWaitlistEntry(restaurant, entry) {
   return sendWhatsAppTwilio(phone, lines.join('\n'));
 }
 
+/**
+ * Post-visit feedback survey email to customer.
+ */
+async function sendPostVisitFeedbackEmail(options) {
+  const {
+    customerEmail,
+    customerName,
+    restaurantName,
+    dateTime,
+    timezone,
+    clickUrl,
+    optOutUrl,
+    subjectVariant = 'a',
+  } = options;
+  if (!customerEmail) return false;
+
+  const { buildPostVisitFeedbackHtml, getSubject } = require('../templates/postVisitFeedbackEmail');
+  const { sendEmail } = require('./emailService');
+  const prisma = require('../lib/prisma');
+
+  const config = await prisma.configuration.findFirst();
+  const fromSenderId = config?.reservationEmailSenderId || config?.recoveryEmailSenderId;
+  const fromSender = fromSenderId
+    ? (await prisma.emailSender.findUnique({ where: { id: fromSenderId } }))?.email
+    : null;
+  const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  const html = buildPostVisitFeedbackHtml({
+    restaurantName,
+    customerName,
+    dateTime,
+    clickUrl,
+    optOutUrl,
+    timezone,
+  });
+
+  try {
+    await sendEmail({
+      fromEmail,
+      toEmails: [customerEmail],
+      subject: getSubject(restaurantName, subjectVariant),
+      content: html,
+      isHtml: true,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Notification] Post-visit feedback email error:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Recovery alert to restaurant manager.
+ */
+async function sendFeedbackRecoveryAlertEmail(options) {
+  const { emails, restaurantName, customerName, overallScore, comment, severity, panelUrl } = options;
+  if (!emails?.length) return false;
+
+  const { buildFeedbackRecoveryAlertHtml } = require('../templates/feedbackRecoveryAlertEmail');
+  const { sendEmail } = require('./emailService');
+  const prisma = require('../lib/prisma');
+  const config = await prisma.configuration.findFirst();
+  const fromSender = config?.recoveryEmailSenderId
+    ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
+    : null;
+  const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  const html = buildFeedbackRecoveryAlertHtml({
+    restaurantName,
+    customerName,
+    overallScore,
+    comment,
+    severity,
+    panelUrl,
+  });
+
+  try {
+    await sendEmail({
+      fromEmail,
+      toEmails: emails,
+      subject: `[Experiencia] Alerta en ${restaurantName}`,
+      content: html,
+      isHtml: true,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Notification] Feedback recovery alert error:', err.message);
+    return false;
+  }
+}
+
 module.exports = {
   sendReservationConfirmation,
   sendReservationReminder,
@@ -607,4 +698,6 @@ module.exports = {
   sendReservationConfirmationEmail,
   sendCancellationNotification,
   notifyRestaurantWaitlistEntry,
+  sendPostVisitFeedbackEmail,
+  sendFeedbackRecoveryAlertEmail,
 };
