@@ -52,6 +52,16 @@ async function getRestaurantsForUser(userId) {
           },
         },
       },
+      hostedOrganizations: {
+        include: {
+          organization: { select: { id: true, isDeleted: true } },
+          restaurantAssignments: {
+            include: {
+              restaurant: { select: { id: true, name: true, slug: true, isDeleted: true } },
+            },
+          },
+        },
+      },
     },
   });
 
@@ -85,7 +95,38 @@ async function getRestaurantsForUser(userId) {
     });
   });
 
+  user.hostedOrganizations.forEach(ho => {
+    if (ho.organization?.isDeleted) return;
+    ho.restaurantAssignments.forEach(ra => {
+      if (ra.restaurant?.isDeleted) return;
+      restaurants.push({
+        id: ra.restaurant.id,
+        name: ra.restaurant.name,
+        slug: ra.restaurant.slug,
+        role: 'restaurant_host',
+      });
+    });
+  });
+
   return restaurants;
+}
+
+/** Org IDs where user is manager or host (not owner). Used for subscription gate on login. */
+async function getStaffOrganizationIds(userId) {
+  const [managers, hosts] = await Promise.all([
+    prisma.organizationManager.findMany({
+      where: { userId },
+      select: { organizationId: true },
+    }),
+    prisma.organizationHost.findMany({
+      where: { userId },
+      select: { organizationId: true },
+    }),
+  ]);
+  return [...new Set([
+    ...managers.map((m) => m.organizationId),
+    ...hosts.map((h) => h.organizationId),
+  ])];
 }
 
 /** Mensaje genérico en login: no revelar si el correo existe o la contraseña falló. */
@@ -181,11 +222,7 @@ const login = async (req, res) => {
     // Block managers whose organization has no active subscription
     const isOwnerOfAnything = restaurants.some(r => r.role === 'restaurant_owner');
     if (!isOwnerOfAnything && user.role !== 'super_admin' && restaurants.length > 0) {
-      const managerOrgs = await prisma.organizationManager.findMany({
-        where: { userId: user.id },
-        select: { organizationId: true },
-      });
-      const orgIds = managerOrgs.map(m => m.organizationId);
+      const orgIds = await getStaffOrganizationIds(user.id);
       const activeSubCount = await prisma.subscription.count({
         where: { organizationId: { in: orgIds }, isActiveSubscription: true },
       });
@@ -481,14 +518,10 @@ const getProfile = async (req, res) => {
       ? []
       : await getRestaurantsForUser(req.user.id);
 
-    // Kick out managers whose organization has gone inactive since they logged in
+    // Kick out staff (manager/host) whose organization has gone inactive since they logged in
     const isOwnerOfAnything = restaurants.some(r => r.role === 'restaurant_owner');
     if (req.user.role !== 'super_admin' && !isOwnerOfAnything && restaurants.length > 0) {
-      const managerOrgs = await prisma.organizationManager.findMany({
-        where: { userId: req.user.id },
-        select: { organizationId: true },
-      });
-      const orgIds = managerOrgs.map(m => m.organizationId);
+      const orgIds = await getStaffOrganizationIds(req.user.id);
       const activeSubCount = await prisma.subscription.count({
         where: { organizationId: { in: orgIds }, isActiveSubscription: true },
       });

@@ -1,8 +1,14 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
+const { ROLES, ROLES_OPERATIONAL, ROLES_CONFIG, ROLES_OWNER } = require('../auth/roles');
+const {
+  assertHostReservationEditWindow,
+  assertHostPartySizeIncrease,
+} = require('../auth/permissions');
+const { writeAuditLog } = require('../services/auditLogService');
 const { sendReservationConfirmation, sendModificationAlertToCustomer } = require('../services/notificationService');
-const { canCreateReservation, canSendConfirmations } = require('../services/subscriptionService');
+const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
 const { getRestaurant, updateRestaurant, completeOnboarding } = require('../controllers/restaurantController');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const {
@@ -12,7 +18,7 @@ const {
 } = require('../services/slotEngine/index');
 const { pickTable, parseReservations, parseHolds } = require('../services/slotEngine/capacity');
 const { sortFreeTablesForUi } = require('../lib/tableAssignment');
-const { NotFoundError, ValidationError } = require('../utils/errors');
+const { NotFoundError, ValidationError, ForbiddenError } = require('../utils/errors');
 const {
   getEffectiveTimezone,
   parseInTimezone,
@@ -88,13 +94,29 @@ router.get('/data-version', async (req, res, next) => {
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']));
+router.use(authenticateRestaurantRoles(ROLES_OPERATIONAL));
 
 router.get('/', getRestaurant);
-router.patch('/', authenticateRestaurantRoles(['restaurant_owner']), updateRestaurant);
-router.patch('/onboarding/complete', authenticateRestaurantRoles(['restaurant_owner']), completeOnboarding);
 
-router.get('/duration-rules', async (req, res, next) => {
+/** Staff access check without exposing billing (hosts). */
+router.get('/access-status', async (req, res, next) => {
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: req.activeRestaurant.restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+    const hasAccess = await hasActiveAccess(restaurant.organizationId);
+    res.json({ hasAccess });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/', authenticateRestaurantRoles(ROLES_OWNER), updateRestaurant);
+router.patch('/onboarding/complete', authenticateRestaurantRoles(ROLES_OWNER), completeOnboarding);
+
+router.get('/duration-rules', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const rules = await prisma.durationRule.findMany({
       where: { restaurantId: req.activeRestaurant.restaurantId },
@@ -106,7 +128,7 @@ router.get('/duration-rules', async (req, res, next) => {
   }
 });
 
-router.put('/duration-rules', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+router.put('/duration-rules', authenticateRestaurantRoles(ROLES_OWNER), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
     const { rules } = req.body;
@@ -143,7 +165,7 @@ router.put('/duration-rules', authenticateRestaurantRoles(['restaurant_owner']),
   }
 });
 
-router.get('/pacing-rules', async (req, res, next) => {
+router.get('/pacing-rules', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const rules = await prisma.pacingRule.findMany({
       where: { restaurantId: req.activeRestaurant.restaurantId },
@@ -155,7 +177,7 @@ router.get('/pacing-rules', async (req, res, next) => {
   }
 });
 
-router.put('/pacing-rules', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+router.put('/pacing-rules', authenticateRestaurantRoles(ROLES_OWNER), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
     const { rules } = req.body;
@@ -902,6 +924,24 @@ router.patch('/reservations/:id', async (req, res, next) => {
       throw new NotFoundError('Reserva no encontrada');
     }
 
+    const isHost = req.activeRestaurant.role === ROLES.HOST;
+
+    if (isHost) {
+      const windowCheck = assertHostReservationEditWindow(reservation.dateTime);
+      if (!windowCheck.allowed) {
+        throw new ForbiddenError(windowCheck.message);
+      }
+      if (partySize !== undefined) {
+        const partyCheck = assertHostPartySizeIncrease(
+          reservation.partySize,
+          parseInt(partySize, 10),
+        );
+        if (!partyCheck.allowed) {
+          throw new ForbiddenError(partyCheck.message);
+        }
+      }
+    }
+
     // Full edit (date, time, partySize, table, notes)
     if (date !== undefined || time !== undefined || partySize !== undefined || tableId !== undefined || notes !== undefined) {
       const restaurant = await prisma.restaurant.findUnique({
@@ -926,6 +966,13 @@ router.patch('/reservations/:id', async (req, res, next) => {
       const dateTime = parseInTimezone(dateStr, timeStr, timezone);
       if (isNaN(dateTime.getTime())) {
         throw new ValidationError('Formato de fecha u hora inválido');
+      }
+
+      if (isHost) {
+        const newWindowCheck = assertHostReservationEditWindow(dateTime);
+        if (!newWindowCheck.allowed) {
+          throw new ForbiddenError(newWindowCheck.message);
+        }
       }
 
       const dayOfWeek = getDayOfWeekInTimezone(dateStr, timezone);
@@ -1088,6 +1135,17 @@ router.patch('/reservations/:id', async (req, res, next) => {
       data: statusData,
     });
 
+    if (status === 'cancelled') {
+      writeAuditLog({
+        actorUserId: req.user?.id ?? null,
+        restaurantId: reservation.restaurantId,
+        action: 'reservation.cancel',
+        resourceType: 'reservation',
+        resourceId: reservation.id,
+        metadata: { status },
+      }).catch(() => {});
+    }
+
     incrementDataVersion(reservation.restaurantId).catch(console.error);
 
     res.json(updated);
@@ -1096,9 +1154,9 @@ router.patch('/reservations/:id', async (req, res, next) => {
   }
 });
 
-// --- Blocked Slots sub-routes ---
+// --- Blocked Slots sub-routes (config; hosts excluded) ---
 
-router.get('/blocked-slots', async (req, res, next) => {
+router.get('/blocked-slots', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const slots = await prisma.blockedSlot.findMany({
       where: { restaurantId: req.activeRestaurant.restaurantId },
@@ -1111,7 +1169,7 @@ router.get('/blocked-slots', async (req, res, next) => {
   }
 });
 
-router.post('/blocked-slots', async (req, res, next) => {
+router.post('/blocked-slots', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const { startDatetime, endDatetime, reason } = req.body;
 
@@ -1140,7 +1198,7 @@ router.post('/blocked-slots', async (req, res, next) => {
   }
 });
 
-router.delete('/blocked-slots/:id', async (req, res, next) => {
+router.delete('/blocked-slots/:id', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const slot = await prisma.blockedSlot.findUnique({
       where: { id: req.params.id },

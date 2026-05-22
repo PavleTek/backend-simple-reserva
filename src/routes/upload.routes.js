@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
+const { ROLES_CONFIG } = require('../auth/roles');
 const { ValidationError } = require('../utils/errors');
 const r2LogosService = require('../services/r2LogosService');
 
@@ -91,7 +92,7 @@ router.post(
   '/menu',
   authenticateToken,
   authorizeRestaurant,
-  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
+  authenticateRestaurantRoles(ROLES_CONFIG),
   upload.single('menu'),
   async (req, res, next) => {
     try {
@@ -129,7 +130,7 @@ router.post(
   '/logo',
   authenticateToken,
   authorizeRestaurant,
-  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
+  authenticateRestaurantRoles(ROLES_CONFIG),
   uploadLogoMulter.single('logo'),
   async (req, res, next) => {
     try {

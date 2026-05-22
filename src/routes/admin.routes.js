@@ -755,7 +755,7 @@ router.put('/users/:id/role', async (req, res, next) => {
     const { role } = req.body;
     const userId = req.params.id;
 
-    if (!['super_admin', 'restaurant_owner', 'restaurant_manager'].includes(role)) {
+    if (!['super_admin', 'restaurant_owner', 'restaurant_manager', 'restaurant_host'].includes(role)) {
       return res.status(400).json({ error: 'Rol inválido' });
     }
 

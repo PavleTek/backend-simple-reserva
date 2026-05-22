@@ -13,7 +13,7 @@ model User {
   name                          String?
   lastName                      String?
   hashedPassword                String
-  role                          String    // "super_admin" | "restaurant_owner" | "restaurant_manager"
+  role                          String    // "super_admin" | "restaurant_owner" | "restaurant_manager" | "restaurant_host"
   country                       String    @default("CL") // "CL", "AR", "UY"
   lastLogin                     DateTime?
   twoFactorSecret               String?
@@ -29,6 +29,7 @@ model User {
 
   ownedOrganization             RestaurantOrganization? @relation("OrgOwner")
   managedOrganizations          OrganizationManager[]
+  hostedOrganizations           OrganizationHost[]
   checkoutSessions              CheckoutSession[]
   offeredPlans                  CustomPlanOffer[]
   reservationsConfirmed         Reservation[] @relation("ReservationConfirmedBy")
@@ -58,6 +59,7 @@ model RestaurantOrganization {
 
   restaurants   Restaurant[]
   managers      OrganizationManager[]
+  hosts         OrganizationHost[]
   subscriptions Subscription[]
   reservationAnalytics ReservationAnalytics[]
   paymentReceipts PaymentReceipt[]
@@ -101,6 +103,34 @@ model ManagerRestaurantAssignment {
 
   @@unique([organizationManagerId, restaurantId])
   @@index([organizationManagerId])
+  @@index([restaurantId])
+}
+
+model OrganizationHost {
+  id             String                 @id @default(cuid())
+  organizationId String
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime               @default(now())
+
+  restaurantAssignments HostRestaurantAssignment[]
+
+  @@unique([organizationId, userId])
+  @@index([organizationId])
+  @@index([userId])
+}
+
+model HostRestaurantAssignment {
+  id                 String           @id @default(cuid())
+  organizationHostId String
+  organizationHost   OrganizationHost @relation(fields: [organizationHostId], references: [id], onDelete: Cascade)
+  restaurantId       String
+  restaurant         Restaurant       @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  createdAt          DateTime         @default(now())
+
+  @@unique([organizationHostId, restaurantId])
+  @@index([organizationHostId])
   @@index([restaurantId])
 }
 
@@ -151,6 +181,7 @@ model Restaurant {
   pacingRules               PacingRule[]
   menus                     RestaurantMenu[]
   managerAssignments        ManagerRestaurantAssignment[]
+  hostAssignments           HostRestaurantAssignment[]
   reservationAnalytics      ReservationAnalytics[]
   waitlistEntries           BookingWaitlistEntry[]
 
@@ -662,4 +693,20 @@ model WebhookEvent {
   @@index([organizationId])
   @@index([createdAt])
   @@index([processingStatus])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorUserId  String?
+  restaurantId String?
+  action       String
+  resourceType String?
+  resourceId   String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([restaurantId])
+  @@index([actorUserId])
+  @@index([action])
+  @@index([createdAt])
 }

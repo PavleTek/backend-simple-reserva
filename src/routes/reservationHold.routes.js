@@ -20,6 +20,7 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
+const { ROLES_CONFIG } = require('../auth/roles');
 const { ValidationError, NotFoundError } = require('../utils/errors');
 const {
   getEffectiveTimezone,
@@ -232,7 +233,7 @@ staffRouter.get(
   '/',
   authenticateToken,
   authorizeRestaurant,
-  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
+  authenticateRestaurantRoles(ROLES_CONFIG),
   async (req, res, next) => {
     try {
       const restaurantId = req.activeRestaurant.restaurantId;

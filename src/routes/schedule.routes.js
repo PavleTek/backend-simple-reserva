@@ -1,6 +1,7 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
+const { ROLES_CONFIG } = require('../auth/roles');
 const { ValidationError } = require('../utils/errors');
 
 /**
@@ -22,7 +23,7 @@ const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']));
+router.use(authenticateRestaurantRoles(ROLES_CONFIG));
 
 router.get('/', async (req, res, next) => {
   try {

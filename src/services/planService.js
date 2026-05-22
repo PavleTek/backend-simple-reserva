@@ -319,12 +319,21 @@ async function canAddTeamMember(ownerId, restaurantId, includeTrial = true) {
   const maxTeam = config.maxTeamMembers;
   if (maxTeam == null) return { allowed: true }; // unlimited
 
-  const teamCount = await prisma.organizationManager.count({
-    where: {
-      organization: { ownerId },
-      restaurantAssignments: { some: { restaurantId } }
-    },
-  });
+  const [managerCount, hostCount] = await Promise.all([
+    prisma.organizationManager.count({
+      where: {
+        organization: { ownerId },
+        restaurantAssignments: { some: { restaurantId } },
+      },
+    }),
+    prisma.organizationHost.count({
+      where: {
+        organization: { ownerId },
+        restaurantAssignments: { some: { restaurantId } },
+      },
+    }),
+  ]);
+  const teamCount = managerCount + hostCount;
 
   if (teamCount >= maxTeam) {
     return {

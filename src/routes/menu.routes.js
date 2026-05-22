@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
+const { ROLES_CONFIG } = require('../auth/roles');
 const { ValidationError } = require('../utils/errors');
 const r2Service = require('../services/r2Service');
 const planService = require('../services/planService');
@@ -55,7 +56,7 @@ router.get(
   '/',
   authenticateToken,
   authorizeRestaurant,
-  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
+  authenticateRestaurantRoles(ROLES_CONFIG),
   async (req, res, next) => {
     try {
       const menus = await prisma.restaurantMenu.findMany({
@@ -77,7 +78,7 @@ router.post(
   '/:menuType',
   authenticateToken,
   authorizeRestaurant,
-  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
+  authenticateRestaurantRoles(ROLES_CONFIG),
   uploadMenuPdf,
   async (req, res, next) => {
     try {
@@ -165,7 +166,7 @@ router.delete(
   '/:menuType',
   authenticateToken,
   authorizeRestaurant,
-  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
+  authenticateRestaurantRoles(ROLES_CONFIG),
   async (req, res, next) => {
     try {
       const { menuType } = req.params;
