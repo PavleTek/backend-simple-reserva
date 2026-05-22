@@ -771,7 +771,7 @@ router.get('/:slug', async (req, res, next) => {
           where: { isActive: true },
           orderBy: { sortOrder: 'asc' },
           select: {
-            id: true, name: true, smokingZone: true,
+            id: true, name: true, smokingZone: true, petFriendly: true,
             tables: { where: { isActive: true }, select: { id: true, label: true, minCapacity: true, maxCapacity: true } },
           },
         },

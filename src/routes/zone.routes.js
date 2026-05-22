@@ -33,7 +33,7 @@ router.get('/', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { name, description, sortOrder, smokingZone } = req.body;
+    const { name, description, sortOrder, smokingZone, petFriendly } = req.body;
     const restaurantId = req.activeRestaurant.restaurantId;
 
     if (!name) {
@@ -52,6 +52,7 @@ router.post('/', async (req, res, next) => {
         description: description || null,
         sortOrder: sortOrder ?? 0,
         ...(smokingZone !== undefined && { smokingZone: Boolean(smokingZone) }),
+        ...(petFriendly !== undefined && { petFriendly: Boolean(petFriendly) }),
       },
     });
 
@@ -71,7 +72,7 @@ router.patch('/:id', async (req, res, next) => {
       throw new NotFoundError('Zona no encontrada');
     }
 
-    const { name, description, sortOrder, gridCols, gridRows, smokingZone } = req.body;
+    const { name, description, sortOrder, gridCols, gridRows, smokingZone, petFriendly } = req.body;
 
     if (name !== undefined && (!name || !String(name).trim())) {
       throw new ValidationError('El nombre no puede estar vacío');
@@ -110,6 +111,7 @@ router.patch('/:id', async (req, res, next) => {
         ...(gridCols !== undefined && { gridCols: nextCols }),
         ...(gridRows !== undefined && { gridRows: nextRows }),
         ...(smokingZone !== undefined && { smokingZone: Boolean(smokingZone) }),
+        ...(petFriendly !== undefined && { petFriendly: Boolean(petFriendly) }),
       },
     });
 
