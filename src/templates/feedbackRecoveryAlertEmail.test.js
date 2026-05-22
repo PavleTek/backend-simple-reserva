@@ -8,12 +8,12 @@ const {
 } = require('./feedbackRecoveryAlertEmail');
 
 describe('feedbackRecoveryAlertEmail', () => {
-  it('incluye logo, contacto y CTA en plantilla HTML', () => {
+  it('usa español claro, resumen del problema y enlace a SimpleReserva', () => {
     const html = buildFeedbackRecoveryAlertHtml({
       restaurantName: 'Nuevo Local',
-      customerName: 'ssss',
+      customerName: 'adadada222',
       overallScore: 1,
-      comment: 'd',
+      comment: 'LOS ODIO',
       severity: 'high',
       panelUrl: 'https://app.example.com/experiencia',
       customerEmail: 'cliente@example.com',
@@ -26,22 +26,28 @@ describe('feedbackRecoveryAlertEmail', () => {
       assetBaseUrl: 'https://dev.simplereserva.com',
     });
     assert.ok(html.includes('logo-full-480w.png'));
-    assert.ok(html.includes('mailto:cliente@example.com'));
-    assert.ok(html.includes('vgdev14@gmail.com'));
-    assert.ok(html.includes('pidió que lo contacten'));
-    assert.ok(html.includes('Ver en Experiencia'));
+    assert.ok(html.includes('Mala experiencia'));
+    assert.ok(!html.includes('recovery'));
+    assert.ok(!html.includes('Recovery'));
+    assert.ok(html.includes('¿Qué pasó?'));
+    assert.ok(html.includes('adadada222'));
+    assert.ok(html.includes('1 de 5'));
+    assert.ok(html.includes('href="https://dev.simplereserva.com"'));
+    assert.ok(html.includes('Abrir Experiencia del local'));
     assert.ok(html.includes('lang="es-CL"'));
   });
 
-  it('arma asunto con severidad y puntuación', () => {
+  it('asunto descriptivo sin jerga en inglés', () => {
     const subject = getRecoveryAlertSubject({
       restaurantName: 'Nuevo Local',
-      customerName: 'ssss',
+      customerName: 'adadada222',
       overallScore: 1,
       severity: 'high',
     });
-    assert.ok(subject.includes('Alta'));
-    assert.ok(subject.includes('ssss'));
-    assert.ok(subject.includes('1/5'));
+    assert.ok(subject.includes('Mala experiencia en Nuevo Local'));
+    assert.ok(subject.includes('adadada222'));
+    assert.ok(subject.includes('1 de 5'));
+    assert.ok(!subject.includes('Alta'));
+    assert.ok(!subject.includes('[Experiencia]'));
   });
 });

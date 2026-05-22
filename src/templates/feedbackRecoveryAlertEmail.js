@@ -20,10 +20,11 @@ const COLORS = {
   contactBorder: '#f59e0b',
 };
 
+/** Prioridad en español claro (sin términos en inglés). */
 const SEVERITY_LABELS = {
-  high: 'Alta',
-  medium: 'Media',
-  low: 'Baja',
+  high: 'Urgente',
+  medium: 'Importante',
+  low: 'Por revisar',
 };
 
 const SEVERITY_STYLES = {
@@ -31,6 +32,23 @@ const SEVERITY_STYLES = {
   medium: { color: COLORS.alertMedium, bg: COLORS.alertMediumBg },
   low: { color: COLORS.textSecondary, bg: '#f5f4f0' },
 };
+
+const DEFAULT_SITE_URL = 'https://simplereserva.com';
+
+/**
+ * @param {string} assetBaseUrl
+ * @returns {string}
+ */
+function resolveSiteHomeUrl(assetBaseUrl) {
+  if (!assetBaseUrl || typeof assetBaseUrl !== 'string') return DEFAULT_SITE_URL;
+  try {
+    const u = new URL(assetBaseUrl);
+    if (u.protocol === 'https:') return u.origin;
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_SITE_URL;
+}
 
 function formatCategoryScores(categoryScores = {}) {
   const parts = [];
@@ -51,13 +69,23 @@ function formatVisitLine(visitDateTime, partySize, timezone) {
   return `${date}, ${time}${partyStr}`;
 }
 
+function scoreExplanation(overallScore) {
+  if (overallScore <= 1) {
+    return 'Evaluación muy negativa: el cliente no quedó conforme con la visita.';
+  }
+  if (overallScore === 2) {
+    return 'Evaluación negativa: conviene revisar qué ocurrió y responder pronto.';
+  }
+  return 'Evaluación baja en la encuesta post-visita.';
+}
+
 /**
  * @param {string} label
- * @param {string} valueHtml - already escaped or safe HTML (e.g. mailto link)
+ * @param {string} valueHtml
  */
 function detailRow(label, valueHtml) {
   return `<tr>
-    <td style="padding:10px 0 4px 0;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${COLORS.textMuted};vertical-align:top;width:140px;">${escapeHtml(label)}</td>
+    <td style="padding:10px 0 4px 0;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${COLORS.textMuted};vertical-align:top;">${escapeHtml(label)}</td>
   </tr>
   <tr>
     <td style="padding:0 0 14px 0;font-size:15px;line-height:1.45;color:${COLORS.textPrimary};">${valueHtml}</td>
@@ -91,11 +119,14 @@ function buildFeedbackRecoveryAlertHtml(options) {
   const safeComment = escapeHtml(comment?.trim() || 'Sin comentario');
   const safePanel = escapeHtml(panelUrl);
   const severityKey = SEVERITY_LABELS[severity] ? severity : 'medium';
-  const severityLabel = SEVERITY_LABELS[severityKey] || severity;
+  const severityLabel = SEVERITY_LABELS[severityKey] || 'Importante';
   const sevStyle = SEVERITY_STYLES[severityKey] || SEVERITY_STYLES.medium;
+  const siteUrl = resolveSiteHomeUrl(assetBaseUrl);
+  const safeSiteUrl = escapeHtml(siteUrl);
 
   const visitLine = formatVisitLine(visitDateTime, partySize, timezone);
   const categories = formatCategoryScores(categoryScores);
+  const issueSummary = scoreExplanation(overallScore);
 
   const logoUrl = resolveLogoImageUrl(assetBaseUrl);
   const logoBlock = logoUrl
@@ -104,7 +135,7 @@ function buildFeedbackRecoveryAlertHtml(options) {
 
   const emailRow = customerEmail
     ? detailRow(
-        'Email',
+        'Correo',
         `<a href="mailto:${escapeHtml(customerEmail)}" style="color:${COLORS.primary600};font-weight:600;text-decoration:none;">${escapeHtml(customerEmail)}</a>`,
       )
     : '';
@@ -117,7 +148,7 @@ function buildFeedbackRecoveryAlertHtml(options) {
     : '';
 
   const visitRow = visitLine ? detailRow('Visita', escapeHtml(visitLine)) : '';
-  const categoriesRow = categories ? detailRow('Por categoría', escapeHtml(categories)) : '';
+  const categoriesRow = categories ? detailRow('Detalle por aspecto', escapeHtml(categories)) : '';
 
   const contactHighlight =
     recoveryContactRequested
@@ -125,26 +156,25 @@ function buildFeedbackRecoveryAlertHtml(options) {
           <tr>
             <td style="padding:14px 16px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:${COLORS.textPrimary};">
               <strong style="color:${COLORS.alertMedium};">El cliente pidió que lo contacten</strong><br/>
+              <span style="font-size:13px;color:${COLORS.textSecondary};">Responde al correo o teléfono indicado lo antes posible.</span><br/>
               ${
                 recoveryContactEmail
-                  ? `<a href="mailto:${escapeHtml(recoveryContactEmail)}" style="color:${COLORS.primary600};font-weight:700;font-size:15px;text-decoration:none;">${escapeHtml(recoveryContactEmail)}</a>`
-                  : '<span style="color:' +
-                    COLORS.textSecondary +
-                    ';">Usa el email de la reserva (arriba).</span>'
+                  ? `<a href="mailto:${escapeHtml(recoveryContactEmail)}" style="display:inline-block;margin-top:8px;color:${COLORS.primary600};font-weight:700;font-size:15px;text-decoration:none;">${escapeHtml(recoveryContactEmail)}</a>`
+                  : `<span style="display:inline-block;margin-top:8px;color:${COLORS.textSecondary};">Usa el correo de la reserva (arriba).</span>`
               }
             </td>
           </tr>
         </table>`
       : '';
 
-  const preheader = `${severityLabel} · ${customerName || 'Cliente'} · ${overallScore}/5 · ${restaurantName}`;
+  const preheader = `Mala experiencia: ${customerName || 'cliente'} dejó ${overallScore}/5 en ${restaurantName}`;
 
   return `<!DOCTYPE html>
 <html lang="es-CL">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <title>Alerta recovery — ${safeRestaurant}</title>
+  <title>Mala experiencia — ${safeRestaurant}</title>
 </head>
 <body style="margin:0;padding:0;background-color:${COLORS.pageBg};">
   <span style="display:none !important;visibility:hidden;font-size:1px;color:${COLORS.pageBg};">${escapeHtml(preheader)}</span>
@@ -158,38 +188,57 @@ function buildFeedbackRecoveryAlertHtml(options) {
                 ${logoBlock}
                 <tr>
                   <td align="center" style="padding:8px 0 0 0;">
-                    <span style="display:inline-block;padding:4px 12px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${sevStyle.color};background:${sevStyle.bg};border-radius:999px;border:1px solid ${COLORS.border};">Alerta recovery · ${escapeHtml(severityLabel)}</span>
-                    <h1 style="margin:12px 0 4px 0;font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:700;color:${COLORS.textPrimary};line-height:1.25;text-align:center;">${safeRestaurant}</h1>
-                    <p style="margin:0;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;color:${COLORS.textSecondary};text-align:center;">Experiencia a mejorar — requiere seguimiento</p>
+                    <span style="display:inline-block;padding:4px 12px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${sevStyle.color};background:${sevStyle.bg};border-radius:999px;border:1px solid ${COLORS.border};">Mala experiencia · ${escapeHtml(severityLabel)}</span>
+                    <h1 style="margin:12px 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:700;color:${COLORS.textPrimary};line-height:1.25;text-align:center;">${safeRestaurant}</h1>
+                    <p style="margin:0;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;color:${COLORS.textSecondary};text-align:center;">Un comensal dejó una evaluación muy baja después de su visita.</p>
                   </td>
                 </tr>
               </table>
             </td>
           </tr>
           <tr>
-            <td style="padding:8px 28px 8px 28px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+            <td style="padding:16px 28px 8px 28px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-bottom:16px;background:${sevStyle.bg};border:1px solid ${COLORS.border};border-radius:12px;">
+                <tr>
+                  <td style="padding:14px 16px;font-size:14px;line-height:1.55;color:${COLORS.textPrimary};">
+                    <strong>¿Qué pasó?</strong><br/>
+                    <strong>${safeCustomer}</strong> calificó la experiencia con <strong style="color:${sevStyle.color};">${overallScore} de 5</strong>.
+                    ${escapeHtml(issueSummary)}
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:0 0 12px 0;font-size:13px;font-weight:600;color:${COLORS.textPrimary};">Qué puedes hacer ahora</p>
+              <ul style="margin:0 0 20px 0;padding-left:20px;font-size:14px;line-height:1.55;color:${COLORS.textSecondary};">
+                <li style="margin-bottom:6px;">Revisa el comentario y los datos de contacto abajo.</li>
+                <li style="margin-bottom:6px;">Si el cliente pidió ser contactado, escríbele con empatía y una propuesta concreta.</li>
+                <li>Marca la alerta como vista o resuelta en el panel de Experiencia.</li>
+              </ul>
+              <p style="margin:0 0 12px 0;font-size:13px;font-weight:600;color:${COLORS.textPrimary};">Datos del cliente y la visita</p>
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-                ${detailRow('Cliente', `<strong style="font-size:17px;">${safeCustomer}</strong>`)}
+                ${detailRow('Nombre', `<strong style="font-size:17px;">${safeCustomer}</strong>`)}
                 ${emailRow}
                 ${phoneRow}
                 ${visitRow}
-                ${detailRow('Puntuación general', `<strong style="font-size:17px;color:${sevStyle.color};">${overallScore}/5</strong>`)}
+                ${detailRow('Puntuación general', `<strong style="font-size:17px;color:${sevStyle.color};">${overallScore} de 5</strong>`)}
                 ${categoriesRow}
-                ${detailRow('Comentario', `<span style="display:block;padding:12px 14px;background:#f5f4f0;border-radius:10px;border-left:3px solid ${COLORS.primary600};white-space:pre-wrap;">${safeComment}</span>`)}
+                ${detailRow('Comentario del cliente', `<span style="display:block;padding:12px 14px;background:#f5f4f0;border-radius:10px;border-left:3px solid ${COLORS.primary600};white-space:pre-wrap;">${safeComment}</span>`)}
               </table>
               ${contactHighlight}
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:8px 0 20px 0;">
                 <tr>
                   <td align="center">
-                    <a href="${safePanel}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 28px;font-size:15px;font-weight:600;color:#fff !important;text-decoration:none;border-radius:12px;background:${COLORS.primary600};">Ver en Experiencia</a>
+                    <a href="${safePanel}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 28px;font-size:15px;font-weight:600;color:#fff !important;text-decoration:none;border-radius:12px;background:${COLORS.primary600};">Abrir Experiencia del local</a>
                   </td>
                 </tr>
               </table>
             </td>
           </tr>
           <tr>
-            <td style="padding:14px 28px 22px;border-top:1px solid ${COLORS.border};font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:${COLORS.textMuted};text-align:center;">
-              Alerta automática de SimpleReserva · ${safeRestaurant}
+            <td style="padding:16px 28px 24px;border-top:1px solid ${COLORS.border};font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.6;color:${COLORS.textMuted};text-align:center;">
+              Aviso automático de
+              <a href="${safeSiteUrl}" target="_blank" rel="noopener noreferrer" style="color:${COLORS.primary600};font-weight:600;text-decoration:none;">SimpleReserva</a>
+              · software de reservas para restaurantes en Chile<br/>
+              <span style="font-size:11px;">Local: ${safeRestaurant}</span>
             </td>
           </tr>
         </table>
@@ -203,10 +252,15 @@ function buildFeedbackRecoveryAlertHtml(options) {
 /**
  * @param {object} options
  */
-function getRecoveryAlertSubject({ restaurantName, customerName, overallScore, severity }) {
-  const label = SEVERITY_LABELS[severity] || 'Alerta';
-  const name = (customerName || 'Cliente').trim().slice(0, 40);
-  return `[Experiencia] ${label} · ${name} (${overallScore}/5) — ${restaurantName}`;
+function getRecoveryAlertSubject({ restaurantName, customerName, overallScore }) {
+  const name = (customerName || 'Un cliente').trim().slice(0, 40);
+  const local = (restaurantName || 'tu local').trim().slice(0, 50);
+  return `Mala experiencia en ${local}: ${name} dejó ${overallScore} de 5`;
 }
 
-module.exports = { buildFeedbackRecoveryAlertHtml, getRecoveryAlertSubject, SEVERITY_LABELS };
+module.exports = {
+  buildFeedbackRecoveryAlertHtml,
+  getRecoveryAlertSubject,
+  SEVERITY_LABELS,
+  resolveSiteHomeUrl,
+};

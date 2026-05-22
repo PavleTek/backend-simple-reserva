@@ -13,6 +13,14 @@ describe('satisfactionIndex', () => {
     assert.equal(r.index, 20);
   });
 
+  it('índice -40 con 5 respuestas (40% detractores, 0% promotores)', () => {
+    const r = computeSatisfactionIndex([1, 2, 3, 3, 3]);
+    assert.equal(r.count, 5);
+    assert.equal(r.promotersPct, 0);
+    assert.equal(r.detractorsPct, 40);
+    assert.equal(r.index, -40);
+  });
+
   it('computeFunnelRates', () => {
     const f = computeFunnelRates(100, 40, 20);
     assert.equal(f.clickRate, 40);

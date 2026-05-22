@@ -66,11 +66,19 @@ async function getRestaurantSummary(restaurantId, from, to) {
     },
   });
 
+  const neutralPct =
+    satisfaction.count > 0
+      ? Math.round((100 - satisfaction.promotersPct - satisfaction.detractorsPct) * 10) / 10
+      : 0;
+
   return {
     period: { from, to },
     experienceAverage: satisfaction.average,
     satisfactionIndex: satisfaction.index,
     satisfactionCount: satisfaction.count,
+    satisfactionPromotersPct: satisfaction.promotersPct,
+    satisfactionDetractorsPct: satisfaction.detractorsPct,
+    satisfactionNeutralPct: neutralPct,
     clickRate: funnel.clickRate,
     responseRate: funnel.responseRate,
     completionAfterClick: funnel.completionAfterClick,

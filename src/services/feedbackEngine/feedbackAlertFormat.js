@@ -36,9 +36,9 @@ const ALERT_DETAIL_INCLUDE = {
 };
 
 const SEVERITY_LABELS = {
-  high: 'Alta',
-  medium: 'Media',
-  low: 'Baja',
+  high: 'Urgente',
+  medium: 'Importante',
+  low: 'Por revisar',
 };
 
 function formatVisitLine(reservation, timezone) {
@@ -134,7 +134,7 @@ function buildRecoveryAlertContent({
   const name = customerName?.trim() || 'Cliente';
   const title =
     severity === 'high'
-      ? `Alerta recovery: ${name}`
+      ? `Mala experiencia: ${name}`
       : `Experiencia a mejorar: ${name}`;
 
   const lines = [];
@@ -174,21 +174,35 @@ function formatAlertForApi(alert, timezone = null) {
   const fr = alert.feedbackResponse;
   const reservation = fr?.feedbackRequest?.reservation;
 
+  const customerName = reservation?.customerName?.trim() || null;
+  const reservationEmail = reservation?.customerEmail?.trim() || null;
+  const reservationPhone = reservation?.customerPhone?.trim() || null;
+  const recoveryEmail = fr?.recoveryContactEmail?.trim() || null;
+
+  const displayTitle = customerName
+    ? `Mala experiencia: ${customerName}`
+    : 'Mala experiencia';
+
   return {
     id: alert.id,
     type: alert.type,
     severity: alert.severity,
     severityLabel: SEVERITY_LABELS[alert.severity] || alert.severity,
     severitySource: alert.severitySource,
-    title: alert.title,
+    title: displayTitle,
     body: alert.body,
     status: alert.status,
     createdAt: alert.createdAt,
     details,
-    customerName: reservation?.customerName ?? null,
+    customerName,
     overallScore: fr?.overallScore ?? null,
     recoveryContactRequested: !!fr?.recoveryContactRequested,
-    recoveryContactEmail: fr?.recoveryContactEmail ?? reservation?.customerEmail ?? null,
+    recoveryContactEmail: recoveryEmail || reservationEmail,
+    customerEmail: reservationEmail,
+    customerPhone: reservationPhone,
+    contactEmail:
+      fr?.recoveryContactRequested && recoveryEmail ? recoveryEmail : reservationEmail,
+    contactPhone: reservationPhone,
   };
 }
 
