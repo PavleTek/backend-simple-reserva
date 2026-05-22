@@ -184,6 +184,9 @@ model Restaurant {
   hostAssignments           HostRestaurantAssignment[]
   reservationAnalytics      ReservationAnalytics[]
   waitlistEntries           BookingWaitlistEntry[]
+  feedbackSurvey            FeedbackSurvey?
+  feedbackRequests          FeedbackRequest[]
+  feedbackAlerts            FeedbackAlert[]
 
   @@index([organizationId])
   @@index([isActive])
@@ -383,10 +386,124 @@ model Reservation {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
+  feedbackRequest           FeedbackRequest?
+
   @@index([restaurantId, dateTime, status])
   @@index([secureToken])
   @@index([confirmedByUserId])
   @@index([updatedByUserId])
+}
+
+/// Configuración de encuesta post-visita por restaurante (1:1)
+model FeedbackSurvey {
+  id                              String     @id @default(cuid())
+  restaurantId                    String     @unique
+  restaurant                      Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  enabled                         Boolean    @default(false)
+  sendDelayMinutes                Int        @default(75)
+  sendWindowMinutes               Int        @default(240)
+  minDaysBetweenFeedbackRequests  Int        @default(14)
+  eligibilityMode                 String     @default("confirmed_past_end") // "confirmed_past_end" | "completed_only"
+  excludeWalkIns                  Boolean    @default(true)
+  minPartySize                    Int?
+  maxPartySize                    Int?
+  googleReviewUrl                 String?
+  instagramUrl                    String?
+  recoveryThreshold               Int        @default(2)
+  notifyOnRecovery                Boolean    @default(true)
+  notifyEmail                     String?
+  brandingJson                    Json?
+  createdAt                       DateTime   @default(now())
+  updatedAt                       DateTime   @updatedAt
+}
+
+/// Un envío de encuesta por reserva (idempotente)
+model FeedbackRequest {
+  id                      String     @id @default(cuid())
+  reservationId           String     @unique
+  reservation             Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  restaurantId            String
+  restaurant              Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  token                   String     @unique @default(cuid())
+  channel                 String     @default("email")
+  customerEmailNormalized String?
+  scheduledFor            DateTime
+  sentAt                  DateTime?
+  clickedAt               DateTime?
+  openedAt                DateTime?
+  completedAt             DateTime?
+  status                  String     @default("pending") // pending | sent | clicked | opened | completed | expired | skipped
+  skipReason              String?
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
+
+  response                FeedbackResponse?
+
+  @@index([status, scheduledFor])
+  @@index([restaurantId, customerEmailNormalized, sentAt])
+}
+
+/// Respuesta del comensal
+model FeedbackResponse {
+  id                         String          @id @default(cuid())
+  feedbackRequestId        String          @unique
+  feedbackRequest            FeedbackRequest @relation(fields: [feedbackRequestId], references: [id], onDelete: Cascade)
+  overallScore               Int
+  serviceScore               Int?
+  foodScore                  Int?
+  atmosphereScore            Int?
+  reservationScore           Int?
+  comment                    String?
+  sentiment                  String?
+  recoveryTriggered          Boolean         @default(false)
+  recoveryContactRequested   Boolean         @default(false)
+  recoveryContactEmail       String?
+  recoveryContactPhone       String?
+  tags                       String[]        @default([])
+  partySize                  Int?
+  dateTime                   DateTime?
+  dayOfWeek                  Int?
+  hourBucket                 Int?
+  tableId                    String?
+  zoneId                     String?
+  organizationId             String?
+  cityKey                    String?
+  respondedAt                DateTime        @default(now())
+
+  alerts                     FeedbackAlert[]
+}
+
+/// Alertas de recovery e insights operacionales
+model FeedbackAlert {
+  id                 String            @id @default(cuid())
+  restaurantId       String
+  restaurant         Restaurant        @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  feedbackResponseId String?
+  feedbackResponse   FeedbackResponse? @relation(fields: [feedbackResponseId], references: [id], onDelete: SetNull)
+  type               String            @default("recovery") // recovery | extreme_negative | pattern
+  severity           String            @default("medium") // low | medium | high
+  severitySource     String?           // score | comment | both
+  matchedKeywords    String[]          @default([])
+  title              String
+  body               String
+  status             String            @default("open") // open | acknowledged | resolved
+  resolvedAt         DateTime?
+  resolvedByUserId   String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([restaurantId, status])
+}
+
+/// Opt-out de encuestas por email (hash)
+model CustomerFeedbackPreference {
+  id           String     @id @default(cuid())
+  emailHash    String
+  restaurantId String?
+  optedOutAt   DateTime   @default(now())
+
+  @@unique([emailHash, restaurantId])
+  @@index([emailHash])
 }
 
 model Subscription {
