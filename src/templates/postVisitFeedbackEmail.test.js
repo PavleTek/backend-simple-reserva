@@ -18,5 +18,9 @@ describe('postVisitFeedbackEmail', () => {
     assert.ok(!html.includes('Contanos'));
     assert.ok(html.includes('logo-full-480w.png'));
     assert.ok(html.includes('lang="es-CL"'));
+    assert.ok(html.includes('Enviado por SimpleReserva para Nuevo Local.'));
+    assert.ok(html.includes('&copy;'));
+    assert.ok(html.includes('2026 SimpleReserva'));
+    assert.ok(html.includes('SimpleReserva</p>'));
   });
 });

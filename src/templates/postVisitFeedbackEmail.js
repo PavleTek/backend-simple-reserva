@@ -1,7 +1,7 @@
 'use strict';
 
 const { formatDateDisplay, formatTime } = require('../utils/dateFormat');
-const { escapeHtml, resolveLogoImageUrl } = require('./reservationConfirmationEmail');
+const { escapeHtml, resolveLogoImageUrl, buildSimpleReservaEmailFooter } = require('./reservationConfirmationEmail');
 
 const COLORS = {
   pageBg: '#faf9f6',
@@ -94,11 +94,7 @@ function buildPostVisitFeedbackHtml(options) {
               </p>
             </td>
           </tr>
-          <tr>
-            <td style="padding:16px 28px 24px;border-top:1px solid ${COLORS.border};font-size:12px;color:${COLORS.textMuted};text-align:center;">
-              Enviado por SimpleReserva para ${safeRestaurant}
-            </td>
-          </tr>
+          ${buildSimpleReservaEmailFooter(restaurantName, { border: COLORS.border, textMuted: COLORS.textMuted, padding: '16px 28px 24px' })}
         </table>
       </td>
     </tr>

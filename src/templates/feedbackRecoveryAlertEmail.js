@@ -1,7 +1,7 @@
 'use strict';
 
 const { formatDateDisplay, formatTime } = require('../utils/dateFormat');
-const { escapeHtml, resolveLogoImageUrl } = require('./reservationConfirmationEmail');
+const { escapeHtml, resolveLogoImageUrl, buildSimpleReservaEmailFooter } = require('./reservationConfirmationEmail');
 
 const COLORS = {
   pageBg: '#faf9f6',
@@ -94,8 +94,6 @@ function buildFeedbackRecoveryAlertHtml(options) {
   const severityKey = SEVERITY_LABELS[severity] ? severity : 'medium';
   const severityLabel = SEVERITY_LABELS[severityKey] || 'Importante';
   const sevStyle = SEVERITY_STYLES[severityKey] || SEVERITY_STYLES.medium;
-  const siteUrl = resolveSiteHomeUrl(assetBaseUrl);
-  const safeSiteUrl = escapeHtml(siteUrl);
 
   const visitLine = formatVisitShort(visitDateTime, partySize, timezone);
   const categories = formatCategoryScores(categoryScores);
@@ -190,11 +188,7 @@ function buildFeedbackRecoveryAlertHtml(options) {
               <p style="margin:16px 0 0 0;font-size:12px;line-height:1.5;color:${COLORS.textMuted};text-align:center;">Al resolver el caso, deja una nota interna en el panel (solo la ve tu equipo).</p>
             </td>
           </tr>
-          <tr>
-            <td style="padding:14px 24px 20px;border-top:1px solid ${COLORS.border};font-size:11px;line-height:1.5;color:${COLORS.textMuted};text-align:center;">
-              <a href="${safeSiteUrl}" style="color:${COLORS.primary600};text-decoration:none;font-weight:600;">SimpleReserva</a> · reservas para restaurantes en Chile
-            </td>
-          </tr>
+          ${buildSimpleReservaEmailFooter(restaurantName, { border: COLORS.border, textMuted: COLORS.textMuted, padding: '14px 24px 20px' })}
         </table>
       </td>
     </tr>

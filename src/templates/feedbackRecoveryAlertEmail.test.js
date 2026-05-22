@@ -36,6 +36,9 @@ describe('feedbackRecoveryAlertEmail', () => {
     assert.ok(!html.includes('¿Qué pasó?'));
     assert.ok(!html.includes('Qué puedes hacer ahora'));
     assert.ok(!html.includes('vista o resuelta'));
+    assert.ok(html.includes('Enviado por SimpleReserva para Nuevo Local.'));
+    assert.ok(html.includes('&copy;'));
+    assert.ok(html.includes('2026 SimpleReserva'));
   });
 
   it('asunto corto con emoji de alerta', () => {

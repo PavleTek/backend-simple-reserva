@@ -177,8 +177,28 @@ function buildReservationConfirmationHtml(options) {
 </html>`;
 }
 
+/**
+ * Pie estándar de emails transaccionales SimpleReserva → local.
+ * @param {string} restaurantName
+ * @param {{ border?: string; textMuted?: string; padding?: string }} [style]
+ */
+function buildSimpleReservaEmailFooter(restaurantName, style = {}) {
+  const year = new Date().getFullYear();
+  const safeRestaurant = escapeHtml(restaurantName);
+  const border = style.border ?? '#e8e7e3';
+  const textMuted = style.textMuted ?? '#8a8675';
+  const padding = style.padding ?? '16px 28px 24px';
+  return `<tr>
+    <td style="padding:${padding};border-top:1px solid ${border};font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.5;color:${textMuted};text-align:center;">
+      <p style="margin:0 0 6px 0;">Enviado por SimpleReserva para ${safeRestaurant}.</p>
+      <p style="margin:0;">&copy; ${year} SimpleReserva</p>
+    </td>
+  </tr>`;
+}
+
 module.exports = {
   buildReservationConfirmationHtml,
+  buildSimpleReservaEmailFooter,
   escapeHtml,
   resolveLogoImageUrl,
 };
