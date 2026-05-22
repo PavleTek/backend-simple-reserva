@@ -42,7 +42,7 @@ Monitorear `clicked/sent` y `completed/clicked` por variante.
 
 1. `npx prisma migrate deploy`
 2. Deploy backend (job activo si `FEEDBACK_ENABLED_GLOBAL` ≠ false)
-3. Deploy user-front + restaurant-front
+3. Deploy user-front + restaurant-front (user-front: `serve.json` debe incluir rewrite `/feedback/**` → `index.html`)
 4. Pilot: `FeedbackSurvey.enabled=true` en 3–5 locales
 5. Logs: `[FeedbackJob]`
 

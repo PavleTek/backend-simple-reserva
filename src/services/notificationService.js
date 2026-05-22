@@ -624,6 +624,7 @@ async function sendPostVisitFeedbackEmail(options) {
     : null;
   const fromEmail = fromSender || 'noreply@simplereserva.com';
 
+  const assetBaseUrl = getBaseUrl().replace(/\/$/, '');
   const html = buildPostVisitFeedbackHtml({
     restaurantName,
     customerName,
@@ -631,6 +632,7 @@ async function sendPostVisitFeedbackEmail(options) {
     clickUrl,
     optOutUrl,
     timezone,
+    assetBaseUrl,
   });
 
   try {

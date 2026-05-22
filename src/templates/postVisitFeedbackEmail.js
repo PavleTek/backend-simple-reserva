@@ -1,7 +1,7 @@
 'use strict';
 
 const { formatDateDisplay, formatTime } = require('../utils/dateFormat');
-const { escapeHtml } = require('./reservationConfirmationEmail');
+const { escapeHtml, resolveLogoImageUrl } = require('./reservationConfirmationEmail');
 
 const COLORS = {
   pageBg: '#faf9f6',
@@ -21,6 +21,7 @@ const SUBJECTS = {
 
 /**
  * @param {object} options
+ * @param {string} [options.assetBaseUrl] - Origen HTTPS para logo (p. ej. FRONTEND_LANDING_PAGE_URL)
  */
 function buildPostVisitFeedbackHtml(options) {
   const {
@@ -30,6 +31,7 @@ function buildPostVisitFeedbackHtml(options) {
     clickUrl,
     optOutUrl,
     timezone = null,
+    assetBaseUrl = '',
   } = options;
 
   const dt = new Date(dateTime);
@@ -44,6 +46,11 @@ function buildPostVisitFeedbackHtml(options) {
   const safeTime = escapeHtml(timeStr);
   const preheader = `Tu visita del ${dateStr} · ${restaurantName}`;
 
+  const logoUrl = resolveLogoImageUrl(assetBaseUrl);
+  const logoBlock = logoUrl
+    ? `<tr><td align="center" style="padding:0 0 20px 0;"><img src="${escapeHtml(logoUrl)}" alt="SimpleReserva" width="200" style="display:block;width:200px;height:auto;max-width:200px;border:0;outline:none;text-decoration:none;" /></td></tr>`
+    : `<tr><td align="center" style="padding:0 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:700;color:${COLORS.primary700};letter-spacing:-0.02em;">SimpleReserva</td></tr>`;
+
   return `<!DOCTYPE html>
 <html lang="es-CL">
 <head>
@@ -56,16 +63,29 @@ function buildPostVisitFeedbackHtml(options) {
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:${COLORS.pageBg};">
     <tr>
       <td align="center" style="padding:32px 16px;">
-        <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:${COLORS.cardBg};border-radius:16px;border:1px solid ${COLORS.border};">
+        <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:${COLORS.cardBg};border-radius:16px;border:1px solid ${COLORS.border};overflow:hidden;box-shadow:0 4px 12px rgba(28,27,23,0.06);">
           <tr>
-            <td style="padding:32px 28px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;color:${COLORS.textPrimary};">
+            <td style="padding:28px 32px 8px 32px;background:linear-gradient(180deg,#faf0f1 0%,${COLORS.cardBg} 100%);">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                ${logoBlock}
+                <tr>
+                  <td align="center" style="padding:4px 0 0 0;">
+                    <p style="margin:0;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:${COLORS.primary600};">Tu opinión importa</p>
+                    <h1 style="margin:10px 0 0 0;font-family:Georgia,'Times New Roman',serif;font-size:24px;font-weight:700;color:${COLORS.textPrimary};line-height:1.2;">${safeRestaurant}</h1>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 32px 28px 32px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;color:${COLORS.textPrimary};">
               <p style="margin:0 0 12px 0;font-size:15px;color:${COLORS.textSecondary};">Hola ${safeCustomer},</p>
               <p style="margin:0 0 16px 0;">Gracias por venir a <strong>${safeRestaurant}</strong> (${safeDate}, ${safeTime}).</p>
-              <p style="margin:0 0 24px 0;color:${COLORS.textSecondary};">¿Nos ayudas con tu opinión? Son un par de toques — nos importa de verdad.</p>
+              <p style="margin:0 0 24px 0;color:${COLORS.textSecondary};">¿Nos ayudas con tu opinión? Son unos minutos y nos importa de verdad.</p>
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                 <tr>
                   <td align="center">
-                    <a href="${safeClick}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 28px;font-size:16px;font-weight:600;color:#fff !important;text-decoration:none;border-radius:12px;background:${COLORS.primary600};">Contanos cómo fue</a>
+                    <a href="${safeClick}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 28px;font-size:16px;font-weight:600;color:#fff !important;text-decoration:none;border-radius:12px;background:${COLORS.primary600};">Cuéntanos cómo fue</a>
                   </td>
                 </tr>
               </table>
