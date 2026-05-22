@@ -209,7 +209,7 @@ router.get('/outreach', async (req, res, next) => {
   try {
     const restaurantId = restaurantIdFromParams(req);
     const { page, limit } = parsePagination(req);
-    const result = await listFeedbackOutreach(restaurantId, { page, limit });
+    const result = await listFeedbackOutreach(restaurantId, { page, limit, forAdmin: true });
     res.json(result);
   } catch (err) {
     next(err);
@@ -220,7 +220,7 @@ router.get('/requests', async (req, res, next) => {
   try {
     const restaurantId = restaurantIdFromParams(req);
     const { page, limit } = parsePagination(req);
-    const result = await listFeedbackOutreach(restaurantId, { page, limit });
+    const result = await listFeedbackOutreach(restaurantId, { page, limit, forAdmin: true });
     res.json(result);
   } catch (err) {
     next(err);
