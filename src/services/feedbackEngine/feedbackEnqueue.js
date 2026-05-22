@@ -4,43 +4,53 @@ const prisma = require('../../lib/prisma');
 const logger = require('../../lib/logger');
 const { normalizeCustomerEmail } = require('./emailNormalize');
 const { checkReservationEligibility } = require('./eligibility');
-const { computeVisitEnd, computeScheduledFor, evaluateSendWindow } = require('./scheduling');
+const {
+  resolveScheduledFor,
+  evaluateSendWindowForReservation,
+  shouldAutoSendOnStatusChange,
+  isCompletedOnlyMode,
+} = require('./scheduling');
 const {
   processFeedbackRequest,
   getOrCreateFeedbackSurvey,
 } = require('./sendFeedback');
 const { canSendFeedback } = require('../subscriptionService');
+const planService = require('../planService');
 
 const OUTREACH_LOOKBACK_DAYS = 90;
 
-/** Envío al marcar completada (modo completed_only): sin esperar fin de visita ni ventana. */
 const COMPLETED_MARK_SEND_OVERRIDES = {
   bypassTooEarly: true,
   bypassWindow: true,
 };
 
-function shouldSendImmediatelyOnCompleted(survey, reservation) {
-  return survey.eligibilityMode === 'completed_only' && reservation.status === 'completed';
-}
-
-function resolveScheduledFor(reservation, survey) {
-  if (shouldSendImmediatelyOnCompleted(survey, reservation)) {
-    return new Date();
+function resolveEligibility(reservation, survey, now) {
+  if (isCompletedOnlyMode(survey) && reservation.status === 'completed') {
+    const base = checkReservationEligibility(reservation, survey, now);
+    if (!base.eligible && base.skipReason !== 'not_completed') {
+      return base;
+    }
+    return { eligible: true, skipReason: null };
   }
-  const visitEnd = computeVisitEnd(reservation.dateTime, reservation.durationMinutes);
-  return computeScheduledFor(visitEnd, survey.sendDelayMinutes);
+  return checkReservationEligibility(reservation, survey, now);
 }
 
 /**
- * Crea o devuelve FeedbackRequest pendiente para una reserva elegible.
- * @param {object} reservation - fila Reservation
+ * @param {object} reservation
  * @param {object} [options]
  * @param {boolean} [options.trySendNow]
- * @returns {Promise<{ request: object|null; created: boolean; eligible: boolean; reason?: string; sendResult?: object }>}
+ * @param {boolean} [options.skipPlanCheck]
  */
 async function ensureFeedbackRequestForReservation(reservation, options = {}) {
+  if (!options.skipPlanCheck) {
+    const planOk = await planService.canUsePostVisitFeedback(reservation.restaurantId);
+    if (!planOk) {
+      return { request: null, created: false, eligible: false, reason: 'plan' };
+    }
+  }
+
   const survey = await getOrCreateFeedbackSurvey(reservation.restaurantId);
-  const { eligible, skipReason } = checkReservationEligibility(reservation, survey);
+  const { eligible, skipReason } = resolveEligibility(reservation, survey);
 
   if (!eligible) {
     return { request: null, created: false, eligible: false, reason: skipReason };
@@ -75,32 +85,47 @@ async function ensureFeedbackRequestForReservation(reservation, options = {}) {
         throw err;
       }
     }
+  } else if (isCompletedOnlyMode(survey) && reservation.status === 'completed' && !request.sentAt) {
+    request = await prisma.feedbackRequest.update({
+      where: { id: request.id },
+      data: { scheduledFor, status: 'pending', skipReason: null },
+    });
   }
 
   let sendResult;
-  if (options.trySendNow && request && !request.sentAt) {
+  const trySend = options.trySendNow && request && !request.sentAt;
+  if (trySend) {
     const canSend = await canSendFeedback(reservation.restaurantId);
-    const adminOverrides = shouldSendImmediatelyOnCompleted(survey, reservation)
-      ? COMPLETED_MARK_SEND_OVERRIDES
-      : null;
+    const useInstantOverrides =
+      isCompletedOnlyMode(survey) && reservation.status === 'completed';
     sendResult = await processFeedbackRequest({
       reservation,
       survey,
       canSend,
-      adminOverrides,
+      adminOverrides: useInstantOverrides ? COMPLETED_MARK_SEND_OVERRIDES : null,
     });
+    if (!sendResult.sent && sendResult.reason) {
+      logger.info(
+        {
+          reservationId: reservation.id,
+          restaurantId: reservation.restaurantId,
+          reason: sendResult.reason,
+        },
+        '[FeedbackEnqueue] send on enqueue skipped',
+      );
+    }
   }
 
   return { request, created, eligible: true, sendResult };
 }
 
-/**
- * Tras cambio de estado de reserva (p. ej. completada).
- */
 async function syncFeedbackOnReservationStatusChange(reservation, newStatus) {
   if (newStatus !== 'completed' && newStatus !== 'confirmed') return;
 
   try {
+    const planOk = await planService.canUsePostVisitFeedback(reservation.restaurantId);
+    if (!planOk) return;
+
     const survey = await getOrCreateFeedbackSurvey(reservation.restaurantId);
     if (!survey.enabled) return;
 
@@ -109,17 +134,8 @@ async function syncFeedbackOnReservationStatusChange(reservation, newStatus) {
     });
     if (!full) return;
 
-    if (newStatus === 'completed') {
-      await ensureFeedbackRequestForReservation(full, { trySendNow: true });
-      return;
-    }
-
-    if (newStatus === 'confirmed' && survey.eligibilityMode !== 'completed_only') {
-      const { eligible } = checkReservationEligibility(full, survey);
-      if (eligible) {
-        await ensureFeedbackRequestForReservation(full, { trySendNow: true });
-      }
-    }
+    const trySendNow = shouldAutoSendOnStatusChange(full, survey);
+    await ensureFeedbackRequestForReservation(full, { trySendNow, skipPlanCheck: true });
   } catch (err) {
     logger.error(
       { err, reservationId: reservation.id, newStatus },
@@ -128,18 +144,22 @@ async function syncFeedbackOnReservationStatusChange(reservation, newStatus) {
   }
 }
 
-/**
- * Lista unificada para admin: solicitudes existentes + reservas elegibles sin solicitud.
- */
 async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50 } = {}) {
   const survey = await getOrCreateFeedbackSurvey(restaurantId);
   const now = new Date();
   const lookback = new Date(now.getTime() - OUTREACH_LOOKBACK_DAYS * 24 * 60 * 60_000);
   const skip = (page - 1) * limit;
 
-  if (!survey.enabled) {
+  const planOk = await planService.canUsePostVisitFeedback(restaurantId);
+
+  if (!survey.enabled || !planOk) {
     return {
-      survey: { enabled: false, eligibilityMode: survey.eligibilityMode },
+      survey: {
+        enabled: survey.enabled,
+        eligibilityMode: survey.eligibilityMode,
+        sendDelayMinutes: survey.sendDelayMinutes,
+        planAllowsFeedback: planOk,
+      },
       items: [],
       pagination: { page, limit, total: 0, totalPages: 0 },
     };
@@ -158,18 +178,17 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50 } = {})
       dateTime: { gte: lookback },
     },
     orderBy: { dateTime: 'desc' },
-    include: {
-      feedbackRequest: true,
-    },
+    include: { feedbackRequest: true },
   });
 
   const rows = [];
   for (const r of reservations) {
-    const { eligible, skipReason } = checkReservationEligibility(r, survey, now);
+    const { eligible, skipReason } = resolveEligibility(r, survey, now);
     const req = r.feedbackRequest;
-    const visitEnd = computeVisitEnd(r.dateTime, r.durationMinutes);
-    const scheduledFor = computeScheduledFor(visitEnd, survey.sendDelayMinutes);
-    const window = evaluateSendWindow(scheduledFor, survey.sendWindowMinutes, now);
+    const windowInfo = evaluateSendWindowForReservation(r, survey, now);
+    const scheduledFor = req?.scheduledFor ?? resolveScheduledFor(r, survey);
+
+    const surveyAnswered = req?.status === 'completed';
 
     rows.push({
       reservationId: r.id,
@@ -180,17 +199,17 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50 } = {})
       reservationStatus: r.status,
       eligible,
       eligibilityReason: eligible ? null : skipReason,
-      scheduledFor: req?.scheduledFor ?? scheduledFor,
+      scheduledFor,
       sentAt: req?.sentAt ?? null,
       requestStatus: req?.status ?? (eligible ? 'sin_solicitud' : 'no_elegible'),
       skipReason: req?.skipReason ?? null,
       emailSent: !!req?.sentAt,
-      inSendWindow: window.inWindow,
-      sendWindowState: window.expired ? 'expired' : window.tooEarly ? 'too_early' : 'in_window',
+      inSendWindow: windowInfo.inWindow,
+      sendWindowState: windowInfo.label,
       canSendManual:
         eligible
         && !!normalizeCustomerEmail(r.customerEmail)
-        && (!req || !['completed'].includes(req.status)),
+        && !surveyAnswered,
     });
   }
 
@@ -209,6 +228,7 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50 } = {})
       enabled: survey.enabled,
       eligibilityMode: survey.eligibilityMode,
       sendDelayMinutes: survey.sendDelayMinutes,
+      planAllowsFeedback: planOk,
     },
     items,
     pagination: {
@@ -220,17 +240,18 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50 } = {})
   };
 }
 
-/**
- * Crea solicitudes pendientes para reservas elegibles recientes (backfill / soporte).
- */
 async function syncRestaurantFeedbackQueue(restaurantId) {
-  const survey = await getOrCreateFeedbackSurvey(restaurantId);
-  if (!survey.enabled) {
-    return { enqueued: 0, total: 0, enabled: false };
+  const planOk = await planService.canUsePostVisitFeedback(restaurantId);
+  if (!planOk) {
+    return { enqueued: 0, total: 0, enabled: false, planAllowsFeedback: false };
   }
 
-  const now = new Date();
-  const lookback = new Date(now.getTime() - OUTREACH_LOOKBACK_DAYS * 24 * 60 * 60_000);
+  const survey = await getOrCreateFeedbackSurvey(restaurantId);
+  if (!survey.enabled) {
+    return { enqueued: 0, total: 0, enabled: false, planAllowsFeedback: true };
+  }
+
+  const lookback = new Date(Date.now() - OUTREACH_LOOKBACK_DAYS * 24 * 60 * 60_000);
   const statusFilter =
     survey.eligibilityMode === 'completed_only'
       ? ['completed']
@@ -252,11 +273,57 @@ async function syncRestaurantFeedbackQueue(restaurantId) {
   for (const r of reservations) {
     const { created, eligible } = await ensureFeedbackRequestForReservation(r, {
       trySendNow: false,
+      skipPlanCheck: true,
     });
     if (created && eligible) enqueued += 1;
   }
 
-  return { enqueued, total: reservations.length, enabled: true };
+  return { enqueued, total: reservations.length, enabled: true, planAllowsFeedback: true };
+}
+
+/**
+ * Resumen por organización (admin).
+ */
+async function getOrganizationFeedbackOverview(organizationId) {
+  const restaurants = await prisma.restaurant.findMany({
+    where: { organizationId, isDeleted: false },
+    select: { id: true, name: true, slug: true },
+    orderBy: { name: 'asc' },
+  });
+
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60_000);
+  const items = [];
+
+  for (const r of restaurants) {
+    const planOk = await planService.canUsePostVisitFeedback(r.id);
+    const survey = await prisma.feedbackSurvey.findUnique({ where: { restaurantId: r.id } });
+
+    const [sent30d, pendingCount, openAlerts] = await Promise.all([
+      prisma.feedbackRequest.count({
+        where: { restaurantId: r.id, sentAt: { gte: since } },
+      }),
+      prisma.feedbackRequest.count({
+        where: { restaurantId: r.id, sentAt: null, status: 'pending' },
+      }),
+      prisma.feedbackAlert.count({
+        where: { restaurantId: r.id, status: 'open', type: 'recovery' },
+      }),
+    ]);
+
+    items.push({
+      restaurantId: r.id,
+      restaurantName: r.name,
+      slug: r.slug,
+      planAllowsFeedback: planOk,
+      surveyEnabled: !!survey?.enabled,
+      eligibilityMode: survey?.eligibilityMode ?? 'confirmed_past_end',
+      sentLast30Days: sent30d,
+      pendingSendCount: pendingCount,
+      openRecoveryAlerts: openAlerts,
+    });
+  }
+
+  return { items };
 }
 
 module.exports = {
@@ -264,4 +331,5 @@ module.exports = {
   syncFeedbackOnReservationStatusChange,
   listFeedbackOutreach,
   syncRestaurantFeedbackQueue,
+  getOrganizationFeedbackOverview,
 };

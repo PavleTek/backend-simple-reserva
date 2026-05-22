@@ -3,12 +3,16 @@
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const logger = require('../lib/logger');
+const planService = require('../services/planService');
 const { canSendFeedback } = require('../services/subscriptionService');
 const {
   checkReservationEligibility,
   computeVisitEnd,
   computeScheduledFor,
   evaluateSendWindow,
+  isCompletedOnlyMode,
+  resolveScheduledFor,
+  evaluateSendWindowForReservation,
 } = require('../services/feedbackEngine');
 const { processFeedbackRequest } = require('../services/feedbackEngine/sendFeedback');
 const { ensureFeedbackRequestForReservation } = require('../services/feedbackEngine/feedbackEnqueue');
@@ -19,15 +23,35 @@ async function findCandidateReservations() {
   const now = new Date();
   const surveys = await prisma.feedbackSurvey.findMany({
     where: { enabled: true },
-    select: { restaurantId: true, sendDelayMinutes: true, sendWindowMinutes: true, eligibilityMode: true, excludeWalkIns: true, minPartySize: true, maxPartySize: true, minDaysBetweenFeedbackRequests: true },
+    select: {
+      restaurantId: true,
+      sendDelayMinutes: true,
+      sendWindowMinutes: true,
+      eligibilityMode: true,
+      excludeWalkIns: true,
+      minPartySize: true,
+      maxPartySize: true,
+      minDaysBetweenFeedbackRequests: true,
+    },
   });
 
   if (surveys.length === 0) {
     return { candidates: [], surveyByRestaurant: new Map(), restaurantIds: [] };
   }
 
-  const surveyByRestaurant = new Map(surveys.map((s) => [s.restaurantId, s]));
-  const restaurantIds = surveys.map((s) => s.restaurantId);
+  const planChecks = await Promise.all(
+    surveys.map(async (s) => ({
+      survey: s,
+      allowed: await planService.canUsePostVisitFeedback(s.restaurantId),
+    }))
+  );
+  const eligibleSurveys = planChecks.filter((p) => p.allowed).map((p) => p.survey);
+
+  const surveyByRestaurant = new Map(eligibleSurveys.map((s) => [s.restaurantId, s]));
+  const restaurantIds = eligibleSurveys.map((s) => s.restaurantId);
+  if (restaurantIds.length === 0) {
+    return { candidates: [], surveyByRestaurant, restaurantIds: [] };
+  }
 
   const reservations = await prisma.reservation.findMany({
     where: {
@@ -47,6 +71,12 @@ async function findCandidateReservations() {
   for (const r of reservations) {
     const survey = surveyByRestaurant.get(r.restaurantId);
     if (!survey) continue;
+
+    if (isCompletedOnlyMode(survey)) {
+      if (r.status !== 'completed') continue;
+      candidates.push({ reservation: r, survey, expired: false, completedOnly: true });
+      continue;
+    }
 
     const { eligible } = checkReservationEligibility(r, survey, now);
     if (!eligible) continue;
@@ -81,9 +111,25 @@ async function runPostVisitFeedback() {
     let skipped = 0;
     let expired = 0;
 
-    for (const { reservation, survey, expired: isExpired, enqueueOnly } of candidates) {
+    for (const { reservation, survey, expired: isExpired, enqueueOnly, completedOnly } of candidates) {
       if (enqueueOnly) {
-        await ensureFeedbackRequestForReservation(reservation, { trySendNow: false });
+        await ensureFeedbackRequestForReservation(reservation, {
+          trySendNow: false,
+          skipPlanCheck: true,
+        });
+        continue;
+      }
+
+      if (completedOnly) {
+        const canSend = await canSendFeedback(reservation.restaurantId);
+        const result = await processFeedbackRequest({
+          reservation,
+          survey,
+          canSend,
+          adminOverrides: { bypassTooEarly: true, bypassWindow: true },
+        });
+        if (result.sent) sent++;
+        else if (result.skipped) skipped++;
         continue;
       }
 
@@ -94,10 +140,7 @@ async function runPostVisitFeedback() {
               reservationId: reservation.id,
               restaurantId: reservation.restaurantId,
               customerEmailNormalized: (reservation.customerEmail || '').trim().toLowerCase(),
-              scheduledFor: computeScheduledFor(
-                computeVisitEnd(reservation.dateTime, reservation.durationMinutes),
-                survey.sendDelayMinutes
-              ),
+              scheduledFor: resolveScheduledFor(reservation, survey),
               status: 'expired',
               skipReason: 'window_expired',
             },
@@ -130,21 +173,29 @@ async function runPostVisitFeedback() {
       take: BATCH_SIZE,
     });
 
+    const now = new Date();
     for (const req of pendingToSend) {
       if (!req.reservation) continue;
       const survey = surveyByRestaurant.get(req.restaurantId);
       if (!survey?.enabled) continue;
 
-      const visitEnd = computeVisitEnd(req.reservation.dateTime, req.reservation.durationMinutes);
-      const scheduledFor = computeScheduledFor(visitEnd, survey.sendDelayMinutes);
-      const window = evaluateSendWindow(scheduledFor, survey.sendWindowMinutes, new Date());
-      if (!window.inWindow) continue;
+      const planOk = await planService.canUsePostVisitFeedback(req.restaurantId);
+      if (!planOk) continue;
+
+      const windowInfo = evaluateSendWindowForReservation(req.reservation, survey, now);
+      if (!windowInfo.inWindow) continue;
 
       const canSend = await canSendFeedback(req.restaurantId);
+      const overrides =
+        isCompletedOnlyMode(survey) && req.reservation.status === 'completed'
+          ? { bypassTooEarly: true, bypassWindow: true }
+          : null;
+
       const result = await processFeedbackRequest({
         reservation: req.reservation,
         survey,
         canSend,
+        adminOverrides: overrides,
       });
       if (result.sent) sent++;
       else if (result.skipped) skipped++;

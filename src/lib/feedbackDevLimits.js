@@ -9,6 +9,7 @@ const FEEDBACK_SEND_DELAY_MAX_MINUTES = 480;
 
 function validateSendDelayMinutes(value, options = {}) {
   if (value === undefined || value === null) return { ok: true };
+  if (options.eligibilityMode === 'completed_only') return { ok: true };
   const min = options.admin ? 1 : FEEDBACK_SEND_DELAY_MIN_MINUTES;
   const n = Number(value);
   if (!Number.isFinite(n) || !Number.isInteger(n)) {

@@ -400,7 +400,7 @@ model FeedbackSurvey {
   restaurantId                    String     @unique
   restaurant                      Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   enabled                         Boolean    @default(false)
-  sendDelayMinutes                Int        @default(75)
+  sendDelayMinutes                Int        @default(60)
   sendWindowMinutes               Int        @default(240)
   minDaysBetweenFeedbackRequests  Int        @default(14)
   eligibilityMode                 String     @default("confirmed_past_end") // "confirmed_past_end" | "completed_only"
@@ -599,6 +599,7 @@ model Plan {
   googleReserveIntegration Boolean  @default(false)
   multipleMenu             Boolean  @default(false)
   prioritySupport          Boolean  @default(false)
+  postVisitFeedback        Boolean  @default(false)
 
   comingSoon               Boolean  @default(false)
   comingSoonLabel          String?

@@ -22,4 +22,5 @@ module.exports = {
   syncFeedbackOnReservationStatusChange: require('./feedbackEnqueue').syncFeedbackOnReservationStatusChange,
   listFeedbackOutreach: require('./feedbackEnqueue').listFeedbackOutreach,
   syncRestaurantFeedbackQueue: require('./feedbackEnqueue').syncRestaurantFeedbackQueue,
+  getOrganizationFeedbackOverview: require('./feedbackEnqueue').getOrganizationFeedbackOverview,
 };

@@ -3,37 +3,49 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
 const {
-  computeVisitEnd,
-  computeScheduledFor,
-  evaluateSendWindow,
+  isCompletedOnlyMode,
+  resolveScheduledFor,
+  shouldAutoSendOnStatusChange,
+  evaluateSendWindowForReservation,
 } = require('../scheduling');
 
-describe('scheduling', () => {
-  it('computeVisitEnd adds duration', () => {
-    const start = new Date('2026-05-20T20:00:00Z');
-    const end = computeVisitEnd(start, 90);
-    assert.equal(end.getTime() - start.getTime(), 90 * 60_000);
+describe('scheduling modes', () => {
+  it('completed_only resolves scheduledFor to now when completed', () => {
+    const survey = { eligibilityMode: 'completed_only', sendDelayMinutes: 60, sendWindowMinutes: 240 };
+    const reservation = {
+      status: 'completed',
+      dateTime: new Date(Date.now() + 24 * 60 * 60_000),
+      durationMinutes: 60,
+    };
+    assert.equal(isCompletedOnlyMode(survey), true);
+    const scheduled = resolveScheduledFor(reservation, survey);
+    assert.ok(scheduled.getTime() <= Date.now() + 5000);
   });
 
-  it('evaluateSendWindow 240 min accepts 3h late', () => {
-    const scheduled = new Date('2026-05-20T22:15:00Z');
-    const now = new Date(scheduled.getTime() + 3 * 60 * 60_000);
-    const w = evaluateSendWindow(scheduled, 240, now);
-    assert.equal(w.inWindow, true);
-    assert.equal(w.expired, false);
+  it('shouldAutoSendOnStatusChange is true for completed_only when completed', () => {
+    const survey = { eligibilityMode: 'completed_only', enabled: true, sendWindowMinutes: 240 };
+    const reservation = {
+      status: 'completed',
+      dateTime: new Date(Date.now() + 24 * 60 * 60_000),
+      durationMinutes: 60,
+    };
+    assert.equal(shouldAutoSendOnStatusChange(reservation, survey), true);
   });
 
-  it('evaluateSendWindow expires after 4h', () => {
-    const scheduled = new Date('2026-05-20T22:15:00Z');
-    const now = new Date(scheduled.getTime() + 5 * 60 * 60_000);
-    const w = evaluateSendWindow(scheduled, 240, now);
-    assert.equal(w.expired, true);
-    assert.equal(w.inWindow, false);
-  });
-
-  it('computeScheduledFor applies delay', () => {
-    const visitEnd = new Date('2026-05-20T21:30:00Z');
-    const scheduled = computeScheduledFor(visitEnd, 75);
-    assert.equal(scheduled.getTime() - visitEnd.getTime(), 75 * 60_000);
+  it('confirmed_past_end does not auto-send before visit ends', () => {
+    const survey = {
+      eligibilityMode: 'confirmed_past_end',
+      enabled: true,
+      sendDelayMinutes: 60,
+      sendWindowMinutes: 240,
+    };
+    const reservation = {
+      status: 'completed',
+      dateTime: new Date(Date.now() + 24 * 60 * 60_000),
+      durationMinutes: 60,
+    };
+    assert.equal(shouldAutoSendOnStatusChange(reservation, survey), false);
+    const w = evaluateSendWindowForReservation(reservation, survey);
+    assert.equal(w.label, 'visit_not_ended');
   });
 });

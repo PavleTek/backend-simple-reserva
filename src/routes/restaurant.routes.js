@@ -7,7 +7,11 @@ const {
   assertHostPartySizeIncrease,
 } = require('../auth/permissions');
 const { writeAuditLog } = require('../services/auditLogService');
-const { sendReservationConfirmation, sendModificationAlertToCustomer } = require('../services/notificationService');
+const {
+  sendReservationConfirmation,
+  sendReservationConfirmationEmail,
+  sendModificationAlertToCustomer,
+} = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
 const { getRestaurant, updateRestaurant, completeOnboarding } = require('../controllers/restaurantController');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
@@ -883,7 +887,8 @@ router.post('/reservations', async (req, res, next) => {
 
     if (!isWalkIn) {
       canSendConfirmations(restaurantId).then((ok) => {
-        if (ok && reservation.customerPhone) {
+        if (!ok) return;
+        if (reservation.customerPhone) {
           sendReservationConfirmation({
             customerPhone: reservation.customerPhone,
             restaurantName: restaurant.name,
@@ -892,6 +897,25 @@ router.post('/reservations', async (req, res, next) => {
             secureToken: reservation.secureToken,
             restaurantId,
           }).catch((err) => console.error('[Notification] Confirmation failed:', err));
+        }
+        if (reservation.customerEmail) {
+          sendReservationConfirmationEmail({
+            customerEmail: reservation.customerEmail,
+            restaurantName: restaurant.name,
+            customerName: name,
+            dateTime: reservation.dateTime,
+            partySize: size,
+            secureToken: reservation.secureToken,
+            timezone,
+          })
+            .then((sent) => {
+              if (sent) {
+                prisma.reservation
+                  .update({ where: { id: reservation.id }, data: { emailSent: true } })
+                  .catch((err) => console.error('[Notification] emailSent update failed:', err));
+              }
+            })
+            .catch((err) => console.error('[Notification] Email confirmation failed:', err));
         }
       });
     }

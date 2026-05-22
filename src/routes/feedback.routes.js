@@ -17,6 +17,11 @@ const {
   getRestaurantInsights,
 } = require('../services/feedbackEngine');
 const { hashEmail } = require('../services/feedbackEngine/emailNormalize');
+const { requirePostVisitFeedbackPlan } = require('../middleware/requirePostVisitFeedbackPlan');
+const {
+  listFeedbackOutreach,
+  syncRestaurantFeedbackQueue,
+} = require('../services/feedbackEngine/feedbackEnqueue');
 
 const publicLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -102,6 +107,7 @@ const restaurantRouter = express.Router({ mergeParams: true });
 restaurantRouter.use(authenticateToken);
 restaurantRouter.use(authorizeRestaurant);
 restaurantRouter.use(authenticateRestaurantRoles(ROLES_FEEDBACK_VIEW));
+restaurantRouter.use(requirePostVisitFeedbackPlan);
 
 function parsePeriod(req) {
   const days = parseInt(req.query.days || '30', 10);
@@ -131,6 +137,7 @@ restaurantRouter.patch('/settings', authenticateRestaurantRoles(ROLES_FEEDBACK_S
   try {
     const restaurantId = req.params.restaurantId;
     const body = req.body || {};
+    const existing = await prisma.feedbackSurvey.findUnique({ where: { restaurantId } });
     const allowed = [
       'enabled', 'sendDelayMinutes', 'sendWindowMinutes', 'minDaysBetweenFeedbackRequests',
       'eligibilityMode', 'excludeWalkIns', 'minPartySize', 'maxPartySize',
@@ -145,12 +152,17 @@ restaurantRouter.patch('/settings', authenticateRestaurantRoles(ROLES_FEEDBACK_S
       throw new ValidationError('Modo de elegibilidad no válido');
     }
 
-    const delayCheck = validateSendDelayMinutes(data.sendDelayMinutes);
-    if (!delayCheck.ok) {
-      throw new ValidationError(delayCheck.message);
-    }
-    if (delayCheck.value !== undefined) {
-      data.sendDelayMinutes = delayCheck.value;
+    const effectiveMode = data.eligibilityMode || existing?.eligibilityMode || 'confirmed_past_end';
+    if (effectiveMode === 'completed_only') {
+      delete data.sendDelayMinutes;
+    } else if (data.sendDelayMinutes !== undefined) {
+      const delayCheck = validateSendDelayMinutes(data.sendDelayMinutes, { eligibilityMode: effectiveMode });
+      if (!delayCheck.ok) {
+        throw new ValidationError(delayCheck.message);
+      }
+      if (delayCheck.value !== undefined) {
+        data.sendDelayMinutes = delayCheck.value;
+      }
     }
 
     const survey = await prisma.feedbackSurvey.upsert({
@@ -241,6 +253,25 @@ restaurantRouter.get('/alerts', async (req, res, next) => {
       },
     });
     res.json(alerts);
+  } catch (err) {
+    next(err);
+  }
+});
+
+restaurantRouter.get('/outreach', async (req, res, next) => {
+  try {
+    const { page, limit } = parsePagination(req);
+    const result = await listFeedbackOutreach(req.params.restaurantId, { page, limit });
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+restaurantRouter.post('/sync', authenticateRestaurantRoles(ROLES_FEEDBACK_SETTINGS), async (req, res, next) => {
+  try {
+    const result = await syncRestaurantFeedbackQueue(req.params.restaurantId);
+    res.json(result);
   } catch (err) {
     next(err);
   }

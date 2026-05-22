@@ -3,7 +3,7 @@
 const prisma = require('../../lib/prisma');
 const { NotFoundError, ValidationError } = require('../../utils/errors');
 const { normalizeCustomerEmail } = require('./emailNormalize');
-const { computeVisitEnd, computeScheduledFor, evaluateSendWindow } = require('./scheduling');
+const { resolveScheduledFor, evaluateSendWindowForReservation } = require('./scheduling');
 const { isOnCooldown, isOptedOut } = require('./eligibility');
 const { sendPostVisitFeedbackEmail } = require('../notificationService');
 
@@ -45,9 +45,13 @@ async function processFeedbackRequest({ reservation, survey, canSend, adminOverr
   const forceCanSend = adminOverrides?.forceCanSend;
   const allowResend = adminOverrides?.allowResend;
 
-  const visitEnd = computeVisitEnd(reservation.dateTime, reservation.durationMinutes);
-  const scheduledFor = computeScheduledFor(visitEnd, survey.sendDelayMinutes);
-  const window = evaluateSendWindow(scheduledFor, survey.sendWindowMinutes);
+  const scheduledFor = resolveScheduledFor(reservation, survey);
+  const windowInfo = evaluateSendWindowForReservation(reservation, survey);
+  const window = {
+    inWindow: windowInfo.inWindow,
+    expired: windowInfo.expired,
+    tooEarly: windowInfo.tooEarly,
+  };
 
   let request = await prisma.feedbackRequest.findUnique({
     where: { reservationId: reservation.id },

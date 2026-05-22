@@ -62,6 +62,7 @@ router.patch('/settings', async (req, res, next) => {
   try {
     const restaurantId = restaurantIdFromParams(req);
     const body = req.body || {};
+    const existing = await prisma.feedbackSurvey.findUnique({ where: { restaurantId } });
     const allowed = [
       'enabled', 'sendDelayMinutes', 'sendWindowMinutes', 'minDaysBetweenFeedbackRequests',
       'eligibilityMode', 'excludeWalkIns', 'minPartySize', 'maxPartySize',
@@ -76,12 +77,20 @@ router.patch('/settings', async (req, res, next) => {
       throw new ValidationError('Modo de elegibilidad no válido');
     }
 
-    const delayCheck = validateSendDelayMinutes(data.sendDelayMinutes, { admin: true });
-    if (!delayCheck.ok) {
-      throw new ValidationError(delayCheck.message);
-    }
-    if (delayCheck.value !== undefined) {
-      data.sendDelayMinutes = delayCheck.value;
+    const effectiveMode = data.eligibilityMode || existing?.eligibilityMode || 'confirmed_past_end';
+    if (effectiveMode === 'completed_only') {
+      delete data.sendDelayMinutes;
+    } else if (data.sendDelayMinutes !== undefined) {
+      const delayCheck = validateSendDelayMinutes(data.sendDelayMinutes, {
+        admin: true,
+        eligibilityMode: effectiveMode,
+      });
+      if (!delayCheck.ok) {
+        throw new ValidationError(delayCheck.message);
+      }
+      if (delayCheck.value !== undefined) {
+        data.sendDelayMinutes = delayCheck.value;
+      }
     }
 
     const survey = await prisma.feedbackSurvey.upsert({
@@ -196,6 +205,17 @@ router.patch('/alerts/:alertId', async (req, res, next) => {
       },
     });
     res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/outreach', async (req, res, next) => {
+  try {
+    const restaurantId = restaurantIdFromParams(req);
+    const { page, limit } = parsePagination(req);
+    const result = await listFeedbackOutreach(restaurantId, { page, limit });
+    res.json(result);
   } catch (err) {
     next(err);
   }

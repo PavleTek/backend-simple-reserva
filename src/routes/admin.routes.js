@@ -321,6 +321,25 @@ router.get('/organizations/:id', async (req, res, next) => {
 });
 
 /**
+ * GET /admin/organizations/:id/feedback-overview
+ * Resumen de Experiencia post-visita por local de la organización.
+ */
+router.get('/organizations/:id/feedback-overview', async (req, res, next) => {
+  try {
+    const { getOrganizationFeedbackOverview } = require('../services/feedbackEngine/feedbackEnqueue');
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+    const overview = await getOrganizationFeedbackOverview(req.params.id);
+    res.json(overview);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * PATCH /admin/organizations/:id/billing
  * Actualiza los datos de facturación de una organización.
  */
