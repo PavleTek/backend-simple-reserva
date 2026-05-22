@@ -20,6 +20,12 @@ const ROLES_OWNER = [ROLES.OWNER];
 /** Team listing (not invite). */
 const ROLES_TEAM_VIEW = [ROLES.OWNER, ROLES.MANAGER];
 
+/** Feedback dashboard: summary, responses, alerts (read + resolve alerts). */
+const ROLES_FEEDBACK_VIEW = [ROLES.OWNER, ROLES.MANAGER];
+
+/** Feedback survey configuration (PATCH settings). */
+const ROLES_FEEDBACK_SETTINGS = ROLES_OWNER;
+
 const RESTAURANT_ROLE_LABELS = {
   [ROLES.OWNER]: 'Propietario',
   [ROLES.MANAGER]: 'Gerente',
@@ -33,5 +39,7 @@ module.exports = {
   ROLES_CONFIG,
   ROLES_OWNER,
   ROLES_TEAM_VIEW,
+  ROLES_FEEDBACK_VIEW,
+  ROLES_FEEDBACK_SETTINGS,
   RESTAURANT_ROLE_LABELS,
 };

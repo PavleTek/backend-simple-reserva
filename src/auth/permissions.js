@@ -23,6 +23,7 @@ const ROLE_PERMISSIONS = {
     'availability.edit',
     'menu.edit',
     'feedback.view',
+    'feedback.alerts.manage',
     'team.view',
     'billing.view',
     'upload.assets',

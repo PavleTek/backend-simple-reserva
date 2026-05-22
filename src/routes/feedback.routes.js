@@ -4,6 +4,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
+const { ROLES_FEEDBACK_VIEW, ROLES_FEEDBACK_SETTINGS } = require('../auth/roles');
 const { ValidationError, NotFoundError } = require('../utils/errors');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const {
@@ -99,7 +100,7 @@ publicRouter.get('/:token/opt-out', async (req, res, next) => {
 const restaurantRouter = express.Router({ mergeParams: true });
 restaurantRouter.use(authenticateToken);
 restaurantRouter.use(authorizeRestaurant);
-restaurantRouter.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']));
+restaurantRouter.use(authenticateRestaurantRoles(ROLES_FEEDBACK_VIEW));
 
 function parsePeriod(req) {
   const days = parseInt(req.query.days || '30', 10);
@@ -125,7 +126,7 @@ restaurantRouter.get('/settings', async (req, res, next) => {
   }
 });
 
-restaurantRouter.patch('/settings', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+restaurantRouter.patch('/settings', authenticateRestaurantRoles(ROLES_FEEDBACK_SETTINGS), async (req, res, next) => {
   try {
     const restaurantId = req.params.restaurantId;
     const body = req.body || {};

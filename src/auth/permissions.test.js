@@ -18,6 +18,18 @@ test('host cannot manage billing or team', () => {
   assert.equal(roleHasPermission(ROLES.HOST, 'reservation.create'), true);
 });
 
+test('host has no feedback access (view, settings, alerts)', () => {
+  assert.equal(roleHasPermission(ROLES.HOST, 'feedback.view'), false);
+  assert.equal(roleHasPermission(ROLES.HOST, 'feedback.settings'), false);
+  assert.equal(roleHasPermission(ROLES.HOST, 'feedback.alerts.manage'), false);
+});
+
+test('manager can view feedback and manage alerts but not survey settings', () => {
+  assert.equal(roleHasPermission(ROLES.MANAGER, 'feedback.view'), true);
+  assert.equal(roleHasPermission(ROLES.MANAGER, 'feedback.alerts.manage'), true);
+  assert.equal(roleHasPermission(ROLES.MANAGER, 'feedback.settings'), false);
+});
+
 test('manager can view billing but not implied manage via permission list', () => {
   assert.equal(roleHasPermission(ROLES.MANAGER, 'billing.view'), true);
   assert.equal(roleHasPermission(ROLES.MANAGER, 'menu.edit'), true);
