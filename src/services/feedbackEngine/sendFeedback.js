@@ -217,8 +217,7 @@ async function adminManualSendByRequestId(restaurantId, requestId, options = {})
     canSend: true,
     adminOverrides: {
       ...ADMIN_SEND_OVERRIDES,
-      bypassOptOut: !!options.ignoreOptOut,
-      // Siempre true: soporte debe poder reenviar y limpiar skipped (p. ej. cooldown) aunque emailSent sea false.
+      bypassOptOut: true,
       allowResend: true,
     },
   });
@@ -239,7 +238,7 @@ async function adminManualSendByReservationId(restaurantId, reservationId, optio
     canSend: true,
     adminOverrides: {
       ...ADMIN_SEND_OVERRIDES,
-      bypassOptOut: !!options.ignoreOptOut,
+      bypassOptOut: true,
       allowResend: true,
     },
   });

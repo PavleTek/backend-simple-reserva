@@ -16,7 +16,18 @@ describe('resolveCanSendManual', () => {
     assert.equal(r.canSendManual, false);
   });
 
-  it('admin: permite envío con cooldown u opt-out', () => {
+  it('restaurante: no permite si el cliente rechazó encuestas', () => {
+    const r = resolveCanSendManual({
+      eligible: true,
+      email: 'a@b.com',
+      surveyAnswered: false,
+      declinedSurveys: true,
+      forAdmin: false,
+    });
+    assert.equal(r.canSendManual, false);
+  });
+
+  it('admin: siempre puede enviar con email (salvo encuesta ya respondida)', () => {
     assert.equal(
       resolveCanSendManual({
         eligible: false,
@@ -32,7 +43,27 @@ describe('resolveCanSendManual', () => {
         eligible: false,
         email: 'a@b.com',
         surveyAnswered: false,
-        skipReason: 'cooldown',
+        skipReason: 'not_completed',
+        forAdmin: true,
+      }).canSendManual,
+      true,
+    );
+    assert.equal(
+      resolveCanSendManual({
+        eligible: true,
+        email: 'a@b.com',
+        surveyAnswered: false,
+        declinedSurveys: true,
+        forAdmin: true,
+      }).canSendManual,
+      true,
+    );
+    assert.equal(
+      resolveCanSendManual({
+        eligible: true,
+        email: 'a@b.com',
+        surveyAnswered: false,
+        declinedSurveys: true,
         forAdmin: true,
       }).adminOverrideSend,
       true,

@@ -20,28 +20,33 @@ const planService = require('../planService');
 
 const OUTREACH_LOOKBACK_DAYS = 90;
 
-/** Motivos que el panel admin puede forzar con envío manual (processFeedbackRequest + ADMIN_SEND_OVERRIDES). */
-const ADMIN_MANUAL_SEND_OVERRIDE_REASONS = new Set([
-  'cooldown',
-  'window_expired',
-  'subscription',
-  'opt_out',
-]);
-
 /**
  * @param {object} params
  * @param {boolean} params.eligible
  * @param {string|null|undefined} params.email
  * @param {boolean} params.surveyAnswered
  * @param {string|null|undefined} params.skipReason
+ * @param {boolean} [params.declinedSurveys]
  * @param {boolean} [params.forAdmin]
  */
-function resolveCanSendManual({ eligible, email, surveyAnswered, skipReason, forAdmin = false }) {
+function resolveCanSendManual({
+  eligible,
+  email,
+  surveyAnswered,
+  skipReason,
+  declinedSurveys = false,
+  forAdmin = false,
+}) {
   if (!email || surveyAnswered) return { canSendManual: false, adminOverrideSend: false };
-  if (eligible) return { canSendManual: true, adminOverrideSend: false };
-  if (!forAdmin) return { canSendManual: false, adminOverrideSend: false };
-  const adminOverrideSend = ADMIN_MANUAL_SEND_OVERRIDE_REASONS.has(skipReason);
-  return { canSendManual: adminOverrideSend, adminOverrideSend };
+
+  if (!forAdmin) {
+    if (eligible && !declinedSurveys) return { canSendManual: true, adminOverrideSend: false };
+    return { canSendManual: false, adminOverrideSend: false };
+  }
+
+  // Soporte/admin: puede enviar siempre que haya email y no haya respondido la encuesta.
+  const adminOverrideSend = declinedSurveys || !eligible || !!skipReason;
+  return { canSendManual: true, adminOverrideSend };
 }
 
 const COMPLETED_MARK_SEND_OVERRIDES = {
@@ -226,6 +231,7 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
       email,
       surveyAnswered,
       skipReason: req?.skipReason ?? null,
+      declinedSurveys,
       forAdmin,
     });
 
@@ -369,7 +375,6 @@ module.exports = {
   syncFeedbackOnReservationStatusChange,
   listFeedbackOutreach,
   resolveCanSendManual,
-  ADMIN_MANUAL_SEND_OVERRIDE_REASONS,
   syncRestaurantFeedbackQueue,
   getOrganizationFeedbackOverview,
 };
