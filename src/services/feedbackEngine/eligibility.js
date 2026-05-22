@@ -110,9 +110,31 @@ async function isOptedOut(email, restaurantId) {
   return prefs.length > 0;
 }
 
+/**
+ * Emails (hash) que rechazaron recibir más encuestas (global o por local).
+ * @param {string} restaurantId
+ * @param {string[]} emailHashes
+ * @returns {Promise<Set<string>>}
+ */
+async function getOptedOutEmailHashes(restaurantId, emailHashes) {
+  const unique = [...new Set(emailHashes.filter(Boolean))];
+  if (unique.length === 0) return new Set();
+
+  const prefs = await prisma.customerFeedbackPreference.findMany({
+    where: {
+      emailHash: { in: unique },
+      OR: [{ restaurantId: null }, { restaurantId }],
+    },
+    select: { emailHash: true },
+  });
+
+  return new Set(prefs.map((p) => p.emailHash));
+}
+
 module.exports = {
   isWalkInReservation,
   checkReservationEligibility,
   isOnCooldown,
   isOptedOut,
+  getOptedOutEmailHashes,
 };

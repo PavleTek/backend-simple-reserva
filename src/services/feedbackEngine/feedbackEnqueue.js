@@ -2,7 +2,8 @@
 
 const prisma = require('../../lib/prisma');
 const logger = require('../../lib/logger');
-const { normalizeCustomerEmail } = require('./emailNormalize');
+const { normalizeCustomerEmail, hashEmail } = require('./emailNormalize');
+const { getOptedOutEmailHashes } = require('./eligibility');
 const { checkReservationEligibility } = require('./eligibility');
 const {
   resolveScheduledFor,
@@ -205,6 +206,11 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
     include: { feedbackRequest: true },
   });
 
+  const optedOutHashes = await getOptedOutEmailHashes(
+    restaurantId,
+    reservations.map((r) => hashEmail(r.customerEmail)),
+  );
+
   const rows = [];
   for (const r of reservations) {
     const { eligible, skipReason } = resolveEligibility(r, survey, now);
@@ -214,6 +220,7 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
 
     const surveyAnswered = req?.status === 'completed';
     const email = normalizeCustomerEmail(r.customerEmail);
+    const declinedSurveys = !!email && optedOutHashes.has(hashEmail(email));
     const { canSendManual, adminOverrideSend } = resolveCanSendManual({
       eligible,
       email,
@@ -240,6 +247,7 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
       sendWindowState: windowInfo.label,
       canSendManual,
       adminOverrideSend,
+      declinedSurveys,
     });
   }
 
