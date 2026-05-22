@@ -1133,7 +1133,13 @@ router.patch('/reservations/:id', async (req, res, next) => {
     const updated = await prisma.reservation.update({
       where: { id: req.params.id },
       data: statusData,
+      include: {
+        restaurant: { select: { id: true, name: true } },
+      },
     });
+
+    const { syncFeedbackOnReservationStatusChange } = require('../services/feedbackEngine');
+    syncFeedbackOnReservationStatusChange(updated, status).catch(() => {});
 
     if (status === 'cancelled') {
       writeAuditLog({

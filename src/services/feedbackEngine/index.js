@@ -18,4 +18,8 @@ module.exports = {
   getRestaurantSummary: require('./analytics').getRestaurantSummary,
   getBenchmarkAggregates: require('./analytics').getBenchmarkAggregates,
   getRestaurantInsights: require('./analytics').getRestaurantInsights,
+  ensureFeedbackRequestForReservation: require('./feedbackEnqueue').ensureFeedbackRequestForReservation,
+  syncFeedbackOnReservationStatusChange: require('./feedbackEnqueue').syncFeedbackOnReservationStatusChange,
+  listFeedbackOutreach: require('./feedbackEnqueue').listFeedbackOutreach,
+  syncRestaurantFeedbackQueue: require('./feedbackEnqueue').syncRestaurantFeedbackQueue,
 };

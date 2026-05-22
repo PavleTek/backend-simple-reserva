@@ -11,6 +11,9 @@ const {
   adminManualSendByRequestId,
   adminManualSendByReservationId,
   getOrCreateFeedbackSurvey,
+  listFeedbackOutreach,
+  ensureFeedbackRequestForReservation,
+  syncRestaurantFeedbackQueue,
 } = require('../services/feedbackEngine');
 
 const router = express.Router({ mergeParams: true });
@@ -201,34 +204,35 @@ router.patch('/alerts/:alertId', async (req, res, next) => {
 router.get('/requests', async (req, res, next) => {
   try {
     const restaurantId = restaurantIdFromParams(req);
-    const { page, limit, skip } = parsePagination(req);
-    const where = { restaurantId };
-    if (req.query.status) where.status = req.query.status;
-    if (req.query.emailSent === 'true') where.sentAt = { not: null };
-    if (req.query.emailSent === 'false') where.sentAt = null;
+    const { page, limit } = parsePagination(req);
+    const result = await listFeedbackOutreach(restaurantId, { page, limit });
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
 
-    const [items, total] = await Promise.all([
-      prisma.feedbackRequest.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { scheduledFor: 'desc' },
-        include: {
-          reservation: {
-            select: {
-              id: true,
-              customerName: true,
-              customerEmail: true,
-              dateTime: true,
-              status: true,
-            },
-          },
-        },
-      }),
-      prisma.feedbackRequest.count({ where }),
-    ]);
+router.post('/sync', async (req, res, next) => {
+  try {
+    const result = await syncRestaurantFeedbackQueue(restaurantIdFromParams(req));
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
 
-    res.json(paginatedResponse(items, total, page, limit));
+router.post('/reservations/:reservationId/enqueue', async (req, res, next) => {
+  try {
+    const restaurantId = restaurantIdFromParams(req);
+    const reservation = await prisma.reservation.findFirst({
+      where: { id: req.params.reservationId, restaurantId },
+    });
+    if (!reservation) throw new NotFoundError('Reserva no encontrada');
+
+    const result = await ensureFeedbackRequestForReservation(reservation, {
+      trySendNow: !!req.body?.trySendNow,
+    });
+    res.json(result);
   } catch (err) {
     next(err);
   }
