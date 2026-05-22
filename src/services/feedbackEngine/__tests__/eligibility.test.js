@@ -44,6 +44,38 @@ describe('eligibility', () => {
     assert.equal(skipReason, 'visit_not_ended');
   });
 
+  it('accepts completed_only when visit is still in the future', () => {
+    const r = {
+      status: 'completed',
+      notes: '',
+      customerName: 'Juan',
+      customerEmail: 'a@b.com',
+      partySize: 2,
+      dateTime: new Date(Date.now() + 24 * 60 * 60_000),
+      durationMinutes: 60,
+    };
+    const survey = { ...baseSurvey, eligibilityMode: 'completed_only' };
+    const { eligible, skipReason } = checkReservationEligibility(r, survey);
+    assert.equal(eligible, true);
+    assert.equal(skipReason, undefined);
+  });
+
+  it('rejects completed_only when status is not completed', () => {
+    const r = {
+      status: 'confirmed',
+      notes: '',
+      customerName: 'Juan',
+      customerEmail: 'a@b.com',
+      partySize: 2,
+      dateTime: new Date(Date.now() - 3 * 60 * 60_000),
+      durationMinutes: 60,
+    };
+    const survey = { ...baseSurvey, eligibilityMode: 'completed_only' };
+    const { eligible, skipReason } = checkReservationEligibility(r, survey);
+    assert.equal(eligible, false);
+    assert.equal(skipReason, 'not_completed');
+  });
+
   it('accepts confirmed past end', () => {
     const r = {
       status: 'confirmed',

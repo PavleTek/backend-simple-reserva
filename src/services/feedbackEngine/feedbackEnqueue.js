@@ -13,6 +13,24 @@ const { canSendFeedback } = require('../subscriptionService');
 
 const OUTREACH_LOOKBACK_DAYS = 90;
 
+/** Envío al marcar completada (modo completed_only): sin esperar fin de visita ni ventana. */
+const COMPLETED_MARK_SEND_OVERRIDES = {
+  bypassTooEarly: true,
+  bypassWindow: true,
+};
+
+function shouldSendImmediatelyOnCompleted(survey, reservation) {
+  return survey.eligibilityMode === 'completed_only' && reservation.status === 'completed';
+}
+
+function resolveScheduledFor(reservation, survey) {
+  if (shouldSendImmediatelyOnCompleted(survey, reservation)) {
+    return new Date();
+  }
+  const visitEnd = computeVisitEnd(reservation.dateTime, reservation.durationMinutes);
+  return computeScheduledFor(visitEnd, survey.sendDelayMinutes);
+}
+
 /**
  * Crea o devuelve FeedbackRequest pendiente para una reserva elegible.
  * @param {object} reservation - fila Reservation
@@ -29,8 +47,7 @@ async function ensureFeedbackRequestForReservation(reservation, options = {}) {
   }
 
   const email = normalizeCustomerEmail(reservation.customerEmail);
-  const visitEnd = computeVisitEnd(reservation.dateTime, reservation.durationMinutes);
-  const scheduledFor = computeScheduledFor(visitEnd, survey.sendDelayMinutes);
+  const scheduledFor = resolveScheduledFor(reservation, survey);
 
   let request = await prisma.feedbackRequest.findUnique({
     where: { reservationId: reservation.id },
@@ -63,10 +80,14 @@ async function ensureFeedbackRequestForReservation(reservation, options = {}) {
   let sendResult;
   if (options.trySendNow && request && !request.sentAt) {
     const canSend = await canSendFeedback(reservation.restaurantId);
+    const adminOverrides = shouldSendImmediatelyOnCompleted(survey, reservation)
+      ? COMPLETED_MARK_SEND_OVERRIDES
+      : null;
     sendResult = await processFeedbackRequest({
       reservation,
       survey,
       canSend,
+      adminOverrides,
     });
   }
 

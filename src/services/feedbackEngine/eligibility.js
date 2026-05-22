@@ -42,17 +42,21 @@ function checkReservationEligibility(reservation, survey, now = new Date()) {
     return { eligible: false, skipReason: 'party_size' };
   }
 
-  const visitEnd = computeVisitEnd(reservation.dateTime, reservation.durationMinutes);
   const mode = survey.eligibilityMode || 'confirmed_past_end';
 
   if (mode === 'completed_only') {
     if (reservation.status !== 'completed') {
       return { eligible: false, skipReason: 'not_completed' };
     }
-  } else if (!['confirmed', 'completed'].includes(reservation.status)) {
+    // Al marcar completada basta; no exige que la fecha/hora de visita ya haya pasado.
+    return { eligible: true };
+  }
+
+  if (!['confirmed', 'completed'].includes(reservation.status)) {
     return { eligible: false, skipReason: 'status' };
   }
 
+  const visitEnd = computeVisitEnd(reservation.dateTime, reservation.durationMinutes);
   if (visitEnd >= now) {
     return { eligible: false, skipReason: 'visit_not_ended' };
   }
