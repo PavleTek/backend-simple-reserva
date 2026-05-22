@@ -2,6 +2,7 @@ const prisma = require('../lib/prisma');
 const { ValidationError } = require('../utils/errors');
 const { getEffectiveTimezone, COUNTRY_TIMEZONES } = require('../utils/timezone');
 const r2LogosService = require('../services/r2LogosService');
+const { isValidBookingThemeId } = require('../constants/bookingThemes');
 
 const getRestaurant = async (req, res, next) => {
   try {
@@ -61,6 +62,7 @@ const updateRestaurant = async (req, res, next) => {
       logoUrl,
       timezone,
       scheduleMode,
+      appearanceTheme,
     } = req.body;
 
     if (slug) {
@@ -78,6 +80,10 @@ const updateRestaurant = async (req, res, next) => {
       if (!validTimezones.includes(timezone)) {
         throw new ValidationError('Zona horaria no válida');
       }
+    }
+
+    if (appearanceTheme !== undefined && !isValidBookingThemeId(appearanceTheme)) {
+      throw new ValidationError('Paleta de apariencia no válida');
     }
 
     // If the owner is clearing the logo, delete the old R2 object (best-effort).
@@ -139,6 +145,7 @@ const updateRestaurant = async (req, res, next) => {
           holdTtlSeconds: Math.min(900, Math.max(60, parseInt(holdTtlSeconds, 10) || 300)),
         }),
         ...(scheduleMode !== undefined && { scheduleMode }),
+        ...(appearanceTheme !== undefined && { appearanceTheme }),
         ...(logoUrl !== undefined && { logoUrl: logoUrl || null }),
       },
     });

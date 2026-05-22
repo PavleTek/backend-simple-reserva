@@ -765,7 +765,7 @@ router.get('/:slug', async (req, res, next) => {
         googlePlaceId: true, latitude: true, longitude: true, phone: true, email: true,
         menuPdfUrl: true, logoUrl: true, advanceBookingLimitDays: true, minimumNoticeMinutes: true,
         requireEmail: true, requirePhoneNumber: true, timezone: true, organizationId: true,
-        holdsEnabled: true, holdTtlSeconds: true,
+        holdsEnabled: true, holdTtlSeconds: true, appearanceTheme: true,
         organization: { include: { owner: { select: { country: true } } } },
         zones: {
           where: { isActive: true },
