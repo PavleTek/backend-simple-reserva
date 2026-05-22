@@ -218,12 +218,33 @@ restaurantRouter.get('/responses', async (req, res, next) => {
               reservation: { select: { customerName: true, customerEmail: true, dateTime: true } },
             },
           },
+          alerts: {
+            where: { status: 'resolved' },
+            orderBy: { resolvedAt: 'desc' },
+            take: 1,
+            select: {
+              status: true,
+              resolutionNote: true,
+              resolvedAt: true,
+              resolvedByDisplayName: true,
+            },
+          },
         },
       }),
       prisma.feedbackResponse.count({ where }),
     ]);
 
-    res.json(paginatedResponse(items, total, page, limit));
+    const { formatRecoveryResolution } = require('../services/feedbackEngine/feedbackAlertResolve');
+    const mapped = items.map((row) => {
+      const alert = row.alerts?.[0];
+      const { alerts: _a, ...rest } = row;
+      return {
+        ...rest,
+        recoveryResolution: formatRecoveryResolution(alert),
+      };
+    });
+
+    res.json(paginatedResponse(mapped, total, page, limit));
   } catch (err) {
     next(err);
   }
@@ -274,22 +295,16 @@ restaurantRouter.post('/sync', authenticateRestaurantRoles(ROLES_FEEDBACK_SETTIN
 
 restaurantRouter.patch('/alerts/:alertId', async (req, res, next) => {
   try {
-    const { status } = req.body;
-    if (!['acknowledged', 'resolved', 'open'].includes(status)) {
-      throw new ValidationError('Estado no válido');
+    const { status, resolutionNote } = req.body;
+    if (status !== 'resolved') {
+      throw new ValidationError('Solo puedes marcar la alerta como resuelta, con una nota interna.');
     }
-    const alert = await prisma.feedbackAlert.findFirst({
-      where: { id: req.params.alertId, restaurantId: req.params.restaurantId },
-    });
-    if (!alert) throw new NotFoundError('Alerta no encontrada');
-
-    const updated = await prisma.feedbackAlert.update({
-      where: { id: alert.id },
-      data: {
-        status,
-        resolvedAt: status === 'resolved' ? new Date() : null,
-        resolvedByUserId: status === 'resolved' ? req.user?.id : null,
-      },
+    const { resolveFeedbackAlert } = require('../services/feedbackEngine/feedbackAlertResolve');
+    const updated = await resolveFeedbackAlert({
+      alertId: req.params.alertId,
+      restaurantId: req.params.restaurantId,
+      user: req.user,
+      resolutionNote,
     });
     res.json(updated);
   } catch (err) {

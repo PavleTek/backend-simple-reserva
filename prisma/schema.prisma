@@ -488,10 +488,12 @@ model FeedbackAlert {
   matchedKeywords    String[]          @default([])
   title              String
   body               String
-  status             String            @default("open") // open | acknowledged | resolved
-  resolvedAt         DateTime?
-  resolvedByUserId   String?
-  createdAt          DateTime          @default(now())
+  status                 String            @default("open") // open | acknowledged | resolved
+  resolvedAt             DateTime?
+  resolvedByUserId       String?
+  resolvedByDisplayName  String?
+  resolutionNote         String?
+  createdAt              DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
   @@index([restaurantId, status])

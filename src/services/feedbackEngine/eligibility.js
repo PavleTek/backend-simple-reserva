@@ -71,23 +71,63 @@ function checkReservationEligibility(reservation, survey, now = new Date()) {
  * @returns {Promise<boolean>}
  */
 async function isOnCooldown(restaurantId, email, minDays) {
+  const info = await getCooldownInfoForEmail(restaurantId, email, minDays);
+  return info.onCooldown;
+}
+
+/**
+ * Último envío al correo y fecha en que termina la espera entre encuestas.
+ * @param {string} restaurantId
+ * @param {string} email
+ * @param {number} minDays
+ * @returns {Promise<{ onCooldown: boolean; cooldownUntil: string|null; lastSentAt: string|null }>}
+ */
+async function getCooldownInfoForEmail(restaurantId, email, minDays) {
   const normalized = normalizeCustomerEmail(email);
-  if (!normalized) return false;
+  if (!normalized) {
+    return { onCooldown: false, cooldownUntil: null, lastSentAt: null };
+  }
+  const map = await getCooldownInfoByEmail(restaurantId, [normalized], minDays);
+  return map.get(normalized) ?? { onCooldown: false, cooldownUntil: null, lastSentAt: null };
+}
 
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - (minDays || 14));
+/**
+ * @param {string} restaurantId
+ * @param {string[]} emails normalized
+ * @param {number} minDays
+ * @returns {Promise<Map<string, { onCooldown: boolean; cooldownUntil: string|null; lastSentAt: string|null }>>}
+ */
+async function getCooldownInfoByEmail(restaurantId, emails, minDays) {
+  const min = Math.max(1, minDays || 14);
+  const normalized = [...new Set(emails.map(normalizeCustomerEmail).filter(Boolean))];
+  const result = new Map();
+  if (normalized.length === 0) return result;
 
-  const recent = await prisma.feedbackRequest.findFirst({
+  const recent = await prisma.feedbackRequest.findMany({
     where: {
       restaurantId,
-      customerEmailNormalized: normalized,
-      sentAt: { gte: cutoff },
+      customerEmailNormalized: { in: normalized },
+      sentAt: { not: null },
       status: { in: ['sent', 'clicked', 'opened', 'completed'] },
     },
-    select: { id: true },
+    select: { customerEmailNormalized: true, sentAt: true },
+    orderBy: { sentAt: 'desc' },
   });
 
-  return !!recent;
+  const now = Date.now();
+  for (const row of recent) {
+    const key = row.customerEmailNormalized;
+    if (!key || result.has(key) || !row.sentAt) continue;
+    const cooldownUntil = new Date(row.sentAt);
+    cooldownUntil.setDate(cooldownUntil.getDate() + min);
+    const untilIso = cooldownUntil.toISOString();
+    result.set(key, {
+      onCooldown: cooldownUntil.getTime() > now,
+      cooldownUntil: untilIso,
+      lastSentAt: row.sentAt.toISOString(),
+    });
+  }
+  return result;
 }
 
 /**
@@ -135,6 +175,8 @@ module.exports = {
   isWalkInReservation,
   checkReservationEligibility,
   isOnCooldown,
+  getCooldownInfoForEmail,
+  getCooldownInfoByEmail,
   isOptedOut,
   getOptedOutEmailHashes,
 };

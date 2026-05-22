@@ -3,7 +3,8 @@
 const prisma = require('../../lib/prisma');
 const logger = require('../../lib/logger');
 const { normalizeCustomerEmail, hashEmail } = require('./emailNormalize');
-const { getOptedOutEmailHashes } = require('./eligibility');
+const { getOptedOutEmailHashes, getCooldownInfoByEmail } = require('./eligibility');
+const { getResolvedAlertsByReservationId } = require('./feedbackAlertResolve');
 const { checkReservationEligibility } = require('./eligibility');
 const {
   resolveScheduledFor,
@@ -19,6 +20,96 @@ const { canSendFeedback } = require('../subscriptionService');
 const planService = require('../planService');
 
 const OUTREACH_LOOKBACK_DAYS = 90;
+
+/** @param {...(Date|string|null|undefined)} values */
+function maxTimestampMs(...values) {
+  let max = 0;
+  for (const v of values) {
+    if (v == null) continue;
+    const t = new Date(v).getTime();
+    if (!Number.isNaN(t) && t > max) max = t;
+  }
+  return max;
+}
+
+/**
+ * Última interacción del cliente con el flujo de encuesta (respuesta, clic, envío, visita, etc.).
+ * @param {import('@prisma/client').Reservation} reservation
+ * @param {import('@prisma/client').FeedbackRequest & { response?: { respondedAt: Date } | null } | null | undefined} req
+ */
+function computeLastInteractionAt(reservation, req) {
+  const ms = maxTimestampMs(
+    req?.response?.respondedAt,
+    req?.completedAt,
+    req?.clickedAt,
+    req?.openedAt,
+    req?.sentAt,
+    req?.updatedAt,
+    req?.scheduledFor,
+    reservation.dateTime,
+  );
+  return new Date(ms > 0 ? ms : reservation.dateTime).toISOString();
+}
+
+/**
+ * @param {Array<{ lastInteractionAt: string }>} rows
+ * @param {{ forAdmin?: boolean }} [options]
+ */
+/**
+ * Motivo por el que el email aún no se envió (distinto de elegibilidad de la reserva).
+ */
+function resolvePendingSendReason({
+  emailSent,
+  declinedSurveys,
+  eligible,
+  eligibilityReason,
+  skipReason,
+  sendWindowState,
+  inSendWindow,
+  cooldownInfo,
+}) {
+  if (emailSent) return { pendingSendReason: null, cooldownUntil: null };
+  if (declinedSurveys || skipReason === 'opt_out') {
+    return { pendingSendReason: 'opt_out', cooldownUntil: null };
+  }
+  if (skipReason === 'cooldown' || cooldownInfo?.onCooldown) {
+    return {
+      pendingSendReason: 'cooldown',
+      cooldownUntil: cooldownInfo?.cooldownUntil ?? null,
+    };
+  }
+  if (skipReason === 'window_expired' || sendWindowState === 'window_expired') {
+    return { pendingSendReason: 'window_expired', cooldownUntil: null };
+  }
+  if (skipReason) {
+    return { pendingSendReason: skipReason, cooldownUntil: null };
+  }
+  if (!eligible && eligibilityReason) {
+    return { pendingSendReason: eligibilityReason, cooldownUntil: null };
+  }
+  if (sendWindowState === 'pending_completion') {
+    return { pendingSendReason: 'not_completed', cooldownUntil: null };
+  }
+  if (sendWindowState === 'visit_not_ended') {
+    return { pendingSendReason: 'visit_not_ended', cooldownUntil: null };
+  }
+  if (sendWindowState === 'scheduled' && !inSendWindow) {
+    return { pendingSendReason: 'scheduled', cooldownUntil: null };
+  }
+  return { pendingSendReason: null, cooldownUntil: null };
+}
+
+function sortOutreachRows(rows, { forAdmin = false } = {}) {
+  return rows.sort((a, b) => {
+    const byActivity =
+      new Date(b.lastInteractionAt).getTime() - new Date(a.lastInteractionAt).getTime();
+    if (forAdmin) return byActivity;
+    const aPending = !a.emailSent && a.eligible ? 0 : 1;
+    const bPending = !b.emailSent && b.eligible ? 0 : 1;
+    if (aPending !== bPending) return aPending - bPending;
+    return byActivity;
+  });
+}
 
 /**
  * @param {object} params
@@ -208,12 +299,27 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
       dateTime: { gte: lookback },
     },
     orderBy: { dateTime: 'desc' },
-    include: { feedbackRequest: true },
+    include: {
+      feedbackRequest: {
+        include: { response: { select: { respondedAt: true } } },
+      },
+    },
   });
 
   const optedOutHashes = await getOptedOutEmailHashes(
     restaurantId,
     reservations.map((r) => hashEmail(r.customerEmail)),
+  );
+
+  const cooldownByEmail = await getCooldownInfoByEmail(
+    restaurantId,
+    reservations.map((r) => normalizeCustomerEmail(r.customerEmail)).filter(Boolean),
+    survey.minDaysBetweenFeedbackRequests,
+  );
+
+  const resolutionByReservation = await getResolvedAlertsByReservationId(
+    restaurantId,
+    reservations.map((r) => r.id),
   );
 
   const rows = [];
@@ -235,12 +341,26 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
       forAdmin,
     });
 
+    const lastInteractionAt = computeLastInteractionAt(r, req);
+    const cooldownInfo = email ? cooldownByEmail.get(email) : undefined;
+    const { pendingSendReason, cooldownUntil } = resolvePendingSendReason({
+      emailSent: !!req?.sentAt,
+      declinedSurveys,
+      eligible,
+      eligibilityReason: eligible ? null : skipReason,
+      skipReason: req?.skipReason ?? null,
+      sendWindowState: windowInfo.label,
+      inSendWindow: windowInfo.inWindow,
+      cooldownInfo,
+    });
+
     rows.push({
       reservationId: r.id,
       requestId: req?.id ?? null,
       customerName: r.customerName,
       customerEmail: r.customerEmail,
       dateTime: r.dateTime,
+      lastInteractionAt,
       reservationStatus: r.status,
       eligible,
       eligibilityReason: eligible ? null : skipReason,
@@ -254,15 +374,13 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
       canSendManual,
       adminOverrideSend,
       declinedSurveys,
+      pendingSendReason,
+      cooldownUntil,
+      recoveryResolution: resolutionByReservation.get(r.id) ?? null,
     });
   }
 
-  const sorted = rows.sort((a, b) => {
-    const aPending = !a.emailSent && a.eligible ? 0 : 1;
-    const bPending = !b.emailSent && b.eligible ? 0 : 1;
-    if (aPending !== bPending) return aPending - bPending;
-    return new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime();
-  });
+  const sorted = sortOutreachRows(rows, { forAdmin });
 
   const total = sorted.length;
   const items = sorted.slice(skip, skip + limit);
@@ -272,6 +390,7 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
       enabled: survey.enabled,
       eligibilityMode: survey.eligibilityMode,
       sendDelayMinutes: survey.sendDelayMinutes,
+      minDaysBetweenFeedbackRequests: survey.minDaysBetweenFeedbackRequests,
       planAllowsFeedback: planOk,
     },
     items,
@@ -375,6 +494,9 @@ module.exports = {
   syncFeedbackOnReservationStatusChange,
   listFeedbackOutreach,
   resolveCanSendManual,
+  computeLastInteractionAt,
+  sortOutreachRows,
+  resolvePendingSendReason,
   syncRestaurantFeedbackQueue,
   getOrganizationFeedbackOverview,
 };
