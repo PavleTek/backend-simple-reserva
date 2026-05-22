@@ -19,6 +19,30 @@ const planService = require('../planService');
 
 const OUTREACH_LOOKBACK_DAYS = 90;
 
+/** Motivos que el panel admin puede forzar con envío manual (processFeedbackRequest + ADMIN_SEND_OVERRIDES). */
+const ADMIN_MANUAL_SEND_OVERRIDE_REASONS = new Set([
+  'cooldown',
+  'window_expired',
+  'subscription',
+  'opt_out',
+]);
+
+/**
+ * @param {object} params
+ * @param {boolean} params.eligible
+ * @param {string|null|undefined} params.email
+ * @param {boolean} params.surveyAnswered
+ * @param {string|null|undefined} params.skipReason
+ * @param {boolean} [params.forAdmin]
+ */
+function resolveCanSendManual({ eligible, email, surveyAnswered, skipReason, forAdmin = false }) {
+  if (!email || surveyAnswered) return { canSendManual: false, adminOverrideSend: false };
+  if (eligible) return { canSendManual: true, adminOverrideSend: false };
+  if (!forAdmin) return { canSendManual: false, adminOverrideSend: false };
+  const adminOverrideSend = ADMIN_MANUAL_SEND_OVERRIDE_REASONS.has(skipReason);
+  return { canSendManual: adminOverrideSend, adminOverrideSend };
+}
+
 const COMPLETED_MARK_SEND_OVERRIDES = {
   bypassTooEarly: true,
   bypassWindow: true,
@@ -144,7 +168,7 @@ async function syncFeedbackOnReservationStatusChange(reservation, newStatus) {
   }
 }
 
-async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50 } = {}) {
+async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdmin = false } = {}) {
   const survey = await getOrCreateFeedbackSurvey(restaurantId);
   const now = new Date();
   const lookback = new Date(now.getTime() - OUTREACH_LOOKBACK_DAYS * 24 * 60 * 60_000);
@@ -189,6 +213,14 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50 } = {})
     const scheduledFor = req?.scheduledFor ?? resolveScheduledFor(r, survey);
 
     const surveyAnswered = req?.status === 'completed';
+    const email = normalizeCustomerEmail(r.customerEmail);
+    const { canSendManual, adminOverrideSend } = resolveCanSendManual({
+      eligible,
+      email,
+      surveyAnswered,
+      skipReason: req?.skipReason ?? null,
+      forAdmin,
+    });
 
     rows.push({
       reservationId: r.id,
@@ -206,10 +238,8 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50 } = {})
       emailSent: !!req?.sentAt,
       inSendWindow: windowInfo.inWindow,
       sendWindowState: windowInfo.label,
-      canSendManual:
-        eligible
-        && !!normalizeCustomerEmail(r.customerEmail)
-        && !surveyAnswered,
+      canSendManual,
+      adminOverrideSend,
     });
   }
 
@@ -330,6 +360,8 @@ module.exports = {
   ensureFeedbackRequestForReservation,
   syncFeedbackOnReservationStatusChange,
   listFeedbackOutreach,
+  resolveCanSendManual,
+  ADMIN_MANUAL_SEND_OVERRIDE_REASONS,
   syncRestaurantFeedbackQueue,
   getOrganizationFeedbackOverview,
 };

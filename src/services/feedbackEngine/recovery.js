@@ -118,6 +118,14 @@ async function processRecovery({
         comment: comment || '',
         severity,
         panelUrl: `${panelBase}/experiencia`,
+        customerEmail: customerEmail || null,
+        customerPhone: customerPhone || null,
+        visitDateTime,
+        partySize,
+        timezone: tz,
+        categoryScores,
+        recoveryContactRequested: !!recoveryContactRequested,
+        recoveryContactEmail: recoveryContactEmail || customerEmail || null,
       });
     }
   }

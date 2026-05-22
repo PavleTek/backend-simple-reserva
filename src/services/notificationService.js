@@ -654,10 +654,29 @@ async function sendPostVisitFeedbackEmail(options) {
  * Recovery alert to restaurant manager.
  */
 async function sendFeedbackRecoveryAlertEmail(options) {
-  const { emails, restaurantName, customerName, overallScore, comment, severity, panelUrl } = options;
+  const {
+    emails,
+    restaurantName,
+    customerName,
+    overallScore,
+    comment,
+    severity,
+    panelUrl,
+    customerEmail,
+    customerPhone,
+    visitDateTime,
+    partySize,
+    timezone,
+    categoryScores,
+    recoveryContactRequested,
+    recoveryContactEmail,
+  } = options;
   if (!emails?.length) return false;
 
-  const { buildFeedbackRecoveryAlertHtml } = require('../templates/feedbackRecoveryAlertEmail');
+  const {
+    buildFeedbackRecoveryAlertHtml,
+    getRecoveryAlertSubject,
+  } = require('../templates/feedbackRecoveryAlertEmail');
   const { sendEmail } = require('./emailService');
   const prisma = require('../lib/prisma');
   const config = await prisma.configuration.findFirst();
@@ -665,6 +684,7 @@ async function sendFeedbackRecoveryAlertEmail(options) {
     ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
     : null;
   const fromEmail = fromSender || 'noreply@simplereserva.com';
+  const assetBaseUrl = getBaseUrl().replace(/\/$/, '');
 
   const html = buildFeedbackRecoveryAlertHtml({
     restaurantName,
@@ -673,13 +693,29 @@ async function sendFeedbackRecoveryAlertEmail(options) {
     comment,
     severity,
     panelUrl,
+    customerEmail,
+    customerPhone,
+    visitDateTime,
+    partySize,
+    timezone,
+    categoryScores,
+    recoveryContactRequested,
+    recoveryContactEmail,
+    assetBaseUrl,
+  });
+
+  const subject = getRecoveryAlertSubject({
+    restaurantName,
+    customerName,
+    overallScore,
+    severity,
   });
 
   try {
     await sendEmail({
       fromEmail,
       toEmails: emails,
-      subject: `[Experiencia] Alerta en ${restaurantName}`,
+      subject,
       content: html,
       isHtml: true,
     });
