@@ -19,6 +19,7 @@ const FALLBACK_CONFIG = {
     googleReserveIntegration: false,
     multipleMenu: false,
     prioritySupport: false,
+    postVisitFeedback: false,
     priceCLP: 9990,
     priceUSD: 12.99,
     priceEUR: 11.49,
@@ -37,6 +38,7 @@ const FALLBACK_CONFIG = {
     googleReserveIntegration: true,
     multipleMenu: true,
     prioritySupport: false,
+    postVisitFeedback: true,
     priceCLP: 14990,
     priceUSD: 18.99,
     priceEUR: 16.99,
@@ -55,6 +57,7 @@ const FALLBACK_CONFIG = {
     googleReserveIntegration: true,
     multipleMenu: true,
     prioritySupport: true,
+    postVisitFeedback: true,
     priceCLP: 39990,
     priceUSD: 44.99,
     priceEUR: 41.99,
@@ -213,6 +216,15 @@ async function resolvePlanConfigForRestaurant(restaurantId, includeTrial = true)
 }
 
 /**
+ * Experiencia post-visita (encuestas): Profesional y Premium.
+ */
+async function canUsePostVisitFeedback(restaurantId, includeTrial = true) {
+  const config = await resolvePlanConfigForRestaurant(restaurantId, includeTrial);
+  if (!config) return false;
+  return config.postVisitFeedback === true;
+}
+
+/**
  * Check if owner has access to a feature.
  */
 async function hasFeature(ownerId, featureKey, includeTrial = true) {
@@ -319,12 +331,21 @@ async function canAddTeamMember(ownerId, restaurantId, includeTrial = true) {
   const maxTeam = config.maxTeamMembers;
   if (maxTeam == null) return { allowed: true }; // unlimited
 
-  const teamCount = await prisma.organizationManager.count({
-    where: {
-      organization: { ownerId },
-      restaurantAssignments: { some: { restaurantId } }
-    },
-  });
+  const [managerCount, hostCount] = await Promise.all([
+    prisma.organizationManager.count({
+      where: {
+        organization: { ownerId },
+        restaurantAssignments: { some: { restaurantId } },
+      },
+    }),
+    prisma.organizationHost.count({
+      where: {
+        organization: { ownerId },
+        restaurantAssignments: { some: { restaurantId } },
+      },
+    }),
+  ]);
+  const teamCount = managerCount + hostCount;
 
   if (teamCount >= maxTeam) {
     return {
@@ -357,6 +378,7 @@ module.exports = {
   resolvePlanConfig,
   resolvePlanConfigForRestaurant,
   hasFeature,
+  canUsePostVisitFeedback,
   getLimit,
   canAddLocation,
   canAddZone,

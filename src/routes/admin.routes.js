@@ -321,6 +321,25 @@ router.get('/organizations/:id', async (req, res, next) => {
 });
 
 /**
+ * GET /admin/organizations/:id/feedback-overview
+ * Resumen de Experiencia post-visita por local de la organización.
+ */
+router.get('/organizations/:id/feedback-overview', async (req, res, next) => {
+  try {
+    const { getOrganizationFeedbackOverview } = require('../services/feedbackEngine/feedbackEnqueue');
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+    const overview = await getOrganizationFeedbackOverview(req.params.id);
+    res.json(overview);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * PATCH /admin/organizations/:id/billing
  * Actualiza los datos de facturación de una organización.
  */
@@ -755,7 +774,7 @@ router.put('/users/:id/role', async (req, res, next) => {
     const { role } = req.body;
     const userId = req.params.id;
 
-    if (!['super_admin', 'restaurant_owner', 'restaurant_manager'].includes(role)) {
+    if (!['super_admin', 'restaurant_owner', 'restaurant_manager', 'restaurant_host'].includes(role)) {
       return res.status(400).json({ error: 'Rol inválido' });
     }
 
@@ -2389,5 +2408,8 @@ router.post('/reservations/send-missing-emails', async (req, res, next) => {
     next(error);
   }
 });
+
+const adminFeedbackRouter = require('./adminFeedback.routes');
+router.use('/restaurants/:id/feedback', adminFeedbackRouter);
 
 module.exports = router;

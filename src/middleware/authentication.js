@@ -160,6 +160,21 @@ const authorizeRestaurant = async (req, res, next) => {
       return;
     }
 
+    // 4. Host access (via OrganizationHost and HostRestaurantAssignment)
+    const hostAssignment = await prisma.hostRestaurantAssignment.findFirst({
+      where: {
+        restaurantId,
+        restaurant: { isDeleted: false },
+        organizationHost: { userId: req.user.id },
+      },
+    });
+
+    if (hostAssignment) {
+      req.activeRestaurant = { restaurantId, role: 'restaurant_host' };
+      next();
+      return;
+    }
+
     res.status(403).json({ error: 'No tienes acceso a este restaurante' });
   } catch (error) {
     next(error);

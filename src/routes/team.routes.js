@@ -4,6 +4,8 @@ const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = 
 const { hashPassword } = require('../utils/password');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../utils/errors');
 const planService = require('../services/planService');
+const { ROLES, ROLES_OWNER, ROLES_TEAM_VIEW } = require('../auth/roles');
+const { writeAuditLog } = require('../services/auditLogService');
 
 const router = express.Router({ mergeParams: true });
 
@@ -12,50 +14,77 @@ router.use(authorizeRestaurant);
 
 router.get(
   '/',
-  authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']),
+  authenticateRestaurantRoles(ROLES_TEAM_VIEW),
   async (req, res, next) => {
     try {
       const { restaurantId } = req.activeRestaurant;
 
-      // Get the organization for this restaurant
       const restaurant = await prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        select: { organizationId: true }
+        select: { organizationId: true },
       });
 
       if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
-      // Get all managers in the organization
-      const managers = await prisma.organizationManager.findMany({
-        where: { organizationId: restaurant.organizationId },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              name: true,
-              lastName: true,
-              lastLogin: true,
-              createdAt: true,
+      const [managers, hosts] = await Promise.all([
+        prisma.organizationManager.findMany({
+          where: { organizationId: restaurant.organizationId },
+          include: {
+            user: {
+              select: {
+                id: true,
+                email: true,
+                name: true,
+                lastName: true,
+                lastLogin: true,
+                createdAt: true,
+              },
+            },
+            restaurantAssignments: {
+              where: { restaurantId },
+              select: { id: true },
             },
           },
-          restaurantAssignments: {
-            where: { restaurantId },
-            select: { id: true }
-          }
-        },
-        orderBy: { createdAt: 'asc' },
-      });
+          orderBy: { createdAt: 'asc' },
+        }),
+        prisma.organizationHost.findMany({
+          where: { organizationId: restaurant.organizationId },
+          include: {
+            user: {
+              select: {
+                id: true,
+                email: true,
+                name: true,
+                lastName: true,
+                lastLogin: true,
+                createdAt: true,
+              },
+            },
+            restaurantAssignments: {
+              where: { restaurantId },
+              select: { id: true },
+            },
+          },
+          orderBy: { createdAt: 'asc' },
+        }),
+      ]);
 
-      // Filter to only those assigned to THIS restaurant, or include all if needed?
-      // Usually "team members" for a restaurant are those assigned to it.
-      const members = managers
-        .filter(m => m.restaurantAssignments.length > 0)
-        .map((m) => ({
-          ...m.user,
-          role: 'restaurant_manager',
-          organizationManagerId: m.id,
-        }));
+      const members = [
+        ...managers
+          .filter((m) => m.restaurantAssignments.length > 0)
+          .map((m) => ({
+            ...m.user,
+            role: ROLES.MANAGER,
+            organizationManagerId: m.id,
+          })),
+        ...hosts
+          .filter((h) => h.restaurantAssignments.length > 0)
+          .map((h) => ({
+            ...h.user,
+            role: ROLES.HOST,
+            organizationHostId: h.id,
+          })),
+      ];
 
       res.json(members);
     } catch (error) {
@@ -66,15 +95,26 @@ router.get(
 
 router.post(
   '/',
-  authenticateRestaurantRoles(['restaurant_owner']),
+  authenticateRestaurantRoles(ROLES_OWNER),
   async (req, res, next) => {
     try {
-      const { email, name, lastName, temporaryPassword, restaurantIds } = req.body;
+      const {
+        email,
+        name,
+        lastName,
+        temporaryPassword,
+        restaurantIds,
+        role: inviteRole,
+      } = req.body;
       const { restaurantId } = req.activeRestaurant;
-      
-      const restaurantIdsToAdd = Array.isArray(restaurantIds) && restaurantIds.length > 0
-        ? restaurantIds
-        : [restaurantId];
+
+      const memberRole =
+        inviteRole === ROLES.HOST ? ROLES.HOST : ROLES.MANAGER;
+
+      const restaurantIdsToAdd =
+        Array.isArray(restaurantIds) && restaurantIds.length > 0
+          ? restaurantIds
+          : [restaurantId];
 
       if (!email || !temporaryPassword) {
         throw new ValidationError('Se requiere email y contraseña temporal');
@@ -88,7 +128,7 @@ router.post(
 
       const restaurant = await prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        select: { organizationId: true }
+        select: { organizationId: true },
       });
 
       for (const rid of restaurantIdsToAdd) {
@@ -112,33 +152,56 @@ router.post(
             name: name || null,
             lastName: lastName || null,
             hashedPassword,
-            role: 'restaurant_manager',
+            role: memberRole,
           },
         });
 
-        const manager = await tx.organizationManager.create({
-          data: {
-            organizationId: restaurant.organizationId,
-            userId: newUser.id,
-          }
-        });
-
-        await tx.managerRestaurantAssignment.createMany({
-          data: restaurantIdsToAdd.map((rid) => ({
-            organizationManagerId: manager.id,
-            restaurantId: rid,
-          })),
-        });
+        if (memberRole === ROLES.HOST) {
+          const host = await tx.organizationHost.create({
+            data: {
+              organizationId: restaurant.organizationId,
+              userId: newUser.id,
+            },
+          });
+          await tx.hostRestaurantAssignment.createMany({
+            data: restaurantIdsToAdd.map((rid) => ({
+              organizationHostId: host.id,
+              restaurantId: rid,
+            })),
+          });
+        } else {
+          const manager = await tx.organizationManager.create({
+            data: {
+              organizationId: restaurant.organizationId,
+              userId: newUser.id,
+            },
+          });
+          await tx.managerRestaurantAssignment.createMany({
+            data: restaurantIdsToAdd.map((rid) => ({
+              organizationManagerId: manager.id,
+              restaurantId: rid,
+            })),
+          });
+        }
 
         return newUser;
       });
+
+      writeAuditLog({
+        actorUserId: req.user.id,
+        restaurantId,
+        action: 'team.invite',
+        resourceType: 'user',
+        resourceId: user.id,
+        metadata: { role: memberRole, email: user.email },
+      }).catch(() => {});
 
       res.status(201).json({
         id: user.id,
         email: user.email,
         name: user.name,
         lastName: user.lastName,
-        role: 'restaurant_manager',
+        role: memberRole,
         createdAt: user.createdAt,
       });
     } catch (error) {
@@ -149,7 +212,7 @@ router.post(
 
 router.get(
   '/:userId/restaurants',
-  authenticateRestaurantRoles(['restaurant_owner']),
+  authenticateRestaurantRoles(ROLES_OWNER),
   async (req, res, next) => {
     try {
       const { userId } = req.params;
@@ -157,25 +220,47 @@ router.get(
 
       const restaurant = await prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        select: { organizationId: true }
+        select: { organizationId: true },
       });
 
       const manager = await prisma.organizationManager.findUnique({
         where: {
           organizationId_userId: {
             organizationId: restaurant.organizationId,
-            userId
-          }
+            userId,
+          },
         },
         include: {
           restaurantAssignments: {
-            select: { restaurantId: true }
-          }
-        }
+            select: { restaurantId: true },
+          },
+        },
+      });
+
+      if (manager) {
+        return res.json({
+          role: ROLES.MANAGER,
+          restaurantIds: manager.restaurantAssignments.map((ra) => ra.restaurantId),
+        });
+      }
+
+      const host = await prisma.organizationHost.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: restaurant.organizationId,
+            userId,
+          },
+        },
+        include: {
+          restaurantAssignments: {
+            select: { restaurantId: true },
+          },
+        },
       });
 
       res.json({
-        restaurantIds: manager ? manager.restaurantAssignments.map((ra) => ra.restaurantId) : [],
+        role: host ? ROLES.HOST : null,
+        restaurantIds: host ? host.restaurantAssignments.map((ra) => ra.restaurantId) : [],
       });
     } catch (error) {
       next(error);
@@ -185,7 +270,7 @@ router.get(
 
 router.patch(
   '/:userId',
-  authenticateRestaurantRoles(['restaurant_owner']),
+  authenticateRestaurantRoles(ROLES_OWNER),
   async (req, res, next) => {
     try {
       const { userId } = req.params;
@@ -198,7 +283,7 @@ router.patch(
 
       const restaurant = await prisma.restaurant.findUnique({
         where: { id: activeRestaurantId },
-        include: { organization: true }
+        include: { organization: true },
       });
 
       const manager = await prisma.organizationManager.findUnique({
@@ -210,38 +295,90 @@ router.patch(
         },
       });
 
-      if (!manager) {
+      const host = !manager
+        ? await prisma.organizationHost.findUnique({
+            where: {
+              organizationId_userId: {
+                organizationId: restaurant.organizationId,
+                userId,
+              },
+            },
+          })
+        : null;
+
+      if (!manager && !host) {
         throw new NotFoundError('Usuario no encontrado en esta organización');
       }
 
-      // Verify owner owns the organization
       if (restaurant.organization.ownerId !== req.user.id) {
         throw new ForbiddenError('No tienes permiso para gestionar este equipo');
       }
 
-      // Verify all restaurantIds belong to the same organization
       const targetRestaurants = await prisma.restaurant.findMany({
         where: {
           id: { in: restaurantIds },
-          organizationId: restaurant.organizationId
-        }
+          organizationId: restaurant.organizationId,
+        },
       });
 
       if (targetRestaurants.length !== restaurantIds.length) {
         throw new ForbiddenError('No tienes acceso a uno o más locales seleccionados');
       }
 
+      for (const rid of restaurantIds) {
+        const canAdd = await planService.canAddTeamMember(req.user.id, rid, true);
+        if (!canAdd.allowed) {
+          const alreadyAssigned = manager
+            ? await prisma.managerRestaurantAssignment.findFirst({
+                where: {
+                  organizationManagerId: manager.id,
+                  restaurantId: rid,
+                },
+              })
+            : await prisma.hostRestaurantAssignment.findFirst({
+                where: {
+                  organizationHostId: host.id,
+                  restaurantId: rid,
+                },
+              });
+          if (!alreadyAssigned) {
+            throw new ValidationError(canAdd.reason || 'Límite de miembros alcanzado');
+          }
+        }
+      }
+
       await prisma.$transaction(async (tx) => {
-        await tx.managerRestaurantAssignment.deleteMany({
-          where: { organizationManagerId: manager.id },
-        });
-        await tx.managerRestaurantAssignment.createMany({
-          data: restaurantIds.map((rid) => ({
-            organizationManagerId: manager.id,
-            restaurantId: rid,
-          })),
-        });
+        if (manager) {
+          await tx.managerRestaurantAssignment.deleteMany({
+            where: { organizationManagerId: manager.id },
+          });
+          await tx.managerRestaurantAssignment.createMany({
+            data: restaurantIds.map((rid) => ({
+              organizationManagerId: manager.id,
+              restaurantId: rid,
+            })),
+          });
+        } else {
+          await tx.hostRestaurantAssignment.deleteMany({
+            where: { organizationHostId: host.id },
+          });
+          await tx.hostRestaurantAssignment.createMany({
+            data: restaurantIds.map((rid) => ({
+              organizationHostId: host.id,
+              restaurantId: rid,
+            })),
+          });
+        }
       });
+
+      writeAuditLog({
+        actorUserId: req.user.id,
+        restaurantId: activeRestaurantId,
+        action: 'team.update_assignments',
+        resourceType: 'user',
+        resourceId: userId,
+        metadata: { restaurantIds },
+      }).catch(() => {});
 
       res.json({ message: 'Accesos actualizados' });
     } catch (error) {
@@ -252,7 +389,7 @@ router.patch(
 
 router.delete(
   '/:userId',
-  authenticateRestaurantRoles(['restaurant_owner']),
+  authenticateRestaurantRoles(ROLES_OWNER),
   async (req, res, next) => {
     try {
       if (req.params.userId === req.user.id) {
@@ -262,7 +399,7 @@ router.delete(
       const { restaurantId } = req.activeRestaurant;
       const restaurant = await prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        select: { organizationId: true }
+        select: { organizationId: true },
       });
 
       const manager = await prisma.organizationManager.findUnique({
@@ -274,16 +411,42 @@ router.delete(
         },
       });
 
-      if (!manager) {
+      if (manager) {
+        await prisma.organizationManager.delete({ where: { id: manager.id } });
+        writeAuditLog({
+          actorUserId: req.user.id,
+          restaurantId,
+          action: 'team.remove',
+          resourceType: 'user',
+          resourceId: req.params.userId,
+          metadata: { role: ROLES.MANAGER },
+        }).catch(() => {});
+        return res.json({ message: 'Miembro del equipo eliminado' });
+      }
+
+      const host = await prisma.organizationHost.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: restaurant.organizationId,
+            userId: req.params.userId,
+          },
+        },
+      });
+
+      if (!host) {
         throw new NotFoundError('Usuario no encontrado');
       }
 
-      // In the new model, owners are not in OrganizationManager, so we don't need to check role here
-      // as long as we are deleting from OrganizationManager.
-      
-      await prisma.organizationManager.delete({
-        where: { id: manager.id },
-      });
+      await prisma.organizationHost.delete({ where: { id: host.id } });
+
+      writeAuditLog({
+        actorUserId: req.user.id,
+        restaurantId,
+        action: 'team.remove',
+        resourceType: 'user',
+        resourceId: req.params.userId,
+        metadata: { role: ROLES.HOST },
+      }).catch(() => {});
 
       res.json({ message: 'Miembro del equipo eliminado' });
     } catch (error) {

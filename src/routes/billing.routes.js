@@ -248,6 +248,7 @@ router.get('/subscription', async (req, res, next) => {
         whatsappFeatures: planConfig.whatsappFeatures,
         googleReserveIntegration: planConfig.googleReserveIntegration,
         prioritySupport: planConfig.prioritySupport,
+        postVisitFeedback: planConfig.postVisitFeedback === true,
       } : null,
       allPlans: sortPlansByDisplayOrder(allPlansForOrg),
       offeredPlans,

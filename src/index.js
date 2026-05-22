@@ -32,6 +32,8 @@ const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
 const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
 const { startReconciliationJob } = require("./jobs/reconciliationJob");
 const { startReservationHoldCleanupJob } = require("./jobs/reservationHoldCleanup");
+const { startPostVisitFeedbackJob } = require("./jobs/postVisitFeedbackJob");
+const { publicRouter: feedbackPublicRouter, restaurantRouter: feedbackRestaurantRouter } = require("./routes/feedback.routes");
 const { publicRestaurantRouter: holdRestaurantRouter, publicHoldRouter, staffRouter: holdStaffRouter } = require("./routes/reservationHold.routes");
 const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
 const { getClpPerUsd } = require("./services/clpUsdRateService");
@@ -196,6 +198,7 @@ app.use("/api/public/reservation-holds", publicHoldRouter);
 // Public alias for user-front
 app.use("/api/public/restaurants", reservationRouter);
 app.use("/api/public/reservations", reservationRouter);
+app.use("/api/public/feedback", feedbackPublicRouter);
 
 app.use("/api/auth", authRouter);
 app.use("/api/restaurants", reservationRouter);
@@ -208,6 +211,7 @@ app.use("/api/restaurant/:restaurantId/schedules", scheduleRouter);
 app.use("/api/restaurant/:restaurantId/team", teamRouter);
 app.use("/api/restaurant/:restaurantId/menus", menuRouter);
 app.use("/api/restaurant/:restaurantId/reservation-windows", reservationWindowRouter);
+app.use("/api/restaurant/:restaurantId/feedback", feedbackRestaurantRouter);
 app.use("/api/restaurant/:restaurantId/holds", holdStaffRouter);
 app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
 app.use("/api/admin", adminRouter);
@@ -231,4 +235,5 @@ app.listen(PORT, "0.0.0.0", () => {
   startGracePeriodExpiryJob();
   startReconciliationJob();
   startReservationHoldCleanupJob();
+  startPostVisitFeedbackJob();
 });

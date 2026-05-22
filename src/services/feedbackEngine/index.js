@@ -1,0 +1,26 @@
+'use strict';
+
+module.exports = {
+  ...require('./eligibility'),
+  ...require('./scheduling'),
+  ...require('./sendFeedback'),
+  ...require('./submitResponse'),
+  ...require('./recovery'),
+  ...require('./analytics'),
+  ...require('./satisfactionIndex'),
+  ...require('./commentSeverity'),
+  ...require('./emailNormalize'),
+  processFeedbackRequest: require('./sendFeedback').processFeedbackRequest,
+  recordClickAndGetRedirect: require('./sendFeedback').recordClickAndGetRedirect,
+  getPublicFeedbackMeta: require('./submitResponse').getPublicFeedbackMeta,
+  markOpened: require('./submitResponse').markOpened,
+  submitFeedbackResponse: require('./submitResponse').submitFeedbackResponse,
+  getRestaurantSummary: require('./analytics').getRestaurantSummary,
+  getBenchmarkAggregates: require('./analytics').getBenchmarkAggregates,
+  getRestaurantInsights: require('./analytics').getRestaurantInsights,
+  ensureFeedbackRequestForReservation: require('./feedbackEnqueue').ensureFeedbackRequestForReservation,
+  syncFeedbackOnReservationStatusChange: require('./feedbackEnqueue').syncFeedbackOnReservationStatusChange,
+  listFeedbackOutreach: require('./feedbackEnqueue').listFeedbackOutreach,
+  syncRestaurantFeedbackQueue: require('./feedbackEnqueue').syncRestaurantFeedbackQueue,
+  getOrganizationFeedbackOverview: require('./feedbackEnqueue').getOrganizationFeedbackOverview,
+};

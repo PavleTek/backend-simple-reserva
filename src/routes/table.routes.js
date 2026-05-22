@@ -1,6 +1,7 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
+const { ROLES_CONFIG } = require('../auth/roles');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
 const { incrementDataVersion } = require('../utils/dataVersion');
@@ -13,7 +14,7 @@ const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']));
+router.use(authenticateRestaurantRoles(ROLES_CONFIG));
 
 router.get('/zone/:zoneId', async (req, res, next) => {
   try {
