@@ -5,6 +5,7 @@ const rateLimit = require('express-rate-limit');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { ROLES_FEEDBACK_VIEW, ROLES_FEEDBACK_SETTINGS } = require('../auth/roles');
+const { validateSendDelayMinutes } = require('../lib/feedbackDevLimits');
 const { ValidationError, NotFoundError } = require('../utils/errors');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const {
@@ -142,6 +143,14 @@ restaurantRouter.patch('/settings', authenticateRestaurantRoles(ROLES_FEEDBACK_S
     }
     if (data.eligibilityMode && !['confirmed_past_end', 'completed_only'].includes(data.eligibilityMode)) {
       throw new ValidationError('Modo de elegibilidad no válido');
+    }
+
+    const delayCheck = validateSendDelayMinutes(data.sendDelayMinutes);
+    if (!delayCheck.ok) {
+      throw new ValidationError(delayCheck.message);
+    }
+    if (delayCheck.value !== undefined) {
+      data.sendDelayMinutes = delayCheck.value;
     }
 
     const survey = await prisma.feedbackSurvey.upsert({

@@ -2390,4 +2390,7 @@ router.post('/reservations/send-missing-emails', async (req, res, next) => {
   }
 });
 
+const adminFeedbackRouter = require('./adminFeedback.routes');
+router.use('/restaurants/:id/feedback', adminFeedbackRouter);
+
 module.exports = router;

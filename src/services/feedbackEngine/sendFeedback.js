@@ -1,10 +1,27 @@
 'use strict';
 
 const prisma = require('../../lib/prisma');
+const { NotFoundError, ValidationError } = require('../../utils/errors');
 const { normalizeCustomerEmail } = require('./emailNormalize');
 const { computeVisitEnd, computeScheduledFor, evaluateSendWindow } = require('./scheduling');
 const { isOnCooldown, isOptedOut } = require('./eligibility');
 const { sendPostVisitFeedbackEmail } = require('../notificationService');
+
+const ADMIN_SEND_OVERRIDES = {
+  bypassWindow: true,
+  bypassTooEarly: true,
+  bypassCooldown: true,
+  forceCanSend: true,
+  allowResend: true,
+};
+
+async function getOrCreateFeedbackSurvey(restaurantId) {
+  let survey = await prisma.feedbackSurvey.findUnique({ where: { restaurantId } });
+  if (!survey) {
+    survey = await prisma.feedbackSurvey.create({ data: { restaurantId } });
+  }
+  return survey;
+}
 
 function getApiBaseUrl() {
   return (process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/$/, '');
@@ -15,8 +32,19 @@ function getApiBaseUrl() {
  * @param {object} params
  * @returns {Promise<{ sent: boolean; skipped: boolean; reason?: string }>}
  */
-async function processFeedbackRequest({ reservation, survey, canSend }) {
+async function processFeedbackRequest({ reservation, survey, canSend, adminOverrides = null }) {
   const email = normalizeCustomerEmail(reservation.customerEmail);
+  if (!email) {
+    return { sent: false, skipped: true, reason: 'no_email' };
+  }
+
+  const bypassOptOut = adminOverrides?.bypassOptOut;
+  const bypassCooldown = adminOverrides?.bypassCooldown;
+  const bypassWindow = adminOverrides?.bypassWindow;
+  const bypassTooEarly = adminOverrides?.bypassTooEarly;
+  const forceCanSend = adminOverrides?.forceCanSend;
+  const allowResend = adminOverrides?.allowResend;
+
   const visitEnd = computeVisitEnd(reservation.dateTime, reservation.durationMinutes);
   const scheduledFor = computeScheduledFor(visitEnd, survey.sendDelayMinutes);
   const window = evaluateSendWindow(scheduledFor, survey.sendWindowMinutes);
@@ -42,11 +70,27 @@ async function processFeedbackRequest({ reservation, survey, canSend }) {
     }
   }
 
-  if (request.status === 'completed' || request.status === 'skipped') {
+  if (allowResend && (request.sentAt || ['skipped', 'expired'].includes(request.status))) {
+    request = await prisma.feedbackRequest.update({
+      where: { id: request.id },
+      data: {
+        status: 'pending',
+        skipReason: null,
+        sentAt: null,
+        scheduledFor,
+      },
+    });
+  }
+
+  if (request.status === 'completed') {
+    return { sent: false, skipped: true, reason: 'completed' };
+  }
+
+  if (request.status === 'skipped' && !allowResend) {
     return { sent: false, skipped: true, reason: request.skipReason || request.status };
   }
 
-  if (await isOptedOut(email, reservation.restaurantId)) {
+  if (await isOptedOut(email, reservation.restaurantId) && !bypassOptOut) {
     await prisma.feedbackRequest.update({
       where: { id: request.id },
       data: { status: 'skipped', skipReason: 'opt_out' },
@@ -54,7 +98,10 @@ async function processFeedbackRequest({ reservation, survey, canSend }) {
     return { sent: false, skipped: true, reason: 'opt_out' };
   }
 
-  if (await isOnCooldown(reservation.restaurantId, email, survey.minDaysBetweenFeedbackRequests)) {
+  if (
+    !bypassCooldown
+    && await isOnCooldown(reservation.restaurantId, email, survey.minDaysBetweenFeedbackRequests)
+  ) {
     await prisma.feedbackRequest.update({
       where: { id: request.id },
       data: { status: 'skipped', skipReason: 'cooldown' },
@@ -62,7 +109,7 @@ async function processFeedbackRequest({ reservation, survey, canSend }) {
     return { sent: false, skipped: true, reason: 'cooldown' };
   }
 
-  if (window.expired) {
+  if (window.expired && !bypassWindow) {
     await prisma.feedbackRequest.update({
       where: { id: request.id },
       data: { status: 'expired', skipReason: 'window_expired' },
@@ -70,15 +117,15 @@ async function processFeedbackRequest({ reservation, survey, canSend }) {
     return { sent: false, skipped: true, reason: 'window_expired' };
   }
 
-  if (window.tooEarly) {
+  if (window.tooEarly && !bypassTooEarly) {
     return { sent: false, skipped: false, reason: 'too_early' };
   }
 
-  if (!canSend) {
+  if (!canSend && !forceCanSend) {
     return { sent: false, skipped: true, reason: 'subscription' };
   }
 
-  if (request.sentAt) {
+  if (request.sentAt && !allowResend) {
     return { sent: false, skipped: false, reason: 'already_sent' };
   }
 
@@ -143,4 +190,61 @@ async function recordClickAndGetRedirect(token) {
   return { redirectUrl };
 }
 
-module.exports = { processFeedbackRequest, recordClickAndGetRedirect, getApiBaseUrl };
+/**
+ * Envío manual por soporte (panel admin). Omite ventana, cooldown y suscripción.
+ * @param {object} options
+ * @param {boolean} [options.ignoreOptOut]
+ * @param {boolean} [options.resend]
+ */
+async function adminManualSendByRequestId(restaurantId, requestId, options = {}) {
+  const request = await prisma.feedbackRequest.findFirst({
+    where: { id: requestId, restaurantId },
+    include: { reservation: true },
+  });
+  if (!request) throw new NotFoundError('Solicitud de encuesta no encontrada');
+  if (!request.reservation) throw new ValidationError('Reserva asociada no encontrada');
+
+  const survey = await getOrCreateFeedbackSurvey(restaurantId);
+  if (!survey.enabled) throw new ValidationError('Las encuestas post-visita están desactivadas para este local');
+
+  return processFeedbackRequest({
+    reservation: request.reservation,
+    survey,
+    canSend: true,
+    adminOverrides: {
+      ...ADMIN_SEND_OVERRIDES,
+      bypassOptOut: !!options.ignoreOptOut,
+      allowResend: options.resend !== false,
+    },
+  });
+}
+
+async function adminManualSendByReservationId(restaurantId, reservationId, options = {}) {
+  const reservation = await prisma.reservation.findFirst({
+    where: { id: reservationId, restaurantId },
+  });
+  if (!reservation) throw new NotFoundError('Reserva no encontrada');
+
+  const survey = await getOrCreateFeedbackSurvey(restaurantId);
+  if (!survey.enabled) throw new ValidationError('Las encuestas post-visita están desactivadas para este local');
+
+  return processFeedbackRequest({
+    reservation,
+    survey,
+    canSend: true,
+    adminOverrides: {
+      ...ADMIN_SEND_OVERRIDES,
+      bypassOptOut: !!options.ignoreOptOut,
+      allowResend: options.resend !== false,
+    },
+  });
+}
+
+module.exports = {
+  processFeedbackRequest,
+  recordClickAndGetRedirect,
+  getApiBaseUrl,
+  adminManualSendByRequestId,
+  adminManualSendByReservationId,
+  getOrCreateFeedbackSurvey,
+};
