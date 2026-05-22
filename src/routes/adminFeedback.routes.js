@@ -15,6 +15,7 @@ const {
   ensureFeedbackRequestForReservation,
   syncRestaurantFeedbackQueue,
 } = require('../services/feedbackEngine');
+const { normalizeInstagramUrl } = require('../services/feedbackEngine/instagramUrl');
 
 const router = express.Router({ mergeParams: true });
 
@@ -91,6 +92,9 @@ router.patch('/settings', async (req, res, next) => {
       if (delayCheck.value !== undefined) {
         data.sendDelayMinutes = delayCheck.value;
       }
+    }
+    if (data.instagramUrl !== undefined) {
+      data.instagramUrl = normalizeInstagramUrl(data.instagramUrl);
     }
 
     const survey = await prisma.feedbackSurvey.upsert({

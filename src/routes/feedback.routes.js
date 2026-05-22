@@ -22,6 +22,7 @@ const {
   listFeedbackOutreach,
   syncRestaurantFeedbackQueue,
 } = require('../services/feedbackEngine/feedbackEnqueue');
+const { normalizeInstagramUrl } = require('../services/feedbackEngine/instagramUrl');
 
 const publicLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -163,6 +164,9 @@ restaurantRouter.patch('/settings', authenticateRestaurantRoles(ROLES_FEEDBACK_S
       if (delayCheck.value !== undefined) {
         data.sendDelayMinutes = delayCheck.value;
       }
+    }
+    if (data.instagramUrl !== undefined) {
+      data.instagramUrl = normalizeInstagramUrl(data.instagramUrl);
     }
 
     const survey = await prisma.feedbackSurvey.upsert({

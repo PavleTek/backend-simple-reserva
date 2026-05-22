@@ -12,6 +12,7 @@ const {
   resolveGoogleReviewUrl,
   shouldInviteGoogleReview,
 } = require('./googleReviewUrl');
+const { normalizeInstagramUrl } = require('./instagramUrl');
 
 const TTL_DAYS = parseInt(process.env.FEEDBACK_TOKEN_TTL_DAYS || '14', 10);
 
@@ -73,7 +74,7 @@ async function getPublicFeedbackMeta(token) {
     alreadyCompleted: !!request.response || request.status === 'completed',
     expired: expired || request.status === 'expired',
     googleReviewUrl,
-    instagramUrl: survey?.instagramUrl || null,
+    instagramUrl: normalizeInstagramUrl(survey?.instagramUrl),
     timezone: request.reservation?.restaurant?.timezone,
   };
 }
@@ -237,7 +238,7 @@ async function submitFeedbackResponse(token, body) {
     recoveryTriggered: recovery.recoveryTriggered,
     showGoogleReview: inviteGoogleReview,
     googleReviewUrl,
-    instagramUrl: survey?.instagramUrl?.trim() || null,
+    instagramUrl: normalizeInstagramUrl(survey?.instagramUrl),
   };
 }
 
