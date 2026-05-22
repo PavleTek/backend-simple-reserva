@@ -78,10 +78,10 @@ function buildPostVisitFeedbackHtml(options) {
             </td>
           </tr>
           <tr>
-            <td style="padding:8px 32px 28px 32px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;color:${COLORS.textPrimary};">
-              <p style="margin:0 0 12px 0;font-size:15px;color:${COLORS.textSecondary};">Hola ${safeCustomer},</p>
-              <p style="margin:0 0 16px 0;">Gracias por venir a <strong>${safeRestaurant}</strong> (${safeDate}, ${safeTime}).</p>
-              <p style="margin:0 0 24px 0;color:${COLORS.textSecondary};">¿Nos ayudas con tu opinión? Son unos minutos y nos importa de verdad.</p>
+            <td align="center" style="padding:8px 32px 28px 32px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;color:${COLORS.textPrimary};text-align:center;">
+              <p style="margin:0 0 12px 0;font-size:15px;color:${COLORS.textSecondary};text-align:center;">Hola ${safeCustomer},</p>
+              <p style="margin:0 0 16px 0;text-align:center;">Gracias por venir a <strong>${safeRestaurant}</strong><br/>${safeDate}, ${safeTime}.</p>
+              <p style="margin:0 0 24px 0;color:${COLORS.textSecondary};text-align:center;">¿Nos ayudas con tu opinión? Son unos minutos y nos importa de verdad.</p>
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
                 <tr>
                   <td align="center">

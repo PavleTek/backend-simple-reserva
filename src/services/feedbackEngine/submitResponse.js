@@ -5,8 +5,13 @@ const { NotFoundError, ValidationError } = require('../../utils/errors');
 const { isTokenExpired } = require('./scheduling');
 const { inferSentiment } = require('./sentiment');
 const { processRecovery } = require('./recovery');
+const { normalizeCustomerEmail } = require('./emailNormalize');
 const { getEffectiveTimezone } = require('../../utils/timezone');
 const { getDayOfWeekInTimezone } = require('../../utils/timezone');
+const {
+  resolveGoogleReviewUrl,
+  shouldInviteGoogleReview,
+} = require('./googleReviewUrl');
 
 const TTL_DAYS = parseInt(process.env.FEEDBACK_TOKEN_TTL_DAYS || '14', 10);
 
@@ -22,6 +27,7 @@ async function getPublicFeedbackMeta(token) {
       reservation: {
         select: {
           customerName: true,
+          customerEmail: true,
           dateTime: true,
           partySize: true,
           restaurant: {
@@ -47,11 +53,13 @@ async function getPublicFeedbackMeta(token) {
     where: { restaurantId: request.restaurantId },
   });
 
-  let googleReviewUrl = survey?.googleReviewUrl || null;
-  const placeId = request.reservation?.restaurant?.googlePlaceId;
-  if (!googleReviewUrl && placeId) {
-    googleReviewUrl = `https://search.google.com/local/writereview?placeid=${placeId}`;
-  }
+  const googleReviewUrl = resolveGoogleReviewUrl(
+    survey,
+    request.reservation?.restaurant || {},
+  );
+
+  const reservationEmail = normalizeCustomerEmail(request.reservation?.customerEmail);
+  const hasReservationEmail = !!reservationEmail;
 
   return {
     restaurantName: request.reservation?.restaurant?.name,
@@ -59,6 +67,8 @@ async function getPublicFeedbackMeta(token) {
     logoUrl: request.reservation?.restaurant?.logoUrl,
     visitDateTime: request.reservation?.dateTime,
     customerName: request.reservation?.customerName,
+    hasReservationEmail,
+    customerEmailMasked: hasReservationEmail ? maskEmailForDisplay(reservationEmail) : null,
     partySize: request.reservation?.partySize,
     alreadyCompleted: !!request.response || request.status === 'completed',
     expired: expired || request.status === 'expired',
@@ -104,6 +114,7 @@ async function submitFeedbackResponse(token, body) {
               address: true,
               shortAddress: true,
               timezone: true,
+              googlePlaceId: true,
             },
           },
           table: { select: { id: true, zoneId: true } },
@@ -132,6 +143,17 @@ async function submitFeedbackResponse(token, body) {
 
   const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 2000) : null;
   const reservation = request.reservation;
+
+  let recoveryContactEmail =
+    typeof body.recoveryContactEmail === 'string' ? body.recoveryContactEmail.trim() : null;
+  if (body.recoveryContactRequested && !recoveryContactEmail) {
+    recoveryContactEmail = normalizeCustomerEmail(reservation.customerEmail) || null;
+  }
+  if (body.recoveryContactRequested && !recoveryContactEmail) {
+    throw new ValidationError(
+      'Indica un correo de contacto o reserva con email para que el restaurante pueda escribirte.'
+    );
+  }
   const tz = getEffectiveTimezone(reservation.restaurant);
   const dt = new Date(reservation.dateTime);
   const hourBucket = parseInt(
@@ -156,7 +178,7 @@ async function submitFeedbackResponse(token, body) {
       comment: comment || null,
       sentiment: inferSentiment(overallScore, comment),
       recoveryContactRequested: !!body.recoveryContactRequested,
-      recoveryContactEmail: body.recoveryContactEmail || null,
+      recoveryContactEmail: recoveryContactEmail || null,
       recoveryContactPhone: body.recoveryContactPhone || null,
       partySize: reservation.partySize,
       dateTime: reservation.dateTime,
@@ -182,6 +204,13 @@ async function submitFeedbackResponse(token, body) {
     },
     comment,
     customerName: reservation.customerName,
+    recoveryContactRequested: !!body.recoveryContactRequested,
+    recoveryContactEmail: recoveryContactEmail || null,
+    visitDateTime: reservation.dateTime,
+    partySize: reservation.partySize,
+    customerEmail: normalizeCustomerEmail(reservation.customerEmail),
+    customerPhone: reservation.customerPhone?.trim() || null,
+    timezone: tz,
     survey,
     restaurant: reservation.restaurant,
   });
@@ -198,12 +227,32 @@ async function submitFeedbackResponse(token, body) {
     data: { completedAt: new Date(), status: 'completed' },
   });
 
-  return { success: true, recoveryTriggered: recovery.recoveryTriggered };
+  const inviteGoogleReview = shouldInviteGoogleReview(overallScore);
+  const googleReviewUrl = inviteGoogleReview
+    ? resolveGoogleReviewUrl(survey, reservation.restaurant)
+    : null;
+
+  return {
+    success: true,
+    recoveryTriggered: recovery.recoveryTriggered,
+    showGoogleReview: inviteGoogleReview,
+    googleReviewUrl,
+    instagramUrl: survey?.instagramUrl?.trim() || null,
+  };
 }
 
 /**
  * @param {{ address?: string|null; shortAddress?: string|null }} restaurant
  */
+function maskEmailForDisplay(email) {
+  const at = email.indexOf('@');
+  if (at <= 0) return null;
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if (local.length <= 2) return `${local[0] ?? '*'}***@${domain}`;
+  return `${local[0]}***${local[local.length - 1]}@${domain}`;
+}
+
 function deriveCityKey(restaurant) {
   const raw = restaurant?.shortAddress || restaurant?.address || '';
   if (!raw) return null;

@@ -3,6 +3,7 @@
 const prisma = require('../../lib/prisma');
 const { analyzeCommentSeverity, maxSeverity } = require('./commentSeverity');
 const { sendFeedbackRecoveryAlertEmail } = require('../notificationService');
+const { buildRecoveryAlertContent } = require('./feedbackAlertFormat');
 
 /**
  * @param {number} overallScore
@@ -43,6 +44,13 @@ async function processRecovery({
   categoryScores,
   comment,
   customerName,
+  recoveryContactRequested,
+  recoveryContactEmail,
+  visitDateTime,
+  partySize,
+  customerEmail,
+  customerPhone,
+  timezone,
   survey,
   restaurant,
 }) {
@@ -68,15 +76,21 @@ async function processRecovery({
   else if (commentEval.level !== 'none') severitySource = 'comment';
 
   const severity = finalSeverity === 'none' ? 'medium' : finalSeverity;
-  const title =
-    severity === 'high'
-      ? `Alerta recovery: ${customerName || 'Cliente'}`
-      : `Experiencia a mejorar: ${customerName || 'Cliente'}`;
-
-  const bodyParts = [
-    `Puntuación general: ${overallScore}/5`,
-    comment ? `Comentario: ${comment}` : null,
-  ].filter(Boolean);
+  const tz = timezone || restaurant?.timezone || null;
+  const { title, body } = buildRecoveryAlertContent({
+    customerName,
+    overallScore,
+    categoryScores,
+    comment,
+    recoveryContactRequested,
+    recoveryContactEmail,
+    visitDateTime,
+    partySize,
+    customerEmail,
+    customerPhone,
+    timezone: tz,
+    severity,
+  });
 
   const alert = await prisma.feedbackAlert.create({
     data: {
@@ -87,7 +101,7 @@ async function processRecovery({
       severitySource,
       matchedKeywords: commentEval.matchedKeywords,
       title,
-      body: bodyParts.join('\n'),
+      body,
       status: 'open',
     },
   });

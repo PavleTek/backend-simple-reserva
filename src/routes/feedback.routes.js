@@ -233,6 +233,11 @@ restaurantRouter.get('/alerts', async (req, res, next) => {
   try {
     const restaurantId = req.params.restaurantId;
     const status = req.query.status || 'open';
+    const { ALERT_DETAIL_INCLUDE, formatAlertForApi } = require('../services/feedbackEngine/feedbackAlertFormat');
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { timezone: true },
+    });
     const alerts = await prisma.feedbackAlert.findMany({
       where: {
         restaurantId,
@@ -240,19 +245,9 @@ restaurantRouter.get('/alerts', async (req, res, next) => {
       },
       orderBy: [{ severity: 'desc' }, { createdAt: 'desc' }],
       take: 100,
-      include: {
-        feedbackResponse: {
-          select: {
-            overallScore: true,
-            comment: true,
-            feedbackRequest: {
-              select: { reservation: { select: { customerName: true } } },
-            },
-          },
-        },
-      },
+      include: ALERT_DETAIL_INCLUDE,
     });
-    res.json(alerts);
+    res.json(alerts.map((a) => formatAlertForApi(a, restaurant?.timezone)));
   } catch (err) {
     next(err);
   }
