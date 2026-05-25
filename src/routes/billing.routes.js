@@ -49,9 +49,11 @@ const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(['restaurant_owner', 'restaurant_manager']));
 
-router.get('/subscription', async (req, res, next) => {
+/** Facturación completa: solo propietario y gerente (anfitriones usan GET /access-status). */
+const ROLES_BILLING = ['restaurant_owner', 'restaurant_manager'];
+
+router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
     const restaurant = await prisma.restaurant.findUnique({

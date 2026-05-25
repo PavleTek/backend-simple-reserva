@@ -3,6 +3,8 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { ROLES_CONFIG, ROLES_CONFIG_VIEW } = require('../auth/roles');
 const { ValidationError } = require('../utils/errors');
+const { timeToMinutes } = require('../services/slotEngine/windows');
+const { isCrossMidnightEnabled } = require('../lib/featureFlags');
 
 /**
  * Reintenta una vez ante conflicto de transacción (Prisma P2034), típico con escrituras concurrentes.
@@ -61,17 +63,28 @@ router.put('/', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next
       if (!timeRegex.test(entry.openTime) || !timeRegex.test(entry.closeTime)) {
         throw new ValidationError('openTime y closeTime deben tener formato HH:MM');
       }
-      if (entry.openTime >= entry.closeTime) {
-        throw new ValidationError(`El horario de apertura (${entry.openTime}) debe ser anterior al de cierre (${entry.closeTime})`);
+      const closesNextDay = !!entry.closesNextDay && isCrossMidnightEnabled();
+      if (!closesNextDay && entry.openTime >= entry.closeTime) {
+        throw new ValidationError(
+          `El horario de cierre debe ser posterior al de apertura (${entry.dayName ?? entry.dayOfWeek}). Si tu local cierra al día siguiente, activa "Cierra al día siguiente".`,
+        );
+      }
+      if (closesNextDay) {
+        const open = timeToMinutes(entry.openTime);
+        const close = timeToMinutes(entry.closeTime);
+        const span = close + 1440 - open;
+        if (span <= 0 || span > 24 * 60) {
+          throw new ValidationError(`Duración de jornada inválida (día ${entry.dayOfWeek}).`);
+        }
       }
 
       const periodFields = [
-        ['breakfastStartTime', 'breakfastEndTime', 'Desayuno'],
-        ['lunchStartTime', 'lunchEndTime', 'Almuerzo'],
-        ['dinnerStartTime', 'dinnerEndTime', 'Cena']
+        ['breakfastStartTime', 'breakfastEndTime', 'Desayuno', false],
+        ['lunchStartTime', 'lunchEndTime', 'Almuerzo', false],
+        ['dinnerStartTime', 'dinnerEndTime', 'Cena', 'dinnerEndsNextDay'],
       ];
 
-      for (const [startKey, endKey, label] of periodFields) {
+      for (const [startKey, endKey, label, nextDayKey] of periodFields) {
         const start = entry[startKey];
         const end = entry[endKey];
         if (start || end) {
@@ -81,8 +94,14 @@ router.put('/', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next
           if (!timeRegex.test(start) || !timeRegex.test(end)) {
             throw new ValidationError(`Las horas de ${label} deben tener formato HH:MM`);
           }
-          if (start >= end) {
-            throw new ValidationError(`La hora de inicio de ${label} (${start}) debe ser anterior a la de fin (${end})`);
+          const periodNextDay =
+            nextDayKey === 'dinnerEndsNextDay'
+              ? !!entry.dinnerEndsNextDay && isCrossMidnightEnabled()
+              : false;
+          if (!periodNextDay && start >= end) {
+            throw new ValidationError(
+              `La hora de inicio de ${label} (${start}) debe ser anterior a la de fin (${end}), o activa cierre al día siguiente.`,
+            );
           }
         }
       }
@@ -113,23 +132,27 @@ router.put('/', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next
               dayOfWeek: entry.dayOfWeek,
               openTime: entry.openTime,
               closeTime: entry.closeTime,
+              closesNextDay: !!entry.closesNextDay,
               breakfastStartTime: entry.breakfastStartTime || null,
               breakfastEndTime: entry.breakfastEndTime || null,
               lunchStartTime: entry.lunchStartTime || null,
               lunchEndTime: entry.lunchEndTime || null,
               dinnerStartTime: entry.dinnerStartTime || null,
               dinnerEndTime: entry.dinnerEndTime || null,
+              dinnerEndsNextDay: !!entry.dinnerEndsNextDay,
               isActive: entry.isActive ?? true,
             },
             update: {
               openTime: entry.openTime,
               closeTime: entry.closeTime,
+              closesNextDay: !!entry.closesNextDay,
               breakfastStartTime: entry.breakfastStartTime || null,
               breakfastEndTime: entry.breakfastEndTime || null,
               lunchStartTime: entry.lunchStartTime || null,
               lunchEndTime: entry.lunchEndTime || null,
               dinnerStartTime: entry.dinnerStartTime || null,
               dinnerEndTime: entry.dinnerEndTime || null,
+              dinnerEndsNextDay: !!entry.dinnerEndsNextDay,
               isActive: entry.isActive ?? true,
             },
           });

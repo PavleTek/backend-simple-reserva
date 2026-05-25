@@ -5,13 +5,11 @@
  *
  * Cálculo de ventanas donde se ofrecen cupos de reserva.
  *
- * Concepto clave: las ventanas de reserva son INDEPENDIENTES del horario de operación.
- * - Si reservationWindowMode = 'same_as_schedule' → las ventanas igualan al horario operativo.
- * - Si reservationWindowMode = 'custom' → se usan las ventanas definidas explícitamente,
- *   que DEBEN estar contenidas dentro del horario operativo (se valida al guardar, no aquí).
- *
- * Formato interno: [[startMin, endMin], ...] (minutos desde medianoche).
+ * Formato interno: [[startMin, endMin], ...] (minutos desde medianoche del día de apertura;
+ * endMin puede superar 1440 cuando endsNextDay / closesNextDay).
  */
+
+const { isCrossMidnightEnabled } = require('../../lib/featureFlags');
 
 /**
  * Convierte una cadena "HH:mm" a minutos desde medianoche.
@@ -24,40 +22,52 @@ function timeToMinutes(timeStr) {
 }
 
 /**
- * Convierte minutos desde medianoche a "HH:mm".
+ * Convierte minutos desde medianoche a "HH:mm" (wraps at 24h for display).
  * @param {number} minutes
  * @returns {string}
  */
 function minutesToTime(minutes) {
-  const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
-  const mm = String(minutes % 60).padStart(2, '0');
+  const local = ((minutes % 1440) + 1440) % 1440;
+  const hh = String(Math.floor(local / 60)).padStart(2, '0');
+  const mm = String(local % 60).padStart(2, '0');
   return `${hh}:${mm}`;
 }
 
 /**
+ * Wraps [start, end] when period ends next calendar day.
+ * @param {number} start
+ * @param {number} end
+ * @param {boolean} endsNextDay
+ * @returns {[number, number]|null}
+ */
+function wrapWindow(start, end, endsNextDay) {
+  const s = start;
+  let e = end;
+  if (endsNextDay && isCrossMidnightEnabled()) {
+    e = end + 1440;
+  }
+  if (s >= e) return null;
+  if (e - s > 1440) return null;
+  return [s, e];
+}
+
+/**
  * Ventanas del horario de operación.
- * @param {{ scheduleMode?: string; openTime?: string; closeTime?: string;
- *            breakfastStartTime?: string; breakfastEndTime?: string;
- *            lunchStartTime?: string; lunchEndTime?: string;
- *            dinnerStartTime?: string; dinnerEndTime?: string; } | null} schedule
- * @param {string} scheduleMode - 'continuous' | 'service_periods'
- * @returns {Array<[number, number]>}
  */
 function getOperatingWindows(schedule, scheduleMode = 'continuous') {
   if (!schedule) return [];
 
   if (scheduleMode === 'service_periods') {
     const periods = [
-      [schedule.breakfastStartTime, schedule.breakfastEndTime],
-      [schedule.lunchStartTime, schedule.lunchEndTime],
-      [schedule.dinnerStartTime, schedule.dinnerEndTime],
+      [schedule.breakfastStartTime, schedule.breakfastEndTime, false],
+      [schedule.lunchStartTime, schedule.lunchEndTime, false],
+      [schedule.dinnerStartTime, schedule.dinnerEndTime, !!schedule.dinnerEndsNextDay],
     ];
     const windows = [];
-    for (const [start, end] of periods) {
+    for (const [start, end, endsNextDay] of periods) {
       if (start && end) {
-        const s = timeToMinutes(start);
-        const e = timeToMinutes(end);
-        if (s < e) windows.push([s, e]);
+        const w = wrapWindow(timeToMinutes(start), timeToMinutes(end), endsNextDay);
+        if (w) windows.push(w);
       }
     }
     return windows;
@@ -65,19 +75,18 @@ function getOperatingWindows(schedule, scheduleMode = 'continuous') {
 
   const s = timeToMinutes(schedule.openTime ?? '00:00');
   const e = timeToMinutes(schedule.closeTime ?? '23:59');
-  return s < e ? [[s, e]] : [];
+  const closesNextDay = !!schedule.closesNextDay && isCrossMidnightEnabled();
+
+  if (!closesNextDay) {
+    return s < e ? [[s, e]] : [];
+  }
+
+  const w = wrapWindow(s, e, true);
+  return w ? [w] : [];
 }
 
 /**
  * Ventanas donde se generan cupos reservables.
- * Si reservationWindowMode = 'custom' y hay ventanas definidas, las usa.
- * En caso contrario, usa el horario de operación.
- *
- * @param {{ openTime?: string; closeTime?: string; [key: string]: any } | null} schedule
- * @param {string} scheduleMode
- * @param {'same_as_schedule'|'custom'} reservationWindowMode
- * @param {Array<{ startTime: string; endTime: string }>} customWindows
- * @returns {Array<[number, number]>}
  */
 function getReservationWindows(
   schedule,
@@ -98,9 +107,12 @@ function getReservationWindows(
       const windows = [];
       for (const w of forDay) {
         if (!w.startTime || !w.endTime) continue;
-        const s = timeToMinutes(w.startTime);
-        const e = timeToMinutes(w.endTime);
-        if (s < e) windows.push([s, e]);
+        const wrapped = wrapWindow(
+          timeToMinutes(w.startTime),
+          timeToMinutes(w.endTime),
+          !!w.endsNextDay,
+        );
+        if (wrapped) windows.push(wrapped);
       }
       if (windows.length > 0) return windows;
     }
@@ -110,11 +122,7 @@ function getReservationWindows(
 
 /**
  * Valida que las ventanas custom estén contenidas dentro del horario operativo del día.
- * Retorna lista de ventanas inválidas (vacío = todas ok).
- *
- * @param {Array<[number, number]>} operatingWindows
- * @param {Array<[number, number]>} customWindows
- * @returns {Array<[number, number]>} ventanas fuera del horario
+ * Soporta ventanas operativas cross-midnight (endMin > 1440).
  */
 function findWindowsOutsideOperating(operatingWindows, customWindows) {
   return customWindows.filter(([cs, ce]) => {
@@ -122,10 +130,27 @@ function findWindowsOutsideOperating(operatingWindows, customWindows) {
   });
 }
 
+/**
+ * Slot display time and calendar offset from grid minutes.
+ */
+function slotFromGridMinutes(m) {
+  const dayOffset = Math.floor(m / 1440);
+  const localMin = m % 1440;
+  return {
+    time: minutesToTime(localMin),
+    startMin: m,
+    endMin: m,
+    dayOffset,
+    nextDay: dayOffset > 0,
+  };
+}
+
 module.exports = {
   timeToMinutes,
   minutesToTime,
+  wrapWindow,
   getOperatingWindows,
   getReservationWindows,
   findWindowsOutsideOperating,
+  slotFromGridMinutes,
 };

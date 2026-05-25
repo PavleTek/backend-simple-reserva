@@ -13,6 +13,7 @@ const {
   sendModificationAlertToCustomer,
 } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
+const planService = require('../services/planService');
 const { getRestaurant, updateRestaurant, completeOnboarding } = require('../controllers/restaurantController');
 const { parsePagination, paginatedResponse } = require('../utils/pagination');
 const {
@@ -102,16 +103,27 @@ router.use(authenticateRestaurantRoles(ROLES_OPERATIONAL));
 
 router.get('/', getRestaurant);
 
-/** Staff access check without exposing billing (hosts). */
+/** Staff access check without exposing billing (hosts, managers on floor). */
 router.get('/access-status', async (req, res, next) => {
   try {
+    const restaurantId = req.activeRestaurant.restaurantId;
     const restaurant = await prisma.restaurant.findUnique({
-      where: { id: req.activeRestaurant.restaurantId },
+      where: { id: restaurantId },
       select: { organizationId: true },
     });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
     const hasAccess = await hasActiveAccess(restaurant.organizationId);
-    res.json({ hasAccess });
+    let planConfig = null;
+    if (hasAccess) {
+      const resolved = await planService.resolvePlanConfigForRestaurant(restaurantId, true);
+      if (resolved) {
+        planConfig = {
+          maxZonesPerRestaurant: resolved.maxZonesPerRestaurant ?? null,
+          maxTables: resolved.maxTables ?? null,
+        };
+      }
+    }
+    res.json({ hasAccess, planConfig });
   } catch (error) {
     next(error);
   }
@@ -622,10 +634,20 @@ router.get('/reservations', async (req, res, next) => {
 
     const where = { restaurantId };
 
+    const { isCrossMidnightEnabled } = require('../lib/featureFlags');
+
     if (date) {
       const start = parseInTimezone(date, '00:00', timezone);
       const end = parseInTimezone(date, '23:59', timezone);
-      where.dateTime = { gte: start, lte: end };
+      const businessDateVal = new Date(`${date}T12:00:00.000Z`);
+      if (isCrossMidnightEnabled()) {
+        where.OR = [
+          { businessDate: businessDateVal },
+          { businessDate: null, dateTime: { gte: start, lte: end } },
+        ];
+      } else {
+        where.dateTime = { gte: start, lte: end };
+      }
     } else if (dateFrom && dateTo) {
       const start = parseInTimezone(dateFrom, '00:00', timezone);
       const end = parseInTimezone(dateTo, '23:59', timezone);

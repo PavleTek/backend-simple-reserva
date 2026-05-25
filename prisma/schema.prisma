@@ -134,6 +134,18 @@ model HostRestaurantAssignment {
   @@index([restaurantId])
 }
 
+enum BookingAcceptanceMode {
+  ALWAYS_24_7
+  DURING_OPERATIONAL
+  CUSTOM
+}
+
+enum BookingClosedFallback {
+  DISABLE
+  MESSAGE
+  CONTACT
+}
+
 model Restaurant {
   id                        String    @id @default(cuid())
   organizationId            String
@@ -167,6 +179,12 @@ model Restaurant {
   isDeleted                 Boolean   @default(false)
   scheduleMode              String    @default("continuous") // "continuous" | "service_periods"
   appearanceTheme           String    @default("crema-calida") // booking page palette id
+  bookingAcceptanceMode     BookingAcceptanceMode @default(ALWAYS_24_7)
+  bookingClosedFallback     BookingClosedFallback @default(MESSAGE)
+  bookingClosedMessage      String?
+  bookingContactPhone       String?
+  bookingContactWhatsapp    String?
+  bookingContactEmail       String?
   dataVersion               Int       @default(0)
   onboardingCompletedAt     DateTime?
   createdAt                 DateTime  @default(now())
@@ -176,6 +194,7 @@ model Restaurant {
   durationRules             DurationRule[]
   schedules                 Schedule[]
   reservationWindows        ReservationWindow[]
+  bookingAcceptanceWindows  BookingAcceptanceWindow[]
   blockedSlots              BlockedSlot[]
   reservations              Reservation[]
   holds                     ReservationHold[]
@@ -292,6 +311,7 @@ model Schedule {
   dayOfWeek           Int       // 0=Sunday, 1=Monday, ..., 6=Saturday
   openTime            String    // "09:00"
   closeTime           String    // "22:00"
+  closesNextDay       Boolean   @default(false)
   isActive            Boolean   @default(true)
   breakfastStartTime  String?   // service_periods mode
   breakfastEndTime    String?
@@ -299,8 +319,22 @@ model Schedule {
   lunchEndTime        String?
   dinnerStartTime     String?
   dinnerEndTime       String?
+  dinnerEndsNextDay   Boolean   @default(false)
 
   @@unique([restaurantId, dayOfWeek])
+}
+
+model BookingAcceptanceWindow {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dayOfWeek    Int        // 0=Sunday … 6=Saturday
+  startTime    String     // "15:00"
+  endTime      String     // "18:00"
+  endsNextDay  Boolean    @default(false)
+  isActive     Boolean    @default(true)
+
+  @@index([restaurantId, dayOfWeek])
 }
 
 model ReservationWindow {
@@ -310,6 +344,7 @@ model ReservationWindow {
   dayOfWeek    Int        // 0=Sunday … 6=Saturday
   startTime    String     // "15:00"
   endTime      String     // "19:00"
+  endsNextDay  Boolean    @default(false)
   label        String?
   sortOrder    Int        @default(0)
 
@@ -376,6 +411,7 @@ model Reservation {
   emailSent       Boolean   @default(false)
   partySize       Int
   dateTime        DateTime
+  businessDate    DateTime? @db.Date
   durationMinutes Int
   status          String    @default("confirmed") // "confirmed", "cancelled", "completed", "no_show"
   source          String    @default("web")      // "web" (public booking), "manual" (admin panel), "phone"
@@ -391,6 +427,7 @@ model Reservation {
   feedbackRequest           FeedbackRequest?
 
   @@index([restaurantId, dateTime, status])
+  @@index([restaurantId, businessDate, status])
   @@index([secureToken])
   @@index([confirmedByUserId])
   @@index([updatedByUserId])

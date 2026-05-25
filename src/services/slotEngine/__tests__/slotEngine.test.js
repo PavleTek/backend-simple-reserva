@@ -66,6 +66,26 @@ describe('windows', () => {
     assert.deepEqual(windows, [[720, 1320]]); // 12:00 → 22:00
   });
 
+  it('getOperatingWindows cross-midnight bar 18:00 → 03:00', () => {
+    process.env.FF_CROSS_MIDNIGHT = 'true';
+    const windows = getOperatingWindows(
+      { openTime: '18:00', closeTime: '03:00', closesNextDay: true },
+      'continuous',
+    );
+    assert.deepEqual(windows, [[1080, 1620]]); // 18:00 → 27:00 (03:00 next day)
+    delete process.env.FF_CROSS_MIDNIGHT;
+  });
+
+  it('generateGrid incluye slots post-medianoche', () => {
+    process.env.FF_CROSS_MIDNIGHT = 'true';
+    const slots = generateGrid([[1080, 1620]], 30, 60, 'STRICT_END');
+    const times = slots.map((s) => s.time);
+    assert.ok(times.includes('23:30'));
+    assert.ok(times.includes('00:30'));
+    assert.ok(times.includes('00:00') || times.includes('00:30'));
+    delete process.env.FF_CROSS_MIDNIGHT;
+  });
+
   it('getOperatingWindows service_periods omite periodos vacíos', () => {
     const windows = getOperatingWindows(SCHEDULE_SERVICE_PERIODS, 'service_periods');
     assert.deepEqual(windows, [[720, 900], [1140, 1320]]);

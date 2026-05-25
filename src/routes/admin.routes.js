@@ -454,7 +454,10 @@ router.get('/users', async (req, res, next) => {
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [
+          { lastLogin: { sort: 'desc', nulls: 'last' } },
+          { createdAt: 'desc' },
+        ],
         select: {
           id: true,
           email: true,

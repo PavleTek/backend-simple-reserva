@@ -16,14 +16,25 @@ const { getOperatingWindows, findWindowsOutsideOperating, timeToMinutes } = requ
 
 const router = express.Router({ mergeParams: true });
 
-function validateWindow(startTime, endTime) {
+const { isCrossMidnightEnabled } = require('../lib/featureFlags');
+
+function validateWindow(startTime, endTime, endsNextDay = false) {
   if (!/^\d{1,2}:\d{2}$/.test(startTime) || !/^\d{1,2}:\d{2}$/.test(endTime)) {
     throw new ValidationError('Horario inválido. Usa formato HH:mm');
   }
   const s = timeToMinutes(startTime);
   const e = timeToMinutes(endTime);
-  if (s >= e) {
-    throw new ValidationError('La hora de fin debe ser posterior a la de inicio');
+  const ndy = !!endsNextDay && isCrossMidnightEnabled();
+  if (!ndy && s >= e) {
+    throw new ValidationError(
+      'La hora de fin debe ser posterior a la de inicio, o activa "Cierra al día siguiente".',
+    );
+  }
+  if (ndy) {
+    const span = e + 1440 - s;
+    if (span <= 0 || span > 24 * 60) {
+      throw new ValidationError('Duración de ventana inválida');
+    }
   }
 }
 
@@ -98,10 +109,10 @@ router.put(
           if (!Number.isInteger(day) || day < 0 || day > 6) {
             throw new ValidationError('dayOfWeek debe ser 0–6');
           }
-          validateWindow(w.startTime, w.endTime);
+          validateWindow(w.startTime, w.endTime, w.endsNextDay);
           const s = timeToMinutes(w.startTime);
           const e = timeToMinutes(w.endTime);
-          const range = [s, e];
+          const range = w.endsNextDay && isCrossMidnightEnabled() ? [s, e + 1440] : [s, e];
 
           if (!byDay.has(day)) byDay.set(day, []);
           const dayRanges = byDay.get(day);
@@ -141,6 +152,7 @@ router.put(
                   dayOfWeek: Number(w.dayOfWeek),
                   startTime: w.startTime,
                   endTime: w.endTime,
+                  endsNextDay: !!w.endsNextDay,
                   label: w.label ?? null,
                   sortOrder: w.sortOrder ?? i,
                 })),

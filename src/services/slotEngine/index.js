@@ -24,8 +24,10 @@ const {
 const { hasActiveAccess } = require('../subscriptionService');
 const { DateTime } = require('luxon');
 
+const { isCrossMidnightEnabled } = require('../../lib/featureFlags');
 const { getReservationWindows, minutesToTime } = require('./windows');
 const { generateGrid } = require('./grid');
+const { addDaysToDateStr } = require('./businessDate');
 const { resolveDuration } = require('./duration');
 const { parseBlockedSlots, applyPolicies } = require('./policies');
 const {
@@ -71,12 +73,26 @@ function lookbackMs(defaultSlotDurationMinutes, durationRules) {
  * @param {{ dateStr: string; timezone: string }} opts
  */
 async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
-  const dayStart = parseInTimezone(dateStr, '00:00', timezone);
-  const dayEnd = parseInTimezone(dateStr, '23:59', timezone);
-
   const dayOfWeek = getDayOfWeekInTimezone(dateStr, timezone);
 
-  // Lookback dinámico para capturar reservas del día anterior que aún bloquean mesas
+  const schedule = await prisma.schedule.findFirst({
+    where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
+  });
+
+  let dayStart = parseInTimezone(dateStr, '00:00', timezone);
+  let dayEnd = parseInTimezone(dateStr, '23:59', timezone);
+
+  if (schedule && isCrossMidnightEnabled()) {
+    const openT = schedule.openTime ?? '00:00';
+    const closeT = schedule.closeTime ?? '23:59';
+    dayStart = parseInTimezone(dateStr, openT, timezone);
+    if (schedule.closesNextDay) {
+      dayEnd = parseInTimezone(addDaysToDateStr(dateStr, 1), closeT, timezone);
+    } else {
+      dayEnd = parseInTimezone(dateStr, closeT, timezone);
+    }
+  }
+
   const durationRulesRaw = await prisma.durationRule.findMany({
     where: { restaurantId: restaurant.id },
   });
@@ -85,8 +101,25 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
 
   const now = new Date();
 
+  const reservationWhere = isCrossMidnightEnabled()
+    ? {
+        restaurantId: restaurant.id,
+        status: 'confirmed',
+        OR: [
+          { businessDate: new Date(`${dateStr}T12:00:00.000Z`) },
+          {
+            businessDate: null,
+            dateTime: { gte: windowStart, lte: dayEnd },
+          },
+        ],
+      }
+    : {
+        restaurantId: restaurant.id,
+        status: 'confirmed',
+        dateTime: { gte: windowStart, lte: dayEnd },
+      };
+
   const [
-    schedule,
     allTables,
     allZones,
     blockedSlots,
@@ -95,9 +128,6 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
     activeHolds,
     pacingRules,
   ] = await Promise.all([
-    prisma.schedule.findFirst({
-      where: { restaurantId: restaurant.id, dayOfWeek, isActive: true },
-    }),
     prisma.restaurantTable.findMany({
       where: {
         isActive: true,
@@ -119,11 +149,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       },
     }),
     prisma.reservation.findMany({
-      where: {
-        restaurantId: restaurant.id,
-        status: 'confirmed',
-        dateTime: { gte: windowStart, lte: dayEnd },
-      },
+      where: reservationWhere,
       select: { tableId: true, dateTime: true, durationMinutes: true },
     }),
     prisma.reservationWindow.findMany({
@@ -160,12 +186,14 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
           scheduleMode: restaurant.scheduleMode,
           openTime: schedule.openTime,
           closeTime: schedule.closeTime,
+          closesNextDay: !!schedule.closesNextDay,
           breakfastStartTime: schedule.breakfastStartTime ?? null,
           breakfastEndTime: schedule.breakfastEndTime ?? null,
           lunchStartTime: schedule.lunchStartTime ?? null,
           lunchEndTime: schedule.lunchEndTime ?? null,
           dinnerStartTime: schedule.dinnerStartTime ?? null,
           dinnerEndTime: schedule.dinnerEndTime ?? null,
+          dinnerEndsNextDay: !!schedule.dinnerEndsNextDay,
         }
       : null,
     defaults: {
@@ -183,6 +211,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       dayOfWeek: w.dayOfWeek,
       startTime: w.startTime,
       endTime: w.endTime,
+      endsNextDay: !!w.endsNextDay,
       label: w.label,
       sortOrder: w.sortOrder,
     })),
@@ -284,10 +313,18 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
   const slotDefs = generateGrid(windows, intervalMinutes, durationMinutes, reservationEndPolicy);
   if (slotDefs.length === 0) return { slots: [], reason: 'no_slots' };
 
-  const timeSlots = slotDefs.map(({ time }) => {
-    const start = parseInTimezone(date, time, timezone);
+  const timeSlots = slotDefs.map(({ time, dayOffset = 0 }) => {
+    const calendarDate = dayOffset > 0 ? addDaysToDateStr(date, dayOffset) : date;
+    const start = parseInTimezone(calendarDate, time, timezone);
     const end = new Date(start.getTime() + durationMinutes * 60000);
-    return { time, start, end };
+    return {
+      time,
+      start,
+      end,
+      dayOffset,
+      nextDay: dayOffset > 0,
+      calendarDate,
+    };
   });
 
   const nowDate = now instanceof Date ? now : new Date(snapshot.serverNowUtc);
@@ -333,7 +370,13 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
       if (pacingCheck.coversRemaining != null) coversRemaining = pacingCheck.coversRemaining;
     }
 
-    const entry = { time: slot.time, available: true, availableTables: openTables };
+    const entry = {
+      time: slot.time,
+      available: true,
+      availableTables: openTables,
+      nextDay: slot.nextDay ?? false,
+      calendarDate: slot.calendarDate ?? date,
+    };
     if (coversRemaining != null) entry.coversRemaining = coversRemaining;
     available.push(entry);
   }
@@ -342,6 +385,7 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
 
   return {
     slots: available,
+    businessDate: date,
     meta: {
       engineVersion: ENGINE_VERSION,
       slotIntervalMinutes: intervalMinutes,
@@ -526,6 +570,6 @@ module.exports = {
   previewAvailabilityFromConfig,
   getAvailabilitySlotsForRestaurant,
   findNextAvailableDateForSlug,
-  // Re-export helpers para uso en routes/controllers
   resolveDuration,
+  lookbackMs,
 };
