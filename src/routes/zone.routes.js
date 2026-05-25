@@ -1,7 +1,7 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
-const { ROLES_CONFIG } = require('../auth/roles');
+const { ROLES_CONFIG, ROLES_CONFIG_VIEW } = require('../auth/roles');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
 const { incrementDataVersion } = require('../utils/dataVersion');
@@ -10,9 +10,8 @@ const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(ROLES_CONFIG));
 
-router.get('/', async (req, res, next) => {
+router.get('/', authenticateRestaurantRoles(ROLES_CONFIG_VIEW), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
     const zones = await prisma.zone.findMany({
@@ -32,7 +31,7 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-router.post('/', async (req, res, next) => {
+router.post('/', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const { name, description, sortOrder, smokingZone, petFriendly } = req.body;
     const restaurantId = req.activeRestaurant.restaurantId;
@@ -63,7 +62,7 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-router.patch('/:id', async (req, res, next) => {
+router.patch('/:id', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const zone = await prisma.zone.findUnique({
       where: { id: req.params.id },
@@ -123,7 +122,7 @@ router.patch('/:id', async (req, res, next) => {
   }
 });
 
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const zone = await prisma.zone.findUnique({
       where: { id: req.params.id },

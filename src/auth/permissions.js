@@ -38,6 +38,8 @@ const ROLE_PERMISSIONS = {
     'reservation.status.no_show',
     'table.status.view',
     'table.assign',
+    'schedule.view',
+    'zone.view',
   ],
 };
 

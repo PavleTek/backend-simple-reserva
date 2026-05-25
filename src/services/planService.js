@@ -73,6 +73,23 @@ const CACHE_TTL_MS = 60 * 1000;
 
 const VALID_PLANS = ['plan-basico', 'plan-profesional', 'plan-premium'];
 
+/** Único plan asignable en registro público (sin código promocional). */
+const SIGNUP_DEFAULT_PLAN = 'plan-basico';
+
+/**
+ * Plan SKU para alta self-service. Ignora query/body del cliente salvo promo (validado aparte).
+ * Evita trial en planes superiores manipulando la URL.
+ */
+function resolveSignupPlanSKU(planFromClient) {
+  const sku = typeof planFromClient === 'string' ? planFromClient.trim() : '';
+  if (sku && sku !== SIGNUP_DEFAULT_PLAN && VALID_PLANS.includes(sku)) {
+    console.warn(
+      `[planService] Signup plan "${sku}" rechazado; se usa "${SIGNUP_DEFAULT_PLAN}"`,
+    );
+  }
+  return SIGNUP_DEFAULT_PLAN;
+}
+
 const UPGRADE_HINTS = {
   'plan-basico': 'Actualiza a Profesional (hasta 3 locales) o Premium (hasta 20 locales) en Facturación.',
   'plan-profesional': 'Actualiza a Premium (hasta 20 locales) en Facturación.',
@@ -387,4 +404,6 @@ module.exports = {
   invalidateCache,
   toMercadoPagoFrequency,
   VALID_PLANS,
+  SIGNUP_DEFAULT_PLAN,
+  resolveSignupPlanSKU,
 };

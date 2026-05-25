@@ -18,6 +18,13 @@ test('host cannot manage billing or team', () => {
   assert.equal(roleHasPermission(ROLES.HOST, 'reservation.create'), true);
 });
 
+test('host can view schedules and zones but not edit config', () => {
+  assert.equal(roleHasPermission(ROLES.HOST, 'schedule.view'), true);
+  assert.equal(roleHasPermission(ROLES.HOST, 'zone.view'), true);
+  assert.equal(roleHasPermission(ROLES.HOST, 'schedule.edit'), false);
+  assert.equal(roleHasPermission(ROLES.HOST, 'table.structure.edit'), false);
+});
+
 test('host has no feedback access (view, settings, alerts)', () => {
   assert.equal(roleHasPermission(ROLES.HOST, 'feedback.view'), false);
   assert.equal(roleHasPermission(ROLES.HOST, 'feedback.settings'), false);

@@ -11,8 +11,11 @@ const RESTAURANT_ROLES = [ROLES.OWNER, ROLES.MANAGER, ROLES.HOST];
 /** Floor operations: reservations, tables status, walk-ins. */
 const ROLES_OPERATIONAL = [ROLES.OWNER, ROLES.MANAGER, ROLES.HOST];
 
-/** Local configuration: schedules, zones, menus, blocked slots, uploads. */
+/** Local configuration writes: schedules, zones, menus, blocked slots, uploads. */
 const ROLES_CONFIG = [ROLES.OWNER, ROLES.MANAGER];
+
+/** Read-only config needed for floor ops (reservations, mesas, walk-ins). */
+const ROLES_CONFIG_VIEW = [ROLES.OWNER, ROLES.MANAGER, ROLES.HOST];
 
 /** Organization administration. */
 const ROLES_OWNER = [ROLES.OWNER];
@@ -37,6 +40,7 @@ module.exports = {
   RESTAURANT_ROLES,
   ROLES_OPERATIONAL,
   ROLES_CONFIG,
+  ROLES_CONFIG_VIEW,
   ROLES_OWNER,
   ROLES_TEAM_VIEW,
   ROLES_FEEDBACK_VIEW,

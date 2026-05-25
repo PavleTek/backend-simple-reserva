@@ -1,7 +1,7 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
-const { ROLES_CONFIG } = require('../auth/roles');
+const { ROLES_CONFIG, ROLES_CONFIG_VIEW } = require('../auth/roles');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
 const { incrementDataVersion } = require('../utils/dataVersion');
@@ -14,9 +14,8 @@ const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
-router.use(authenticateRestaurantRoles(ROLES_CONFIG));
 
-router.get('/zone/:zoneId', async (req, res, next) => {
+router.get('/zone/:zoneId', authenticateRestaurantRoles(ROLES_CONFIG_VIEW), async (req, res, next) => {
   try {
     const zone = await prisma.zone.findUnique({
       where: { id: req.params.zoneId },
@@ -37,7 +36,7 @@ router.get('/zone/:zoneId', async (req, res, next) => {
   }
 });
 
-router.post('/zone/:zoneId', async (req, res, next) => {
+router.post('/zone/:zoneId', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const zone = await prisma.zone.findUnique({
       where: { id: req.params.zoneId },
@@ -134,7 +133,7 @@ router.post('/zone/:zoneId', async (req, res, next) => {
   }
 });
 
-router.put('/zone/:zoneId/reorder', async (req, res, next) => {
+router.put('/zone/:zoneId/reorder', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const { tableIds } = req.body;
     if (!Array.isArray(tableIds) || tableIds.length === 0) {
@@ -174,7 +173,7 @@ router.put('/zone/:zoneId/reorder', async (req, res, next) => {
   }
 });
 
-router.put('/zone/:zoneId/layout', async (req, res, next) => {
+router.put('/zone/:zoneId/layout', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const { placements } = req.body;
     if (!Array.isArray(placements)) {
@@ -245,7 +244,7 @@ router.put('/zone/:zoneId/layout', async (req, res, next) => {
   }
 });
 
-router.patch('/:id', async (req, res, next) => {
+router.patch('/:id', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const table = await prisma.restaurantTable.findUnique({
       where: { id: req.params.id },
@@ -334,7 +333,7 @@ router.patch('/:id', async (req, res, next) => {
   }
 });
 
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const table = await prisma.restaurantTable.findUnique({
       where: { id: req.params.id },
