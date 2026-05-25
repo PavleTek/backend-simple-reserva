@@ -32,6 +32,9 @@ const {
   getDayOfWeekInTimezone,
 } = require('../utils/timezone');
 const { incrementDataVersion } = require('../utils/dataVersion');
+const { ACTIVE_TABLE_STATUSES, canTransitionStatus } = require('../lib/reservationStatuses');
+const { buildServiceView } = require('../services/serviceView');
+const { getAvailableTablesForSlot } = require('../services/availableTablesForSlot');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
 
 async function withSerializableRetry(fn, maxRetries = 3) {
@@ -222,6 +225,18 @@ router.put('/pacing-rules', authenticateRestaurantRoles(ROLES_OWNER), async (req
   }
 });
 
+router.get('/service-view', async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const dateParam = typeof req.query.date === 'string' ? req.query.date : undefined;
+    const payload = await buildServiceView(restaurantId, dateParam);
+    if (!payload) throw new NotFoundError('Restaurante no encontrado');
+    res.json(payload);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/tables/status', async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
@@ -241,7 +256,7 @@ router.get('/tables/status', async (req, res, next) => {
       prisma.reservation.findMany({
         where: {
           restaurantId,
-          status: 'confirmed',
+          status: { in: ACTIVE_TABLE_STATUSES },
           // Boundary filtering will be added below after resolving TZ
         },
         include: { table: { select: { id: true, label: true } } },
@@ -293,7 +308,7 @@ router.get('/tables/status', async (req, res, next) => {
           const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
           const minutesUntilStart = (rStart.getTime() - now.getTime()) / 60000;
 
-          if (now >= rStart && now < rEnd) {
+          if (r.status === 'arrived' || (now >= rStart && now < rEnd)) {
             status = 'occupied';
             currentReservation = {
               id: r.id,
@@ -302,6 +317,7 @@ router.get('/tables/status', async (req, res, next) => {
               partySize: r.partySize,
               dateTime: r.dateTime,
               dateTimeEnd: rEnd,
+              status: r.status,
             };
             break;
           }
@@ -537,77 +553,21 @@ router.get('/available-tables', async (req, res, next) => {
       throw new ValidationError('Formato de hora inválido (HH:MM)');
     }
 
-    const dateTime = parseInTimezone(date, timeStr, timezone);
-    if (isNaN(dateTime.getTime())) {
+    const result = await getAvailableTablesForSlot({
+      restaurantId,
+      restaurant,
+      timezone,
+      dateStr: date,
+      timeStr,
+      partySize: size,
+      excludeReservationId: excludeReservationId || null,
+    });
+
+    if (result.invalid) {
       throw new ValidationError('Fecha u hora inválida');
     }
 
-    const durationRules = await prisma.durationRule.findMany({
-      where: { restaurantId },
-    });
-    const duration = resolveDuration(restaurant, size, durationRules);
-    const slotEnd = new Date(dateTime.getTime() + duration * 60000);
-
-    const tables = await prisma.restaurantTable.findMany({
-      where: {
-        isActive: true,
-        minCapacity: { lte: size },
-        maxCapacity: { gte: size },
-        zone: { restaurantId, isActive: true },
-      },
-      include: { zone: { select: { id: true, name: true, sortOrder: true } } },
-    });
-
-    if (tables.length === 0) {
-      return res.json({ tables: [] });
-    }
-
-    const dayStart = parseInTimezone(date, '00:00', timezone);
-    const dayEnd = parseInTimezone(date, '23:59', timezone);
-
-    const whereReservations = {
-      restaurantId,
-      tableId: { in: tables.map((t) => t.id) },
-      status: 'confirmed',
-      dateTime: { gte: dayStart, lte: dayEnd },
-    };
-    if (excludeReservationId) {
-      whereReservations.id = { not: excludeReservationId };
-    }
-
-    const existingReservations = await prisma.reservation.findMany({
-      where: whereReservations,
-    });
-
-    const blockedSlots = await prisma.blockedSlot.findMany({
-      where: {
-        restaurantId,
-        startDatetime: { lt: slotEnd },
-        endDatetime: { gt: dateTime },
-      },
-    });
-    const isBlocked = blockedSlots.length > 0;
-
-    const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
-    const freeTables = [];
-    for (const table of tables) {
-      if (isBlocked) continue;
-      const booked = existingReservations.some((r) => {
-        if (r.tableId !== table.id) return false;
-        const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-        return dateTime < rEnd && slotEnd > r.dateTime;
-      });
-      if (!booked) freeTables.push(table);
-    }
-
-    const ordered = sortFreeTablesForUi(freeTables, size, null);
-    const available = ordered.map((table) => ({
-      id: table.id,
-      label: table.label,
-      zoneName: table.zone.name,
-    }));
-
-    res.json({ tables: available });
+    res.json({ tables: result.tables });
   } catch (error) {
     next(error);
   }
@@ -816,7 +776,11 @@ router.post('/reservations', async (req, res, next) => {
         const windowStart = new Date(dateTime.getTime() - lb);
         const windowEnd = parseInTimezone(date, '23:59', timezone);
         const dayReservations = await tx.reservation.findMany({
-          where: { restaurantId, status: 'confirmed', dateTime: { gte: windowStart, lte: windowEnd } },
+          where: {
+            restaurantId,
+            status: { in: ACTIVE_TABLE_STATUSES },
+            dateTime: { gte: windowStart, lte: windowEnd },
+          },
           select: { tableId: true, dateTime: true, durationMinutes: true },
         });
 
@@ -898,6 +862,7 @@ router.post('/reservations', async (req, res, next) => {
             durationMinutes: slotDuration,
             notes: isWalkIn ? (typeof notes === 'string' && notes.trim() ? notes.trim() : 'Walk-in') : notes?.trim() || null,
             source: 'manual',
+            status: isWalkIn ? 'arrived' : 'confirmed',
             ...(req.user?.id && { confirmedByUserId: req.user.id, updatedByUserId: req.user.id }),
           },
           include: {
@@ -1163,9 +1128,16 @@ router.patch('/reservations/:id', async (req, res, next) => {
       throw new ValidationError('El estado es obligatorio cuando no se editan otros campos');
     }
 
-    const allowedStatuses = ['confirmed', 'completed', 'cancelled', 'no_show'];
+    const allowedStatuses = ['confirmed', 'arrived', 'completed', 'cancelled', 'no_show'];
     if (!allowedStatuses.includes(status)) {
-      throw new ValidationError('Estado no válido. Use: confirmed, completed, cancelled, no_show');
+      throw new ValidationError(
+        'Estado no válido. Use: confirmed, arrived, completed, cancelled, no_show',
+      );
+    }
+    if (!canTransitionStatus(reservation.status, status)) {
+      throw new ValidationError(
+        `No se puede cambiar de "${reservation.status}" a "${status}"`,
+      );
     }
 
     const actorId = req.user?.id ?? null;
