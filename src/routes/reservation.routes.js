@@ -890,10 +890,59 @@ router.get('/:slug/menus', async (req, res, next) => {
     });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
     const menus = await prisma.restaurantMenu.findMany({
-      where: { restaurantId: restaurant.id },
-      select: { menuType: true, url: true },
+      where: { restaurantId: restaurant.id, visible: true },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        id: true,
+        label: true,
+        type: true,
+        url: true,
+        sortOrder: true,
+        menuType: true,
+      },
     });
     res.json(menus);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/:slug/menus/:menuId/file', async (req, res, next) => {
+  try {
+    const { slug, menuId } = req.params;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { slug, isDeleted: false },
+      select: { id: true },
+    });
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+    const menu = await prisma.restaurantMenu.findFirst({
+      where: { id: menuId, restaurantId: restaurant.id, type: 'pdf', visible: true },
+    });
+    if (!menu || !menu.r2Key) throw new NotFoundError('Menú no encontrado');
+    if (process.env.R2_PUBLIC_URL) {
+      const publicUrl = require('../services/r2Service').getPublicUrl(menu.r2Key);
+      if (publicUrl) return res.redirect(302, publicUrl);
+    }
+    const r2Service = require('../services/r2Service');
+    const stream = await r2Service.getFileStream(menu.r2Key);
+    res.setHeader('Content-Type', 'application/pdf');
+    stream.pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/id/:restaurantId/menus/:menuId/file', async (req, res, next) => {
+  try {
+    const { restaurantId, menuId } = req.params;
+    const menu = await prisma.restaurantMenu.findFirst({
+      where: { id: menuId, restaurantId, type: 'pdf', visible: true },
+    });
+    if (!menu || !menu.r2Key) throw new NotFoundError('Menú no encontrado');
+    const r2Service = require('../services/r2Service');
+    const stream = await r2Service.getFileStream(menu.r2Key);
+    res.setHeader('Content-Type', 'application/pdf');
+    stream.pipe(res);
   } catch (err) {
     next(err);
   }
@@ -904,10 +953,10 @@ router.get('/:slug/menu/:menuType', async (req, res, next) => {
     const { slug, menuType } = req.params;
     const restaurant = await prisma.restaurant.findUnique({ where: { slug, isDeleted: false }, select: { id: true } });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
-    const menu = await prisma.restaurantMenu.findUnique({
-      where: { restaurantId_menuType: { restaurantId: restaurant.id, menuType } },
+    const menu = await prisma.restaurantMenu.findFirst({
+      where: { restaurantId: restaurant.id, menuType },
     });
-    if (!menu) throw new NotFoundError('Menú no encontrado');
+    if (!menu || !menu.r2Key) throw new NotFoundError('Menú no encontrado');
     if (process.env.R2_PUBLIC_URL) {
       const publicUrl = require('../services/r2Service').getPublicUrl(menu.r2Key);
       if (publicUrl) return res.redirect(302, publicUrl);
@@ -924,10 +973,10 @@ router.get('/:slug/menu/:menuType', async (req, res, next) => {
 router.get('/id/:restaurantId/menu/:menuType', async (req, res, next) => {
   try {
     const { restaurantId, menuType } = req.params;
-    const menu = await prisma.restaurantMenu.findUnique({
-      where: { restaurantId_menuType: { restaurantId, menuType } },
+    const menu = await prisma.restaurantMenu.findFirst({
+      where: { restaurantId, menuType },
     });
-    if (!menu) throw new NotFoundError('Menú no encontrado');
+    if (!menu || !menu.r2Key) throw new NotFoundError('Menú no encontrado');
     const r2Service = require('../services/r2Service');
     const stream = await r2Service.getFileStream(menu.r2Key);
     res.setHeader('Content-Type', 'application/pdf');

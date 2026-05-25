@@ -79,7 +79,7 @@ Limits are enforced server-side in `planService.js` via dedicated check function
 | Flag | What it gates |
 |------|---------------|
 | `whatsappFeatures` | WhatsApp confirmation and reminder notifications via `notificationService.js` |
-| `multipleMenu` | Uploading more than one menu type (drinks, desserts) in `menu.routes.js` |
+| `multipleMenu` | Up to 3 menu items total (PDF + external links combined) in `menu.routes.js`; Básico allows 1 |
 | `googleReserveIntegration` | Stored on the plan; no additional server-side check in current code beyond data exposure |
 | `prioritySupport` | Stored on the plan; surfaced in billing UI, no additional server-side check |
 
@@ -333,7 +333,7 @@ hasAccess = await prisma.subscription.findFirst({
 | Add zone | `zone.routes.js` POST handler | `planService.canAddZone(restaurantId)` |
 | Add table | `table.routes.js` POST handler | `planService.canAddTable(restaurantId)` |
 | Invite team member | `team.routes.js` POST handler | `planService.canAddTeamMember(ownerId, restaurantId)` |
-| Upload multiple menus | `menu.routes.js` POST handler | checks `plan.multipleMenu`; only `main` allowed if false |
+| Add menu items (PDF or link) | `menu.routes.js` POST handler | `multipleMenu` false → max 1 item; true → max 3; legacy `POST .../menus/:menuType` still supported |
 | Send WhatsApp notifications | `notificationService.js` | checks `plan.whatsappFeatures` before sending |
 | Create reservation (public) | `reservation.routes.js` | `subscriptionService.canCreateReservation(restaurantId)` |
 | Send confirmations/reminders | called from reservation flow | `subscriptionService.canSendConfirmations/canSendReminders` |

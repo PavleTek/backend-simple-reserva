@@ -235,16 +235,21 @@ model RestaurantMenu {
   id           String   @id @default(cuid())
   restaurantId String
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  menuType     String   // "main" | "drinks" | "dessert"
-  fileName     String   // original filename
-  fileSize     Int      // bytes
-  r2Key        String   // R2 object key, e.g. "menus/{restaurantId}/{menuType}-{timestamp}.pdf"
-  url          String   // full public URL or path
+  type         String   @default("pdf") // "pdf" | "link"
+  label        String
+  sortOrder    Int      @default(0)
+  visible      Boolean  @default(true)
+  menuType     String?  // legacy: "main" | "drinks" | "dessert"
+  fileName     String?
+  fileSize     Int?
+  r2Key        String?
+  url          String
+  externalUrl  String?
+  metadata     Json?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@unique([restaurantId, menuType])
-  @@index([restaurantId])
+  @@index([restaurantId, sortOrder])
 }
 
 model DurationRule {
