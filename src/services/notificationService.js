@@ -547,24 +547,21 @@ async function notifyRestaurantNewReservation(options) {
   const prisma = require('../lib/prisma');
   const { reservationsListUrl } = require('../utils/restaurantPanelUrl');
   const { formatInTimezone } = require('../utils/timezone');
+  const { loadNotifySettings, resolveReservationNotifyEmails } = require('./reservationNotifyRecipients');
 
-  const org = await prisma.restaurantOrganization.findUnique({
-    where: { id: organizationId },
-    select: {
-      reservationNotifyAudience: true,
-      reservationNotifyCustomEmail: true,
-      reservationNotifyOnWeb: true,
-      reservationNotifyOnManual: true,
-    },
-  });
-  if (!org) return false;
+  let notify;
+  try {
+    notify = await loadNotifySettings(organizationId, restaurantId);
+  } catch {
+    return false;
+  }
 
   const shouldNotifyTeam =
-    (source === 'web' && org.reservationNotifyOnWeb) ||
-    (source === 'manual' && org.reservationNotifyOnManual);
+    (source === 'web' && notify.onWeb) ||
+    (source === 'manual' && notify.onManual);
 
   if (!shouldNotifyTeam) {
-    console.log('[Notification] notifyRestaurantNewReservation: skipped by org settings', {
+    console.log('[Notification] notifyRestaurantNewReservation: skipped by settings', {
       organizationId,
       restaurantId,
       source,
@@ -572,12 +569,7 @@ async function notifyRestaurantNewReservation(options) {
     return false;
   }
 
-  const emails = await resolveReservationNotifyEmails({
-    organizationId,
-    restaurantId,
-    audience: org.reservationNotifyAudience,
-    customEmail: org.reservationNotifyCustomEmail,
-  });
+  const emails = await resolveReservationNotifyEmails(organizationId, restaurantId);
 
   const dateYmd = formatInTimezone(dateTime, timezone, 'yyyy-MM-dd');
   const panelUrl = reservationsListUrl({ date: dateYmd });
@@ -595,7 +587,7 @@ async function notifyRestaurantNewReservation(options) {
     source,
     organizationId,
     restaurantId,
-    audience: org.reservationNotifyAudience,
+    audience: 'restaurant',
   });
 }
 

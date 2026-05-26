@@ -45,12 +45,18 @@ function buildNewReservationNotificationHtml(options) {
     assetBaseUrl = '',
   } = options;
 
-  const phoneRow = customerPhone
-    ? `<tr><td style="padding:6px 0;font-size:13px;font-weight:600;color:${COLORS.textSecondary};">Teléfono</td><td style="padding:6px 0;font-size:15px;color:${COLORS.textPrimary};">${escapeHtml(customerPhone)}</td></tr>`
-    : '';
-  const emailRow = customerEmail
-    ? `<tr><td style="padding:6px 0;font-size:13px;font-weight:600;color:${COLORS.textSecondary};">Correo</td><td style="padding:6px 0;font-size:15px;color:${COLORS.textPrimary};">${escapeHtml(customerEmail)}</td></tr>`
-    : '';
+  const detailRow = (label, value) =>
+    `<tr><td style="padding:6px 0;font-size:13px;font-weight:600;color:${COLORS.textSecondary};width:40%;">${label}</td><td style="padding:6px 0;font-size:15px;color:${COLORS.textPrimary};">${value}</td></tr>`;
+
+  const detailRows = [
+    detailRow('Fecha', escapeHtml(dateStr)),
+    detailRow('Hora', escapeHtml(timeStr)),
+    detailRow('Comensales', escapeHtml(String(partySize))),
+    detailRow('Cliente', escapeHtml(customerName)),
+    ...(customerPhone ? [detailRow('Teléfono', escapeHtml(customerPhone))] : []),
+    ...(customerEmail ? [detailRow('Correo', escapeHtml(customerEmail))] : []),
+    detailRow('Origen', escapeHtml(sourceLabel)),
+  ].join('');
 
   const bodyHtml = `<p style="margin:0 0 16px 0;">Hola,</p>
     <p style="margin:0 0 20px 0;color:${COLORS.textSecondary};">
@@ -59,13 +65,7 @@ function buildNewReservationNotificationHtml(options) {
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f5f4f0;border:1px solid ${COLORS.border};border-radius:12px;margin:0 0 24px 0;">
       <tr><td style="padding:18px 20px;">
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-          <tr><td style="padding:6px 0;font-size:13px;font-weight:600;color:${COLORS.textSecondary};width:40%;">Origen</td><td style="padding:6px 0;font-size:15px;color:${COLORS.textPrimary};">${escapeHtml(sourceLabel)}</td></tr>
-          <tr><td style="padding:6px 0;font-size:13px;font-weight:600;color:${COLORS.textSecondary};">Cliente</td><td style="padding:6px 0;font-size:15px;color:${COLORS.textPrimary};">${escapeHtml(customerName)}</td></tr>
-          ${phoneRow}
-          ${emailRow}
-          <tr><td style="padding:6px 0;font-size:13px;font-weight:600;color:${COLORS.textSecondary};">Fecha</td><td style="padding:6px 0;font-size:15px;color:${COLORS.textPrimary};">${escapeHtml(dateStr)}</td></tr>
-          <tr><td style="padding:6px 0;font-size:13px;font-weight:600;color:${COLORS.textSecondary};">Hora</td><td style="padding:6px 0;font-size:15px;color:${COLORS.textPrimary};">${escapeHtml(timeStr)}</td></tr>
-          <tr><td style="padding:6px 0;font-size:13px;font-weight:600;color:${COLORS.textSecondary};">Comensales</td><td style="padding:6px 0;font-size:15px;color:${COLORS.textPrimary};">${escapeHtml(String(partySize))}</td></tr>
+          ${detailRows}
         </table>
       </td></tr>
     </table>

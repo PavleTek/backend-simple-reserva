@@ -39,12 +39,28 @@ describe('buildNewReservationNotificationHtml', () => {
     assert.ok(!html.includes('<script>alert(1)</script>'));
   });
 
-  it('includes reservation details and panel link', () => {
+  it('includes header, panel link and source label', () => {
     const html = buildNewReservationNotificationHtml(base);
     assert.ok(html.includes('NUEVA RESERVA'));
     assert.ok(html.includes('Reserva web'));
-    assert.ok(html.includes('ana@example.com'));
     assert.ok(html.includes(base.panelUrl));
+  });
+
+  it('lists reservation details from most to least important', () => {
+    const html = buildNewReservationNotificationHtml(base);
+    const fechaIdx = html.indexOf('Fecha');
+    const horaIdx = html.indexOf('Hora');
+    const comensalesIdx = html.indexOf('Comensales');
+    const clienteIdx = html.indexOf('Cliente');
+    const telefonoIdx = html.indexOf('Teléfono');
+    const correoIdx = html.indexOf('Correo');
+    const origenIdx = html.indexOf('Origen');
+    assert.ok(fechaIdx < horaIdx);
+    assert.ok(horaIdx < comensalesIdx);
+    assert.ok(comensalesIdx < clienteIdx);
+    assert.ok(clienteIdx < telefonoIdx);
+    assert.ok(telefonoIdx < correoIdx);
+    assert.ok(correoIdx < origenIdx);
   });
 
   it('omits phone row when phone is missing', () => {

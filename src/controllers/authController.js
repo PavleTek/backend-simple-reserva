@@ -361,7 +361,10 @@ const register = async (req, res) => {
           ownerId: user.id,
           planId: activePlan.id,
           trialEndsAt,
-        }
+          reservationNotifyRecipients: { owner: true, members: {}, extras: [] },
+          reservationNotifyOnWeb: true,
+          reservationNotifyOnManual: true,
+        },
       });
 
       // Record promo code redemption now that we have the org id
@@ -375,14 +378,17 @@ const register = async (req, res) => {
         promoCodeResult = { code: txPromo.code, planName: activePlan.name, accessEndsAt: planAccessEndsAt };
       }
 
-      // 4. Create Restaurant
+      // 4. Create Restaurant (alertas: propietario activo, avisos web y panel encendidos)
       const restaurant = await tx.restaurant.create({
         data: {
           organizationId: organization.id,
           name: restaurantName,
           slug,
           timezone: null,
-        }
+          reservationNotifyRecipients: { owner: true, members: {}, extras: [] },
+          reservationNotifyOnWeb: true,
+          reservationNotifyOnManual: true,
+        },
       });
 
       // 5. Create Subscription on Org
@@ -478,7 +484,9 @@ const addRestaurant = async (req, res) => {
       return;
     }
 
-    const result = await prisma.restaurant.create({
+    const { buildInitialRestaurantNotifyRecipients } = require('../services/reservationNotifyRecipients');
+
+    const created = await prisma.restaurant.create({
       data: {
         organizationId: org.id,
         name: name.trim(),
@@ -491,7 +499,15 @@ const addRestaurant = async (req, res) => {
         phone: phone?.trim() || null,
         email: email?.trim() || null,
         timezone: null,
+        reservationNotifyOnWeb: true,
+        reservationNotifyOnManual: true,
       },
+    });
+
+    const initialRecipients = await buildInitialRestaurantNotifyRecipients(org.id, created.id);
+    const result = await prisma.restaurant.update({
+      where: { id: created.id },
+      data: { reservationNotifyRecipients: initialRecipients },
     });
 
     const restaurants = await getRestaurantsForUser(userId);
