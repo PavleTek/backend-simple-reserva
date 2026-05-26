@@ -8,13 +8,84 @@ const {
   wrapEmailDocument,
 } = require('./emailLayout');
 
+/** ~35–40 chars visible on phone lock screen; keep core info in that window. */
+const SUBJECT_MAX_LEN = 65;
+
 /**
- * @param {string} customerName
- * @param {string} restaurantName
+ * @param {string} value
+ * @param {number} max
+ */
+function truncateLabel(value, max) {
+  const s = String(value ?? '').trim();
+  if (!s) return '';
+  if (s.length <= max) return s;
+  return `${s.slice(0, Math.max(1, max - 1))}…`;
+}
+
+/**
+ * Subject optimized for mobile lock screen / inbox list (OpenTable, Resy, Calendly pattern:
+ * when + who + size first; local name last).
+ *
+ * @param {Object} options
+ * @param {string} options.customerName
+ * @param {string} options.restaurantName
+ * @param {string} [options.timeStr] HH:mm
+ * @param {string} [options.dateShort] hoy | mañana | dd/MM
+ * @param {number} [options.partySize]
  * @returns {string}
  */
-function buildNewReservationSubject(customerName, restaurantName) {
-  return `Nueva reserva: ${customerName} · ${restaurantName}`;
+function buildNewReservationSubject({
+  customerName,
+  restaurantName,
+  timeStr = '',
+  dateShort = '',
+  partySize,
+}) {
+  const name = truncateLabel(customerName || 'Cliente', 26);
+  const local = truncateLabel(restaurantName || 'local', 24);
+  const time = String(timeStr || '').trim();
+  const when = String(dateShort || '').trim();
+  const whenTime =
+    time && when ? `${time} ${when}` : time || when;
+
+  const pers =
+    partySize != null && Number.isFinite(Number(partySize)) && Number(partySize) > 0
+      ? `${Number(partySize)}p`
+      : '';
+
+  const core = ['📅', whenTime, name, pers].filter(Boolean).join(' · ');
+  if (!local) return core;
+  const withLocal = `${core} · ${local}`;
+  if (withLocal.length <= SUBJECT_MAX_LEN) return withLocal;
+  return core.length <= SUBJECT_MAX_LEN ? core : truncateLabel(core, SUBJECT_MAX_LEN);
+}
+
+/**
+ * Inbox preheader (gray text beside subject in Gmail/Apple Mail).
+ *
+ * @param {Object} options
+ * @param {number} options.partySize
+ * @param {string} options.restaurantName
+ * @param {string} [options.sourceLabel]
+ * @param {string|null} [options.customerPhone]
+ */
+function buildNewReservationPreheader({
+  partySize,
+  restaurantName,
+  sourceLabel = 'Reserva web',
+  customerPhone = null,
+}) {
+  const n = Number(partySize) || 0;
+  const guests = n === 1 ? '1 comensal' : `${n} comensales`;
+  const phone = customerPhone ? String(customerPhone).trim() : '';
+  const parts = [
+    truncateLabel(restaurantName, 40),
+    guests,
+    sourceLabel,
+    phone ? truncateLabel(phone, 18) : '',
+    'Ver en el panel',
+  ].filter(Boolean);
+  return parts.join(' · ');
 }
 
 /**
@@ -28,6 +99,7 @@ function buildNewReservationSubject(customerName, restaurantName) {
  * @param {number} options.partySize
  * @param {string} options.panelUrl
  * @param {string} [options.sourceLabel]
+ * @param {string} [options.dateShort]
  * @param {string} [options.assetBaseUrl]
  * @returns {string}
  */
@@ -42,6 +114,7 @@ function buildNewReservationNotificationHtml(options) {
     partySize,
     panelUrl,
     sourceLabel = 'Reserva web',
+    dateShort = '',
     assetBaseUrl = '',
   } = options;
 
@@ -75,16 +148,32 @@ function buildNewReservationNotificationHtml(options) {
       </td></tr>
     </table>`;
 
-  const preheader = `Nueva reserva de ${customerName} en ${restaurantName}.`;
+  const preheader = buildNewReservationPreheader({
+    partySize,
+    restaurantName,
+    sourceLabel,
+    customerPhone,
+  });
+  const whenLine = [timeStr, dateShort].filter(Boolean).join(' · ');
+  const headline = whenLine
+    ? `${customerName} · ${whenLine} · ${partySize} ${partySize === 1 ? 'comensal' : 'comensales'}`
+    : 'Llegó una reserva nueva';
+
   const { safePreheader, headerHtml } = buildEmailHeaderBlock({
     assetBaseUrl,
     eyebrow: 'NUEVA RESERVA',
-    headline: 'Llegó una reserva nueva',
+    headline: truncateLabel(headline, 72),
     preheader,
   });
 
   return wrapEmailDocument({
-    title: buildNewReservationSubject(customerName, restaurantName),
+    title: buildNewReservationSubject({
+      customerName,
+      restaurantName,
+      timeStr,
+      dateShort,
+      partySize,
+    }),
     preheader,
     safePreheader,
     headerHtml,
@@ -96,4 +185,5 @@ function buildNewReservationNotificationHtml(options) {
 module.exports = {
   buildNewReservationNotificationHtml,
   buildNewReservationSubject,
+  buildNewReservationPreheader,
 };

@@ -472,8 +472,11 @@ async function sendNewReservationAlertEmail(options) {
   }
 
   const dt = new Date(dateTime);
-  const dateStr = formatDateDisplay(dt, timezone || undefined);
-  const timeStr = formatTime(dt, timezone || undefined);
+  const tz = timezone || undefined;
+  const dateStr = formatDateDisplay(dt, tz);
+  const timeStr = formatTime(dt, tz);
+  const { formatDateShortLabel } = require('../utils/dateFormat');
+  const dateShort = formatDateShortLabel(dt, tz || 'America/Santiago');
   const sourceLabel = source === 'manual' ? 'Reserva manual (panel)' : 'Reserva web';
 
   const {
@@ -482,7 +485,13 @@ async function sendNewReservationAlertEmail(options) {
   } = require('../templates/newReservationNotificationEmail');
   const { sendEmail } = require('./emailService');
 
-  const subject = buildNewReservationSubject(customerName, restaurantName);
+  const subject = buildNewReservationSubject({
+    customerName,
+    restaurantName,
+    timeStr,
+    dateShort,
+    partySize,
+  });
   const html = buildNewReservationNotificationHtml({
     restaurantName,
     customerName,
@@ -490,6 +499,7 @@ async function sendNewReservationAlertEmail(options) {
     customerEmail,
     dateStr,
     timeStr,
+    dateShort,
     partySize,
     panelUrl,
     sourceLabel,

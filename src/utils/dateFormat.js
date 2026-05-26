@@ -31,4 +31,20 @@ function formatDateDisplay(d, timezone) {
   return `${day}/${month}/${year}`;
 }
 
-module.exports = { formatTime, formatDateDisplay };
+/**
+ * Compact label for notification subjects (hoy / mañana / dd/MM).
+ * @param {Date|string|number} d
+ * @param {string} [timezone] IANA zone; defaults to America/Santiago
+ */
+function formatDateShortLabel(d, timezone = 'America/Santiago') {
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date.getTime())) return '';
+
+  const dt = DateTime.fromJSDate(date).setZone(timezone);
+  const now = DateTime.now().setZone(timezone);
+  if (dt.hasSame(now, 'day')) return 'hoy';
+  if (dt.hasSame(now.plus({ days: 1 }), 'day')) return 'mañana';
+  return dt.toFormat('dd/MM');
+}
+
+module.exports = { formatTime, formatDateDisplay, formatDateShortLabel };
