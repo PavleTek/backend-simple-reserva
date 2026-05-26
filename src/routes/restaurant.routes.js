@@ -11,6 +11,7 @@ const {
   sendReservationConfirmation,
   sendReservationConfirmationEmail,
   sendModificationAlertToCustomer,
+  notifyRestaurantNewReservation,
 } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
 const planService = require('../services/planService');
@@ -32,6 +33,12 @@ const {
   getDayOfWeekInTimezone,
 } = require('../utils/timezone');
 const { incrementDataVersion } = require('../utils/dataVersion');
+const { isCrossMidnightEnabled } = require('../lib/featureFlags');
+const {
+  computeBusinessDate,
+  resolveCalendarDateFromBusinessDate,
+  addDaysToDateStr,
+} = require('../services/slotEngine/businessDate');
 const { ACTIVE_TABLE_STATUSES, canTransitionStatus } = require('../lib/reservationStatuses');
 const { buildServiceView } = require('../services/serviceView');
 const { getAvailableTablesForSlot } = require('../services/availableTablesForSlot');
@@ -673,9 +680,11 @@ router.post('/reservations', async (req, res, next) => {
       notes,
       tableId,
       walkIn,
+      nextDay: nextDayBody,
     } = req.body;
 
     const isWalkIn = walkIn === true;
+    const nextDay = nextDayBody === true || nextDayBody === 'true' || nextDayBody === 1 || nextDayBody === '1';
 
     if (!date || !time || !partySize) {
       throw new ValidationError('Se requiere date, time y partySize');
@@ -710,12 +719,40 @@ router.post('/reservations', async (req, res, next) => {
     const { allowed, reason } = await canCreateReservation(restaurantId);
     if (!allowed) throw new ValidationError(reason);
 
-    const dateTime = parseInTimezone(date, time, timezone);
+    const dayOfWeekFromBody = getDayOfWeekInTimezone(date, timezone);
+    const schedulePreview = await prisma.schedule.findFirst({
+      where: { restaurantId, dayOfWeek: dayOfWeekFromBody, isActive: true },
+    });
+
+    let calendarDate = date;
+    let businessDate = date;
+
+    if (isCrossMidnightEnabled() && schedulePreview) {
+      const resolved = resolveCalendarDateFromBusinessDate(
+        date,
+        time,
+        schedulePreview,
+        restaurant.scheduleMode,
+      );
+      calendarDate = resolved.calendarDateStr;
+      businessDate = computeBusinessDate(
+        calendarDate,
+        time,
+        schedulePreview,
+        restaurant.scheduleMode,
+        timezone,
+      );
+    } else if (nextDay) {
+      calendarDate = addDaysToDateStr(date, 1);
+    }
+
+    const dateTime = parseInTimezone(calendarDate, time, timezone);
     if (isNaN(dateTime.getTime())) {
       throw new ValidationError('Formato de fecha u hora inválido');
     }
 
-    const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
+    const dayOfWeek = getDayOfWeekInTimezone(businessDate, timezone);
+    const businessDateValue = new Date(`${businessDate}T12:00:00.000Z`);
     const now = nowInTimezone(timezone).toJSDate();
 
     const reservation = await withSerializableRetry(() =>
@@ -774,7 +811,7 @@ router.post('/reservations', async (req, res, next) => {
 
         const lb = dayLookbackMs(restaurant.defaultSlotDurationMinutes, durationRules);
         const windowStart = new Date(dateTime.getTime() - lb);
-        const windowEnd = parseInTimezone(date, '23:59', timezone);
+        const windowEnd = parseInTimezone(calendarDate, '23:59', timezone);
         const dayReservations = await tx.reservation.findMany({
           where: {
             restaurantId,
@@ -829,17 +866,29 @@ router.post('/reservations', async (req, res, next) => {
               pacingRules: pacingRules.map((p) => ({ dayOfWeek: p.dayOfWeek, maxCoversPerSlot: p.maxCoversPerSlot, maxReservationsPerSlot: p.maxReservationsPerSlot })),
               slotDateTime: dateTime,
               now,
-              isToday: date === nowInTimezone(timezone).toFormat('yyyy-MM-dd'),
+              isToday: businessDate === nowInTimezone(timezone).toFormat('yyyy-MM-dd'),
               walkIn: false,
               zoneId: null,
               excludeHoldToken: null,
               dayOfWeek,
             });
             if (!validation.valid) {
+              const msgs = {
+                no_schedule: 'El restaurante está cerrado este día',
+                slot_not_on_grid: 'La hora solicitada no está disponible',
+                blocked: 'Este horario está bloqueado',
+                party_size_exceeds_largest_table: 'No hay mesas para este número de comensales',
+                no_tables_in_zone: 'No hay mesas disponibles en esa zona para este grupo',
+                no_tables_available: 'No hay mesas disponibles en este horario',
+                pacing_covers_exceeded: 'El cupo de este horario está completo',
+                pacing_reservations_exceeded: 'Se alcanzó el límite de reservas para este horario',
+              };
+              const policyMsg =
+                typeof validation.reason === 'string' && validation.reason.includes('anticipación')
+                  ? validation.reason
+                  : null;
               throw new ValidationError(
-                validation.reason === 'blocked' ? 'Este horario está bloqueado' :
-                validation.reason === 'party_size_exceeds_largest_table' ? 'No hay mesas para este número de comensales' :
-                'La hora solicitada no está disponible'
+                policyMsg || msgs[validation.reason] || 'La hora solicitada no está disponible',
               );
             }
           }
@@ -859,6 +908,7 @@ router.post('/reservations', async (req, res, next) => {
             customerEmail: customerEmail?.trim() || null,
             partySize: size,
             dateTime,
+            businessDate: businessDateValue,
             durationMinutes: slotDuration,
             notes: isWalkIn ? (typeof notes === 'string' && notes.trim() ? notes.trim() : 'Walk-in') : notes?.trim() || null,
             source: 'manual',
@@ -906,6 +956,19 @@ router.post('/reservations', async (req, res, next) => {
             .catch((err) => console.error('[Notification] Email confirmation failed:', err));
         }
       });
+
+      notifyRestaurantNewReservation({
+        source: 'manual',
+        organizationId: restaurant.organizationId,
+        restaurantId,
+        restaurantName: restaurant.name,
+        customerName: name,
+        customerPhone: reservation.customerPhone,
+        customerEmail: reservation.customerEmail,
+        dateTime: reservation.dateTime,
+        partySize: size,
+        timezone,
+      }).catch((err) => console.error('[Notification] New reservation alert failed:', err));
     }
 
     incrementDataVersion(restaurantId).catch(console.error);

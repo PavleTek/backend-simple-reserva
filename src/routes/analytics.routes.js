@@ -13,7 +13,16 @@ const analyticsRateLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const marketingRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: 'Demasiadas solicitudes. Intenta de nuevo en un minuto.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 const MAX_EVENTS_PER_REQUEST = 50;
+const MAX_MARKETING_EVENTS_PER_REQUEST = 50;
 
 const VALID_EVENT_NAMES = new Set([
   'booking.page_view',
@@ -41,6 +50,14 @@ const VALID_EVENT_NAMES = new Set([
   'booking.restaurant_details_toggled',
   'booking.booking_disabled',
   'booking.error_shown',
+]);
+
+const VALID_MARKETING_EVENT_NAMES = new Set([
+  'marketing.page_view',
+  'marketing.scroll_depth',
+  'marketing.cta_click',
+  'marketing.nav_click',
+  'marketing.outbound_click',
 ]);
 
 /**
@@ -177,5 +194,111 @@ function sanitizeProperties(e) {
   }
   return Object.keys(props).length > 0 ? props : null;
 }
+
+function sanitizeMarketingProperties(e) {
+  const props = {};
+  const allowed = [
+    'label',
+    'href',
+    'variant',
+    'percent',
+    'target',
+    'channel',
+    'referrer',
+    'utm_source',
+    'utm_medium',
+    'utm_campaign',
+    'isRegister',
+  ];
+  for (const key of allowed) {
+    if (e[key] === undefined || e[key] === null) continue;
+    const val = e[key];
+    if (typeof val === 'boolean') props[key] = val;
+    else if (typeof val === 'number' && Number.isFinite(val)) props[key] = val;
+    else if (typeof val === 'string' && val.length <= 500) props[key] = val;
+  }
+  if (e.properties && typeof e.properties === 'object' && !Array.isArray(e.properties)) {
+    for (const key of allowed) {
+      if (e.properties[key] !== undefined && e.properties[key] !== null && props[key] === undefined) {
+        const val = e.properties[key];
+        if (typeof val === 'boolean') props[key] = val;
+        else if (typeof val === 'number' && Number.isFinite(val)) props[key] = val;
+        else if (typeof val === 'string' && val.length <= 500) props[key] = val;
+      }
+    }
+  }
+  return Object.keys(props).length > 0 ? props : null;
+}
+
+function normalizePagePath(path) {
+  if (!path || typeof path !== 'string') return '/';
+  const trimmed = path.trim().slice(0, 200);
+  if (!trimmed.startsWith('/')) return `/${trimmed}`;
+  return trimmed.split('?')[0] || '/';
+}
+
+/**
+ * POST /api/analytics/marketing-events
+ * Batch ingestion of marketing/landing analytics. Returns 202 quickly.
+ */
+router.post('/marketing-events', marketingRateLimiter, async (req, res, next) => {
+  try {
+    const { events } = req.body;
+
+    if (!Array.isArray(events) || events.length === 0) {
+      return res.status(400).json({ error: 'Se requiere un array de eventos' });
+    }
+
+    if (events.length > MAX_MARKETING_EVENTS_PER_REQUEST) {
+      return res.status(400).json({ error: `Máximo ${MAX_MARKETING_EVENTS_PER_REQUEST} eventos por solicitud` });
+    }
+
+    const validEvents = [];
+
+    for (let i = 0; i < events.length; i++) {
+      const e = events[i];
+      if (!e || typeof e !== 'object') continue;
+
+      const sessionId = e.sessionId && String(e.sessionId).trim();
+      const eventName = e.eventName && String(e.eventName);
+      const pagePath = normalizePagePath(e.pagePath);
+
+      if (!sessionId || !eventName) continue;
+      if (!VALID_MARKETING_EVENT_NAMES.has(eventName)) continue;
+
+      const ctaId = e.ctaId ? String(e.ctaId).trim().slice(0, 120) : null;
+
+      validEvents.push({
+        sessionId,
+        pagePath,
+        eventName,
+        ctaId,
+        deviceType: e.deviceType ? String(e.deviceType).substring(0, 20) : null,
+        userAgent: null,
+        properties: sanitizeMarketingProperties(e),
+      });
+    }
+
+    if (validEvents.length === 0) {
+      return res.status(202).json({ accepted: 0 });
+    }
+
+    await prisma.marketingEvent.createMany({
+      data: validEvents.map((ev) => ({
+        sessionId: ev.sessionId,
+        pagePath: ev.pagePath,
+        eventName: ev.eventName,
+        ctaId: ev.ctaId,
+        deviceType: ev.deviceType,
+        properties: ev.properties ?? Prisma.JsonNull,
+      })),
+      skipDuplicates: false,
+    });
+
+    res.status(202).json({ accepted: validEvents.length });
+  } catch (error) {
+    next(error);
+  }
+});
 
 module.exports = router;

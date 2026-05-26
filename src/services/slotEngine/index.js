@@ -38,6 +38,7 @@ const {
   parseHolds,
 } = require('./capacity');
 const { validateSlotForBooking } = require('./validate');
+const { ACTIVE_TABLE_STATUSES } = require('../../lib/reservationStatuses');
 
 const ENGINE_VERSION = 3;
 
@@ -104,7 +105,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
   const reservationWhere = isCrossMidnightEnabled()
     ? {
         restaurantId: restaurant.id,
-        status: 'confirmed',
+        status: { in: ACTIVE_TABLE_STATUSES },
         OR: [
           { businessDate: new Date(`${dateStr}T12:00:00.000Z`) },
           {
@@ -115,7 +116,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       }
     : {
         restaurantId: restaurant.id,
-        status: 'confirmed',
+        status: { in: ACTIVE_TABLE_STATUSES },
         dateTime: { gte: windowStart, lte: dayEnd },
       };
 

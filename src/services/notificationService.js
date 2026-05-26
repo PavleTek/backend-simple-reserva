@@ -356,38 +356,285 @@ async function sendOrganizationOwnerWelcomeEmail({ email, ownerName, panelUrl })
   }
 }
 
-async function sendDailySummary(options) {
-  const { email, restaurantName, count, firstTime, panelUrl } = options;
-  if (!email) return false;
+function getEmailAssetBaseUrl() {
+  return (
+    process.env.FRONTEND_LANDING_PAGE_URL ||
+    process.env.FRONTEND_LANDING_PAGE_URL ||
+    'http://localhost:5173'
+  ).replace(/\/$/, '');
+}
 
-  const subject = `SimpleReserva: ${count} reserva(s) hoy en ${restaurantName}`;
-  const body = [
-    `Hola,`,
-    ``,
-    `Hoy tienes ${count} reserva(s) en ${restaurantName}.`,
-    firstTime ? `La primera es a las ${firstTime}.` : '',
-    ``,
-    `Ver todas: ${panelUrl}`,
-    ``,
-    `Saludos,`,
-    `El equipo de SimpleReserva`,
-  ].join('\n');
-
-  const { sendEmail } = require('./emailService');
+async function resolveTransactionalFromEmail() {
   const prisma = require('../lib/prisma');
   const config = await prisma.configuration.findFirst();
-  const fromSender = config?.recoveryEmailSenderId
-    ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
+  const fromSenderId = config?.reservationEmailSenderId || config?.recoveryEmailSenderId;
+  const fromSender = fromSenderId
+    ? (await prisma.emailSender.findUnique({ where: { id: fromSenderId } }))?.email
     : null;
-  const fromEmail = fromSender || 'noreply@simplereserva.com';
+  return fromSender || 'noreply@simplereserva.com';
+}
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function addNormalizedEmail(set, email) {
+  if (!email || typeof email !== 'string') return;
+  const normalized = email.trim().toLowerCase();
+  if (normalized && EMAIL_REGEX.test(normalized)) {
+    set.add(normalized);
+  }
+}
+
+/**
+ * Resolve notification recipient emails for a new reservation alert.
+ * @param {Object} options
+ * @param {string} options.organizationId
+ * @param {string} options.restaurantId
+ * @param {'owner'|'managers'|'hosts'|'all'|'custom'} options.audience
+ * @param {string|null} [options.customEmail]
+ * @returns {Promise<string[]>}
+ */
+async function resolveReservationNotifyEmails(options) {
+  const { organizationId, restaurantId, audience, customEmail } = options;
+  const prisma = require('../lib/prisma');
+  const emails = new Set();
+
+  if (audience === 'custom') {
+    addNormalizedEmail(emails, customEmail);
+    return [...emails];
+  }
+
+  if (audience === 'owner' || audience === 'all') {
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: organizationId },
+      include: { owner: { select: { email: true } } },
+    });
+    if (audience === 'owner' && !org) return [];
+    addNormalizedEmail(emails, org?.owner?.email);
+  }
+
+  if (audience === 'managers' || audience === 'all') {
+    const managers = await prisma.organizationManager.findMany({
+      where: {
+        organizationId,
+        restaurantAssignments: { some: { restaurantId } },
+      },
+      include: { user: { select: { email: true } } },
+    });
+    for (const manager of managers) {
+      addNormalizedEmail(emails, manager.user?.email);
+    }
+  }
+
+  if (audience === 'hosts' || audience === 'all') {
+    const hosts = await prisma.organizationHost.findMany({
+      where: {
+        organizationId,
+        restaurantAssignments: { some: { restaurantId } },
+      },
+      include: { user: { select: { email: true } } },
+    });
+    for (const host of hosts) {
+      addNormalizedEmail(emails, host.user?.email);
+    }
+  }
+
+  return [...emails];
+}
+
+/**
+ * Send new reservation alert email to restaurant team.
+ * @returns {Promise<boolean>}
+ */
+async function sendNewReservationAlertEmail(options) {
+  const {
+    emails,
+    restaurantName,
+    customerName,
+    customerPhone = null,
+    customerEmail = null,
+    dateTime,
+    partySize,
+    panelUrl,
+    timezone = null,
+    source = 'web',
+    organizationId,
+    restaurantId,
+    audience,
+  } = options;
+
+  if (!emails || emails.length === 0) {
+    console.log('[Notification] sendNewReservationAlertEmail: skipped — no recipients', {
+      organizationId,
+      restaurantId,
+      audience,
+    });
+    return false;
+  }
+
+  const dt = new Date(dateTime);
+  const dateStr = formatDateDisplay(dt, timezone || undefined);
+  const timeStr = formatTime(dt, timezone || undefined);
+  const sourceLabel = source === 'manual' ? 'Reserva manual (panel)' : 'Reserva web';
+
+  const {
+    buildNewReservationNotificationHtml,
+    buildNewReservationSubject,
+  } = require('../templates/newReservationNotificationEmail');
+  const { sendEmail } = require('./emailService');
+
+  const subject = buildNewReservationSubject(customerName, restaurantName);
+  const html = buildNewReservationNotificationHtml({
+    restaurantName,
+    customerName,
+    customerPhone,
+    customerEmail,
+    dateStr,
+    timeStr,
+    partySize,
+    panelUrl,
+    sourceLabel,
+    assetBaseUrl: getEmailAssetBaseUrl(),
+  });
+
+  try {
+    const fromEmail = await resolveTransactionalFromEmail();
+    const result = await sendEmail({
+      fromEmail,
+      toEmails: emails,
+      subject,
+      content: html,
+      isHtml: true,
+    });
+    console.log('[Notification] sendNewReservationAlertEmail: sent OK', {
+      organizationId,
+      restaurantId,
+      audience,
+      recipientCount: emails.length,
+      resendId: result?.data?.id || result?.id || '(no id)',
+    });
+    return true;
+  } catch (err) {
+    console.error('[Notification] sendNewReservationAlertEmail: FAILED', {
+      organizationId,
+      restaurantId,
+      audience,
+      recipientCount: emails.length,
+      message: err.message,
+      statusCode: err?.statusCode,
+    });
+    return false;
+  }
+}
+
+/**
+ * Notify restaurant team about a new reservation (respects org settings).
+ * Does not depend on canSendConfirmations.
+ */
+async function notifyRestaurantNewReservation(options) {
+  const {
+    source,
+    organizationId,
+    restaurantId,
+    restaurantName,
+    customerName,
+    customerPhone = null,
+    customerEmail = null,
+    dateTime,
+    partySize,
+    timezone = null,
+  } = options;
+
+  const prisma = require('../lib/prisma');
+  const { reservationsListUrl } = require('../utils/restaurantPanelUrl');
+  const { formatInTimezone } = require('../utils/timezone');
+
+  const org = await prisma.restaurantOrganization.findUnique({
+    where: { id: organizationId },
+    select: {
+      reservationNotifyAudience: true,
+      reservationNotifyCustomEmail: true,
+      reservationNotifyOnWeb: true,
+      reservationNotifyOnManual: true,
+    },
+  });
+  if (!org) return false;
+
+  const shouldNotifyTeam =
+    (source === 'web' && org.reservationNotifyOnWeb) ||
+    (source === 'manual' && org.reservationNotifyOnManual);
+
+  if (!shouldNotifyTeam) {
+    console.log('[Notification] notifyRestaurantNewReservation: skipped by org settings', {
+      organizationId,
+      restaurantId,
+      source,
+    });
+    return false;
+  }
+
+  const emails = await resolveReservationNotifyEmails({
+    organizationId,
+    restaurantId,
+    audience: org.reservationNotifyAudience,
+    customEmail: org.reservationNotifyCustomEmail,
+  });
+
+  const dateYmd = formatInTimezone(dateTime, timezone, 'yyyy-MM-dd');
+  const panelUrl = reservationsListUrl({ date: dateYmd });
+
+  return sendNewReservationAlertEmail({
+    emails,
+    restaurantName,
+    customerName,
+    customerPhone,
+    customerEmail,
+    dateTime,
+    partySize,
+    panelUrl,
+    timezone,
+    source,
+    organizationId,
+    restaurantId,
+    audience: org.reservationNotifyAudience,
+  });
+}
+
+async function sendDailySummary(options) {
+  const {
+    email,
+    restaurantName,
+    count,
+    firstTime,
+    dateDisplay,
+    panelUrl,
+    reservations = [],
+  } = options;
+  if (!email) return false;
+
+  const {
+    buildDailySummaryHtml,
+    buildDailySummarySubject,
+  } = require('../templates/dailySummaryEmail');
+  const { sendEmail } = require('./emailService');
+
+  const subject = buildDailySummarySubject(count, restaurantName);
+  const html = buildDailySummaryHtml({
+    restaurantName,
+    count,
+    dateDisplay: dateDisplay || '',
+    firstTime,
+    panelUrl,
+    reservations,
+    assetBaseUrl: getEmailAssetBaseUrl(),
+  });
 
   try {
     await sendEmail({
-      fromEmail,
+      fromEmail: await resolveTransactionalFromEmail(),
       toEmails: [email],
       subject,
-      content: body,
-      isHtml: false,
+      content: html,
+      isHtml: true,
     });
     return true;
   } catch (err) {
@@ -407,35 +654,26 @@ async function sendPaymentFailureNotification(options) {
   const { emails, restaurantName, panelUrl } = options;
   if (!emails || emails.length === 0) return false;
 
-  const subject = `Problema con el pago de tu suscripción en ${restaurantName}`;
-  const body = [
-    `Hola,`,
-    ``,
-    `No pudimos procesar el pago de tu suscripción para ${restaurantName}.`,
-    `Tu cuenta ha entrado en un periodo de gracia de 7 días.`,
-    `Por favor, actualiza tu método de pago para evitar la interrupción del servicio.`,
-    ``,
-    `Actualizar pago: ${panelUrl}`,
-    ``,
-    `Saludos,`,
-    `El equipo de SimpleReserva`,
-  ].join('\n');
-
+  const {
+    buildPaymentFailureNotificationHtml,
+    buildPaymentFailureSubject,
+  } = require('../templates/paymentFailureNotificationEmail');
   const { sendEmail } = require('./emailService');
-  const prisma = require('../lib/prisma');
-  const config = await prisma.configuration.findFirst();
-  const fromSender = config?.recoveryEmailSenderId
-    ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
-    : null;
-  const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  const subject = buildPaymentFailureSubject(restaurantName);
+  const html = buildPaymentFailureNotificationHtml({
+    restaurantName,
+    panelUrl,
+    assetBaseUrl: getEmailAssetBaseUrl(),
+  });
 
   try {
     await sendEmail({
-      fromEmail,
+      fromEmail: await resolveTransactionalFromEmail(),
       toEmails: emails,
       subject,
-      content: body,
-      isHtml: false,
+      content: html,
+      isHtml: true,
     });
     return true;
   } catch (err) {
@@ -471,19 +709,11 @@ async function sendReservationConfirmationEmail(options) {
 
   const { buildReservationConfirmationHtml } = require('../templates/reservationConfirmationEmail');
   const { sendEmail } = require('./emailService');
-  const prisma = require('../lib/prisma');
 
-  const config = await prisma.configuration.findFirst();
-  const fromSenderId = config?.reservationEmailSenderId || config?.recoveryEmailSenderId;
-  const fromSender = fromSenderId
-    ? (await prisma.emailSender.findUnique({ where: { id: fromSenderId } }))?.email
-    : null;
-  const fromEmail = fromSender || 'noreply@simplereserva.com';
+  const fromEmail = await resolveTransactionalFromEmail();
 
   console.log('[Notification] sendReservationConfirmationEmail: resolved sender', {
     fromEmail,
-    fromSenderId: fromSenderId || '(none — will fall back to noreply)',
-    note: 'If fromEmail is not registered in emailSender table, send will fail',
   });
 
   const baseUrl = getBaseUrl().replace(/\/$/, '');
@@ -528,47 +758,47 @@ async function sendReservationConfirmationEmail(options) {
  * @param {Object} options
  */
 async function sendCancellationNotification(options) {
-  const { emails, restaurantName, customerName, customerPhone, dateTime, partySize, panelUrl } = options;
+  const {
+    emails,
+    restaurantName,
+    customerName,
+    customerPhone,
+    dateTime,
+    partySize,
+    panelUrl,
+    timezone = null,
+  } = options;
   if (!emails || emails.length === 0) return false;
 
   const dt = new Date(dateTime);
-  const dateStr = formatDateDisplay(dt);
-  const timeStr = formatTime(dt);
+  const dateStr = formatDateDisplay(dt, timezone || undefined);
+  const timeStr = formatTime(dt, timezone || undefined);
 
-  const subject = `Reserva Cancelada: ${customerName} en ${restaurantName}`;
-  const body = [
-    `Hola,`,
-    ``,
-    `La siguiente reserva ha sido cancelada por el cliente:`,
-    ``,
-    `Restaurante: ${restaurantName}`,
-    `Cliente: ${customerName}`,
-    `Teléfono: ${customerPhone}`,
-    `Fecha: ${dateStr}`,
-    `Hora: ${timeStr}`,
-    `Comensales: ${partySize}`,
-    ``,
-    `Puedes ver los detalles en tu panel: ${panelUrl}`,
-    ``,
-    `Saludos,`,
-    `El equipo de SimpleReserva`,
-  ].join('\n');
-
+  const {
+    buildCancellationNotificationHtml,
+    buildCancellationSubject,
+  } = require('../templates/cancellationNotificationEmail');
   const { sendEmail } = require('./emailService');
-  const prisma = require('../lib/prisma');
-  const config = await prisma.configuration.findFirst();
-  const fromSender = config?.recoveryEmailSenderId
-    ? (await prisma.emailSender.findUnique({ where: { id: config.recoveryEmailSenderId } }))?.email
-    : null;
-  const fromEmail = fromSender || 'noreply@simplereserva.com';
+
+  const subject = buildCancellationSubject(customerName, restaurantName);
+  const html = buildCancellationNotificationHtml({
+    restaurantName,
+    customerName,
+    customerPhone,
+    dateStr,
+    timeStr,
+    partySize,
+    panelUrl,
+    assetBaseUrl: getEmailAssetBaseUrl(),
+  });
 
   try {
     await sendEmail({
-      fromEmail,
+      fromEmail: await resolveTransactionalFromEmail(),
       toEmails: emails,
       subject,
-      content: body,
-      isHtml: false,
+      content: html,
+      isHtml: true,
     });
     return true;
   } catch (err) {
@@ -738,4 +968,8 @@ module.exports = {
   notifyRestaurantWaitlistEntry,
   sendPostVisitFeedbackEmail,
   sendFeedbackRecoveryAlertEmail,
+  resolveReservationNotifyEmails,
+  sendNewReservationAlertEmail,
+  notifyRestaurantNewReservation,
+  resolveTransactionalFromEmail,
 };

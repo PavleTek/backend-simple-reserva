@@ -11,7 +11,7 @@
  * el cupo no está disponible (reason: 'party_size_exceeds_largest_table').
  *
  * Un cupo está BLOQUEADO por:
- * 1. Una Reservation con status='confirmed' que solapa el intervalo (más buffer).
+ * 1. Una Reservation confirmada o en sala (confirmed/arrived) que solapa el intervalo (más buffer).
  * 2. Un ReservationHold con status='active' y expiresAt > now() que solapa el intervalo.
  *    Excepción: holds con holdToken === excludeHoldToken se ignoran (el propio hold del usuario).
  *

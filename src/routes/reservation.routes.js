@@ -17,6 +17,7 @@ const {
   sendModificationAlertToCustomer,
   sendReservationConfirmationEmail,
   notifyRestaurantWaitlistEntry,
+  notifyRestaurantNewReservation,
 } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
 const {
@@ -295,7 +296,11 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
       where: { secureToken: req.params.secureToken },
       include: {
         restaurant: {
-          include: { organization: { include: { owner: { select: { email: true } } } } },
+          include: {
+            organization: {
+              include: { owner: { select: { email: true, country: true } } },
+            },
+          },
         },
         table: { select: { label: true } },
       },
@@ -308,8 +313,12 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
       include: { restaurant: { select: { name: true, slug: true } }, table: { select: { label: true } } },
     });
 
-    const panelBase = process.env.RESTAURANT_PANEL_URL || process.env.BOOKING_BASE_URL || 'http://localhost:5175';
-    const panelUrl = `${panelBase.replace(/\/$/, '')}/reservations?date=${new Date(reservation.dateTime).toISOString().split('T')[0]}`;
+    const { reservationsListUrl } = require('../utils/restaurantPanelUrl');
+    const { getEffectiveTimezone, formatInTimezone } = require('../utils/timezone');
+    const ownerCountry = reservation.restaurant?.organization?.owner?.country || 'CL';
+    const timezone = getEffectiveTimezone(reservation.restaurant, ownerCountry);
+    const dateYmd = formatInTimezone(reservation.dateTime, timezone, 'yyyy-MM-dd');
+    const panelUrl = reservationsListUrl({ date: dateYmd });
     const emails = [...new Set(
       [reservation.restaurant?.organization?.owner?.email].filter(Boolean)
     )];
@@ -321,6 +330,7 @@ router.patch('/token/:secureToken/cancel', async (req, res, next) => {
       dateTime: reservation.dateTime,
       partySize: reservation.partySize,
       panelUrl,
+      timezone,
       restaurantId: reservation.restaurantId,
     }).catch((err) => console.error('[Reservation] Cancellation notification failed:', err.message));
 
@@ -656,6 +666,19 @@ router.post('/', async (req, res, next) => {
         }
       }
     });
+
+    notifyRestaurantNewReservation({
+      source: 'web',
+      organizationId: restaurant.organizationId,
+      restaurantId: restaurant.id,
+      restaurantName: reservation.restaurant.name,
+      customerName,
+      customerPhone: reservation.customerPhone,
+      customerEmail: reservation.customerEmail,
+      dateTime: reservation.dateTime,
+      partySize: size,
+      timezone,
+    }).catch((err) => console.error('[Notification] New reservation alert failed:', err));
 
     incrementDataVersion(restaurant.id).catch(console.error);
     incrementReservationAnalytics(restaurant.id, restaurant.organizationId, businessDateValue)

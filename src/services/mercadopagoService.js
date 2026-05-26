@@ -519,8 +519,8 @@ async function enterGracePeriod(organizationId, options = {}) {
   });
     if (organization && organization.owner?.email) {
       const emails = [organization.owner.email];
-      const panelBase = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || process.env.RESTAURANT_PANEL_URL || 'http://localhost:5175').replace(/\/$/, '');
-      const panelUrl = `${panelBase}/billing?organizationId=${organizationId}`;
+      const { billingUrl } = require('../utils/restaurantPanelUrl');
+      const panelUrl = `${billingUrl()}?organizationId=${organizationId}`;
       const { sendPaymentFailureNotification } = require('./notificationService');
       await sendPaymentFailureNotification({
         emails,

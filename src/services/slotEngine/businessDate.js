@@ -43,7 +43,8 @@ function computeBusinessDate(calendarDateStr, timeStr, schedule, scheduleMode = 
     }
     const prevDow = dow === 0 ? 6 : dow - 1;
     if (schedule.dayOfWeek === prevDow) {
-      return calendarDateStr;
+      // Madrugada del día calendario = cierre del turno abierto el día hábil anterior
+      return addDaysToDateStr(calendarDateStr, -1);
     }
   }
 

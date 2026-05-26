@@ -11,8 +11,9 @@
  * 3. Usa el mismo motor que computeAvailability → coherencia perfecta.
  */
 
-const { getReservationWindows } = require('./windows');
-const { generateGrid, isOnGrid } = require('./grid');
+const { getReservationWindows, timeToMinutes } = require('./windows');
+const { isOnGrid, timeToGridMinutes } = require('./grid');
+const { getScheduleOpenMeta } = require('./businessDate');
 const { resolveDuration } = require('./duration');
 const { parseBlockedSlots, validateBookingPolicies } = require('./policies');
 const { getCandidateTables, countFreeTables, checkPacing, parseReservations, parseHolds } = require('./capacity');
@@ -79,9 +80,11 @@ function validateSlotForBooking({
 
   const durationMinutes = resolveDuration(restaurant, partySize, durationRules);
 
-  // 1. El tiempo solicitado debe estar en la grilla generada
-  const [timeH, timeM] = time.split(':').map(Number);
-  const timeMin = timeH * 60 + timeM;
+  // 1. El tiempo solicitado debe estar en la grilla generada (cross-midnight: 01:00 → minuto 1500, no 60)
+  const { openMin, closesNextDay } = getScheduleOpenMeta(schedule, scheduleMode);
+  const timeMinWall = timeToMinutes(time);
+  const nextDayLeg = closesNextDay && timeMinWall < openMin;
+  const timeMin = timeToGridMinutes(time, nextDayLeg);
 
   const windows = getReservationWindows(schedule, scheduleMode, reservationWindowMode, customWindows);
   if (!isOnGrid(timeMin, windows, intervalMinutes, durationMinutes, reservationEndPolicy)) {

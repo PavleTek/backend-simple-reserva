@@ -73,6 +73,11 @@ model RestaurantOrganization {
   billingAddress      String?
   billingEmail        String?   // Billing-specific email
 
+  reservationNotifyAudience     ReservationNotifyAudience @default(owner)
+  reservationNotifyCustomEmail  String?
+  reservationNotifyOnWeb        Boolean @default(true)
+  reservationNotifyOnManual     Boolean @default(true)
+
   @@index([ownerId])
   @@index([customPlanId])
   @@index([isDeleted])
@@ -144,6 +149,14 @@ enum BookingClosedFallback {
   DISABLE
   MESSAGE
   CONTACT
+}
+
+enum ReservationNotifyAudience {
+  owner
+  managers
+  hosts
+  all
+  custom
 }
 
 model Restaurant {
@@ -690,6 +703,24 @@ model BookingEvent {
 
   @@index([restaurantId, eventName, timestamp])
   @@index([sessionId])
+  @@index([timestamp])
+}
+
+// Marketing / landing analytics — public site CTAs and funnel
+model MarketingEvent {
+  id         String   @id @default(cuid())
+  sessionId  String
+  pagePath   String
+  eventName  String
+  ctaId      String?
+  properties Json?
+  deviceType String?
+  userAgent  String?
+  timestamp  DateTime @default(now())
+
+  @@index([pagePath, eventName, timestamp])
+  @@index([sessionId])
+  @@index([ctaId, timestamp])
   @@index([timestamp])
 }
 

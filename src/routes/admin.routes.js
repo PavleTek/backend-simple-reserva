@@ -1265,7 +1265,13 @@ router.get('/checkout-sessions', async (req, res, next) => {
 
 router.get('/booking-analytics', async (req, res, next) => {
   try {
-    const { dateFrom, dateTo, restaurantId, deviceType } = req.query;
+    const { dateFrom, dateTo, restaurantId, organizationId, deviceType } = req.query;
+    const { resolveBookingAnalyticsFilter } = require('../services/bookingAnalyticsFilter');
+
+    const filterResult = await resolveBookingAnalyticsFilter({ organizationId, restaurantId });
+    if (filterResult.error) {
+      return res.status(filterResult.status || 400).json({ error: filterResult.error });
+    }
 
     const now = new Date();
     const defaultTo = new Date(now);
@@ -1281,8 +1287,8 @@ router.get('/booking-analytics', async (req, res, next) => {
 
     const where = {
       timestamp: { gte: from, lte: to },
+      ...filterResult.restaurantFilter,
     };
-    if (restaurantId) where.restaurantId = restaurantId;
     if (deviceType) where.deviceType = deviceType;
 
     const funnelSteps = [
@@ -1427,6 +1433,7 @@ router.get('/booking-analytics', async (req, res, next) => {
 
     res.json({
       dateRange: { from: from.toISOString(), to: to.toISOString() },
+      filterContext: filterResult.filterContext,
       funnel,
       funnelCompletionRate,
       thirtySecondPromise,
@@ -1434,6 +1441,21 @@ router.get('/booking-analytics', async (req, res, next) => {
       deviceBreakdown,
       zeroAvailabilityRate: zeroAvailabilityRate.sort((a, b) => b.zeroAvailabilityRatePercent - a.zeroAvailabilityRatePercent).slice(0, 20),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Marketing / Landing Analytics ───────────────────────────────
+
+router.get('/marketing-analytics', async (req, res, next) => {
+  try {
+    const { getMarketingAnalytics } = require('../services/marketingAnalyticsService');
+    const result = await getMarketingAnalytics(req.query);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json(result);
   } catch (error) {
     next(error);
   }
@@ -1601,8 +1623,8 @@ router.get('/analytics', async (req, res, next) => {
       reservationsThisMonth,
       activeSubscriptions,
     ] = await Promise.all([
-      prisma.restaurant.count(),
-      prisma.restaurant.count({ where: { isActive: true } }),
+      prisma.restaurant.count({ where: { isDeleted: false } }),
+      prisma.restaurant.count({ where: { isActive: true, isDeleted: false } }),
       prisma.user.count(),
       prisma.reservation.count(),
       prisma.reservation.count({ where: { createdAt: { gte: startOfMonth } } }),
@@ -1617,6 +1639,19 @@ router.get('/analytics', async (req, res, next) => {
       reservationsThisMonth,
       activeSubscriptions,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/dashboard-overview', async (req, res, next) => {
+  try {
+    const { getDashboardOverview } = require('../services/dashboardOverviewService');
+    const result = await getDashboardOverview(req.query);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json(result);
   } catch (error) {
     next(error);
   }

@@ -462,6 +462,25 @@ describe('validateSlotForBooking', () => {
     assert.equal(result.reason, 'slot_not_on_grid');
   });
 
+  it('acepta 01:00 en turno que cierra después de medianoche', () => {
+    const schedule = {
+      scheduleMode: 'continuous',
+      openTime: '20:00',
+      closeTime: '02:00',
+      closesNextDay: true,
+    };
+    const result = validateSlotForBooking({
+      ...baseParams,
+      time: '01:00',
+      schedule,
+      restaurant: { ...baseParams.restaurant, scheduleMode: 'continuous' },
+      slotDateTime: makeSlotDate('2026-05-26', '01:00'),
+      isToday: false,
+    });
+    assert.equal(result.valid, true);
+    assert.equal(result.durationMinutes, 60);
+  });
+
   it('rechaza cuando no hay mesas para party size', () => {
     const result = validateSlotForBooking({ ...baseParams, partySize: 20 });
     assert.equal(result.valid, false);
