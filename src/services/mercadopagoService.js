@@ -82,16 +82,16 @@ async function logMercadoPagoSellerContext(accessToken) {
 /**
  * Resuelve el payer_email para el preapproval.
  *
- * Regla:
- * - Si MP_TEST_PAYER_EMAIL está definido → siempre úsalo como payer (cubre tanto
- *   tokens TEST- como APP_USR- de cuentas de prueba).
- * - Si no → usa el email del usuario logueado (producción con cuenta real).
- *
- * Contexto: el panel de MP dice que las cuentas de prueba deben usar sus
- * "credenciales de producción" (APP_USR-), no las TEST-. Por eso la condición
- * ya no puede basarse solo en el prefijo del token.
+ * Regla de prioridad:
+ * 1. MP_TEST_PAYER_EMAIL definido → úsalo (modo pruebas con vendedor test).
+ * 2. organizationId disponible → email sintético único por org:
+ *    sub-{orgId}@simplereserva.cl
+ *    Evita el error "Cannot operate between different countries" cuando el
+ *    dueño del restaurante tiene una cuenta MP registrada en otro país.
+ *    El usuario completa su medio de pago real en el checkout de MP.
+ * 3. Fallback → email del usuario logueado.
  */
-function resolvePayerEmailForPreapproval(loginEmail) {
+function resolvePayerEmailForPreapproval(loginEmail, organizationId) {
   const fromLogin = (loginEmail || '').trim();
   const testBuyer = (process.env.MP_TEST_PAYER_EMAIL || '').trim();
 
@@ -103,6 +103,15 @@ function resolvePayerEmailForPreapproval(loginEmail) {
       });
     }
     return testBuyer;
+  }
+
+  if (organizationId) {
+    const syntheticEmail = `sub-${organizationId}@simplereserva.cl`;
+    console.log('[MercadoPago] payer_email sintético (evita conflicto con cuenta MP de otro país):', {
+      email_login: fromLogin || '(sin email)',
+      payer_email_enviado_a_MP: syntheticEmail,
+    });
+    return syntheticEmail;
   }
 
   if (!fromLogin) {
@@ -190,11 +199,10 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
     start_date: startDate.toISOString(),
   };
 
-  const resolvedEmail = resolvePayerEmailForPreapproval(payerEmail);
+  const resolvedEmail = resolvePayerEmailForPreapproval(payerEmail, organizationId);
   // payer_email OBLIGATORIO para la API de preapproval.
-  // Con cuenta real + token TEST-: el payer debe ser también una cuenta real
-  // o, idealmente, una cuenta test_user del mismo par vendedor/comprador.
-  // Correr scripts/create-test-users.js para crear el par correcto.
+  // En producción se usa un email sintético por org para evitar conflictos
+  // con cuentas MP del pagador en otros países.
   const payerEmailForBody = resolvedEmail;
 
   if (!payerEmailForBody) {
