@@ -35,7 +35,7 @@ const {
   resolveCalendarDateFromBusinessDate,
 } = require('../services/slotEngine/businessDate');
 const { isCrossMidnightEnabled } = require('../lib/featureFlags');
-const { listIndexableBookingSlugs } = require('../services/bookingSeoService');
+const { listIndexableBookingSlugs, listActiveBookingSlugs } = require('../services/bookingSeoService');
 
 const router = express.Router();
 
@@ -696,6 +696,17 @@ router.post('/', async (req, res, next) => {
 router.get('/indexable-slugs', async (req, res, next) => {
   try {
     const slugs = await listIndexableBookingSlugs();
+    res.json({ slugs });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /active-slugs — Prerender share previews (must be before /:slug) ─────
+
+router.get('/active-slugs', async (req, res, next) => {
+  try {
+    const slugs = await listActiveBookingSlugs();
     res.json({ slugs });
   } catch (err) {
     next(err);

@@ -132,6 +132,18 @@ async function listIndexableBookingSlugs() {
   return slugs;
 }
 
+/**
+ * All active booking pages (for share previews / prerender), regardless of SEO opt-in.
+ */
+async function listActiveBookingSlugs() {
+  const restaurants = await prisma.restaurant.findMany({
+    where: { isActive: true, isDeleted: false },
+    select: { slug: true },
+    orderBy: { slug: 'asc' },
+  });
+  return restaurants.map((r) => r.slug);
+}
+
 module.exports = {
   getBookingAppBaseUrl,
   buildBookingPageUrl,
@@ -141,4 +153,5 @@ module.exports = {
   isEligibleForBookingSeoIndex,
   validateEnableBookingPageIndexable,
   listIndexableBookingSlugs,
+  listActiveBookingSlugs,
 };
