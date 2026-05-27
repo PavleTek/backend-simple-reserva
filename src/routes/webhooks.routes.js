@@ -16,6 +16,7 @@ const { getMercadoPagoAccessToken, getMercadoPagoWebhookSecret } = require('../l
 const {
   activateOrganizationSubscription,
   scheduleOrganizationSubscription,
+  cancelReplacedPreapprovalOnSchedule,
   enterGracePeriod,
   getActivateOptionsForPreapproval,
 } = require('../services/mercadopagoService');
@@ -202,6 +203,7 @@ router.post('/mercadopago', express.json({
 
           if (isFutureStart) {
             await scheduleOrganizationSubscription(organizationId, preapprovalId, plan, new Date(mpStartDate));
+            await cancelReplacedPreapprovalOnSchedule(organizationId, preapprovalId);
             console.log('[Webhook] MercadoPago subscription scheduled (future start):', organizationId, plan, mpStartDate);
           } else {
             const activateOpts = await getActivateOptionsForPreapproval(organizationId, preapprovalId);

@@ -372,6 +372,37 @@ async function scheduleOrganizationSubscription(organizationId, preapprovalId, p
 }
 
 /**
+ * Al programar una suscripción futura (end_of_period), cancela el preapproval anterior en MP
+ * para evitar doble cobro cuando el nuevo plan entre en vigencia.
+ * Busca el pendingChangeFromSubscriptionId en la CheckoutSession del nuevo preapproval.
+ * No lanza error si no hay nada que cancelar o si ya estaba cancelado.
+ */
+async function cancelReplacedPreapprovalOnSchedule(organizationId, newPreapprovalId) {
+  const session = await prisma.checkoutSession.findFirst({
+    where: { organizationId, mercadopagoPreapprovalId: newPreapprovalId },
+    orderBy: { createdAt: 'desc' },
+    select: { pendingChangeFromSubscriptionId: true },
+  });
+  if (!session?.pendingChangeFromSubscriptionId) return;
+
+  const oldSub = await prisma.subscription.findUnique({
+    where: { id: session.pendingChangeFromSubscriptionId },
+    select: { mercadopagoPreapprovalId: true, organizationId: true },
+  });
+  if (!oldSub || oldSub.organizationId !== organizationId) return;
+  if (!oldSub.mercadopagoPreapprovalId || oldSub.mercadopagoPreapprovalId === newPreapprovalId) return;
+
+  try {
+    await cancelSubscription(oldSub.mercadopagoPreapprovalId);
+    console.log('[MercadoPago] cancelReplacedPreapprovalOnSchedule: cancelado preapproval anterior en MP:', oldSub.mercadopagoPreapprovalId);
+  } catch (err) {
+    if (!isPreapprovalAlreadyCancelledError(err)) {
+      console.warn('[MercadoPago] cancelReplacedPreapprovalOnSchedule: no se pudo cancelar preapproval anterior:', oldSub.mercadopagoPreapprovalId, err?.message ?? err);
+    }
+  }
+}
+
+/**
  * Opciones desde CheckoutSession (cambio de plan inmediato): al activar el nuevo preapproval, cancelar el anterior en MP.
  * @typedef {{ replaceSubscriptionId?: string|null }} ActivateSubscriptionOptions
  */
@@ -580,6 +611,7 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
 
   if (isFutureStart) {
     await scheduleOrganizationSubscription(organizationId, preapprovalId, planSKU, new Date(startDate));
+    await cancelReplacedPreapprovalOnSchedule(organizationId, preapprovalId);
     console.log('[MercadoPago] confirmSubscriptionFromPreapproval scheduled:', organizationId, planSKU, startDate);
     return { activated: false, scheduled: true, scheduledDate: startDate, planSKU };
   }
@@ -624,6 +656,7 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
         mpSub?.date_created;
       const sd = new Date(rawStart);
       await scheduleOrganizationSubscription(organizationId, preapprovalId, planSKU, sd);
+      await cancelReplacedPreapprovalOnSchedule(organizationId, preapprovalId);
       console.log(
         '[MercadoPago] confirmSubscriptionFromPreapproval scheduled (cambio al vencer periodo):',
         organizationId,
@@ -650,6 +683,7 @@ module.exports = {
   cancelSubscription,
   activateOrganizationSubscription,
   scheduleOrganizationSubscription,
+  cancelReplacedPreapprovalOnSchedule,
   deactivateOrganizationSubscription,
   enterGracePeriod,
   confirmSubscriptionFromPreapproval,

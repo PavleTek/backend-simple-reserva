@@ -734,24 +734,17 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     let checkoutStartDateOpt = null;
 
     if (when === 'end_of_period') {
-      if (currentSub.mercadopagoPreapprovalId) {
-        try {
-          await mercadopagoService.cancelSubscription(currentSub.mercadopagoPreapprovalId);
-        } catch (err) {
-          console.error('[billing/change-plan] Error cancelando preapproval en MP:', err?.message);
-        }
-      }
       const periodEnd = computePeriodEnd(currentSub.startDate, currentSub.plan);
       if (!periodEnd) {
         return res.status(500).json({ error: 'No se pudo calcular el fin del periodo.' });
       }
-      await prisma.subscription.update({
-        where: { id: currentSub.id },
-        data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd, gracePeriodEndsAt: periodEnd },
-      });
       checkoutStartDateOpt = periodEnd;
+      // No cancelar en MP ni en DB aquí: el plan activo sigue vigente hasta que el usuario
+      // complete el pago. Si abandona el checkout, su plan no se ve afectado.
+      // La cancelación del preapproval anterior en MP ocurre al confirmar el nuevo
+      // (ver cancelReplacedPreapprovalOnSchedule en webhook / confirmSubscriptionFromPreapproval).
     }
-    // when === 'now': no cancelar MP ni DB hasta que el nuevo preapproval autorice (ver activateOrganizationSubscription + pendingChangeFromSubscriptionId)
+    // when === 'now': igual — no cancelar hasta que el nuevo preapproval autorice.
 
     planService.invalidateCache(organizationId);
 
@@ -770,7 +763,10 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
         planId: newPlan.id,
         status: 'pending',
         expiresAt,
-        pendingChangeFromSubscriptionId: when === 'now' ? currentSub.id : null,
+        // Guardado para ambos modos (now y end_of_period):
+        // permite cancelar el preapproval anterior en MP al autorizar el nuevo
+        // y reemplazar la sub activa al activar el nuevo plan.
+        pendingChangeFromSubscriptionId: currentSub.id,
       },
     });
 
