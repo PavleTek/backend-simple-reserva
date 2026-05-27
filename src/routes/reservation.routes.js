@@ -35,6 +35,7 @@ const {
   resolveCalendarDateFromBusinessDate,
 } = require('../services/slotEngine/businessDate');
 const { isCrossMidnightEnabled } = require('../lib/featureFlags');
+const { listIndexableBookingSlugs } = require('../services/bookingSeoService');
 
 const router = express.Router();
 
@@ -690,6 +691,17 @@ router.post('/', async (req, res, next) => {
   }
 });
 
+// ─── GET /indexable-slugs — Build / sitemap (must be before /:slug) ───────────
+
+router.get('/indexable-slugs', async (req, res, next) => {
+  try {
+    const slugs = await listIndexableBookingSlugs();
+    res.json({ slugs });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── GET /:slug/next-available ────────────────────────────────────────────────
 
 router.get('/:slug/next-available', async (req, res, next) => {
@@ -863,11 +875,11 @@ router.get('/:slug', async (req, res, next) => {
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug: req.params.slug, isDeleted: false },
       select: {
-        id: true, name: true, description: true, address: true, shortAddress: true,
+        id: true, slug: true, name: true, description: true, address: true, shortAddress: true,
         googlePlaceId: true, latitude: true, longitude: true, phone: true, email: true,
         menuPdfUrl: true, logoUrl: true, advanceBookingLimitDays: true, minimumNoticeMinutes: true,
         requireEmail: true, requirePhoneNumber: true, timezone: true, organizationId: true,
-        holdsEnabled: true, holdTtlSeconds: true, appearanceTheme: true,
+        holdsEnabled: true, holdTtlSeconds: true, appearanceTheme: true, bookingPageIndexable: true,
         organization: { include: { owner: { select: { country: true } } } },
         zones: {
           where: { isActive: true },

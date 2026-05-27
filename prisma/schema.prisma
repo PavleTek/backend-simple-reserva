@@ -199,6 +199,8 @@ model Restaurant {
   isDeleted                 Boolean   @default(false)
   scheduleMode              String    @default("continuous") // "continuous" | "service_periods"
   appearanceTheme           String    @default("crema-calida") // booking page palette id
+  /// When true, /restaurant/:slug may be indexed (sitemap + prerender). Link always works.
+  bookingPageIndexable      Boolean   @default(false)
   bookingAcceptanceMode     BookingAcceptanceMode @default(ALWAYS_24_7)
   bookingClosedFallback     BookingClosedFallback @default(MESSAGE)
   bookingClosedMessage      String?

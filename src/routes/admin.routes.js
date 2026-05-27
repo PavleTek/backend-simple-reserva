@@ -11,6 +11,8 @@ const whatsappService = require('../services/whatsappService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const r2LogosService = require('../services/r2LogosService');
 const { handleLogoUpload, uploadLogoMulter } = require('./upload.routes');
+const { validateEnableBookingPageIndexable, getBookingSeoAdminMeta } = require('../services/bookingSeoService');
+const { hasActiveAccess } = require('../services/subscriptionService');
 
 const router = express.Router();
 
@@ -94,7 +96,8 @@ router.get('/restaurants/:id', async (req, res, next) => {
 
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
-    res.json(restaurant);
+    const access = await hasActiveAccess(restaurant.organizationId);
+    res.json({ ...restaurant, bookingSeo: getBookingSeoAdminMeta(restaurant, access) });
   } catch (error) {
     next(error);
   }
@@ -102,14 +105,36 @@ router.get('/restaurants/:id', async (req, res, next) => {
 
 router.patch('/restaurants/:id', async (req, res, next) => {
   try {
-    const { isActive } = req.body;
+    const { isActive, bookingPageIndexable } = req.body;
+
+    const current = await prisma.restaurant.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!current) throw new NotFoundError('Restaurante no encontrado');
+
+    if (bookingPageIndexable === true) {
+      const check = await validateEnableBookingPageIndexable(current);
+      if (!check.ok) throw new ValidationError(check.error);
+    }
+
+    const data = {};
+    if (isActive !== undefined) data.isActive = Boolean(isActive);
+    if (bookingPageIndexable !== undefined) {
+      data.bookingPageIndexable = Boolean(bookingPageIndexable);
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw new ValidationError('No hay campos para actualizar');
+    }
 
     const restaurant = await prisma.restaurant.update({
       where: { id: req.params.id },
-      data: { isActive },
+      data,
     });
 
-    res.json(restaurant);
+    const access = await hasActiveAccess(restaurant.organizationId);
+    const bookingSeo = getBookingSeoAdminMeta(restaurant, access);
+    res.json({ ...restaurant, bookingSeo });
   } catch (error) {
     next(error);
   }
@@ -295,10 +320,12 @@ router.get('/organizations/:id', async (req, res, next) => {
         }),
       ]);
 
-    // Compute total tables per restaurant from zones
+    // Compute total tables per restaurant from zones + SEO admin metadata
+    const orgHasAccess = await hasActiveAccess(org.id);
     const restaurantsWithTableCount = org.restaurants.map(r => ({
       ...r,
       tablesCount: r.zones.reduce((sum, z) => sum + z._count.tables, 0),
+      bookingSeo: getBookingSeoAdminMeta(r, orgHasAccess),
     }));
 
     res.json({
