@@ -123,10 +123,11 @@ router.get('/:id', async (req, res, next) => {
 
 router.post('/:id/approve', async (req, res, next) => {
   try {
-    const { amountDays, notes } = req.body || {};
+    const { amountDays, notes, force } = req.body || {};
     const result = await referralService.approveReferral(req.params.id, req.user.id, {
       amountDays,
       notes,
+      skipEligibilityCheck: force !== false,
     });
     res.json(result);
   } catch (error) {

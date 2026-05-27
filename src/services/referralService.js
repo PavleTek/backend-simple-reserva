@@ -356,9 +356,27 @@ async function evaluateForApproval(referralId) {
 }
 
 async function approveReferral(referralId, adminId, options = {}) {
-  const evaluation = await evaluateForApproval(referralId);
-  if (!evaluation.eligible) {
-    throw new ValidationError(evaluation.reason || 'El referido no califica para aprobación.');
+  const skipEligibilityCheck = options.skipEligibilityCheck === true;
+  let referral;
+
+  if (skipEligibilityCheck) {
+    referral = await prisma.referral.findUnique({ where: { id: referralId } });
+    if (!referral) throw new NotFoundError('Referido no encontrado.');
+    if (referral.isFraud) {
+      throw new ValidationError('No se puede aprobar un referido marcado como fraude.');
+    }
+    if ([REFERRAL_STATUSES.APPROVED, REFERRAL_STATUSES.REWARD_APPLIED].includes(referral.status)) {
+      throw new ValidationError('Este referido ya fue aprobado.');
+    }
+    if (referral.rewardCreditId) {
+      throw new ValidationError('Ya existe un crédito asociado a este referido.');
+    }
+  } else {
+    const evaluation = await evaluateForApproval(referralId);
+    if (!evaluation.eligible) {
+      throw new ValidationError(evaluation.reason || 'El referido no califica para aprobación.');
+    }
+    referral = evaluation.referral;
   }
 
   const { rewardDays } = getReferralConfig();
@@ -367,8 +385,12 @@ async function approveReferral(referralId, adminId, options = {}) {
     throw new ValidationError('La cantidad de días debe ser mayor a cero.');
   }
 
-  const referral = evaluation.referral;
   const now = new Date();
+  const manualOverrideNote =
+    skipEligibilityCheck && referral.status !== REFERRAL_STATUSES.AWAITING_ADMIN_APPROVAL
+      ? `[Aprobación manual admin ${now.toISOString()} — estado previo: ${referral.status}]`
+      : null;
+  const mergedNotes = [options.notes, manualOverrideNote].filter(Boolean).join('\n') || null;
 
   return prisma.$transaction(async (tx) => {
     const credit = await tx.referralCredit.create({
@@ -380,7 +402,7 @@ async function approveReferral(referralId, adminId, options = {}) {
         status: 'available',
         expiresAt: computeCreditExpiresAt(now),
         createdById: adminId,
-        notes: options.notes || null,
+        notes: mergedNotes,
       },
     });
 
@@ -391,8 +413,8 @@ async function approveReferral(referralId, adminId, options = {}) {
         approvedAt: now,
         approvedById: adminId,
         rewardCreditId: credit.id,
-        internalNotes: options.notes
-          ? [referral.internalNotes, options.notes].filter(Boolean).join('\n')
+        internalNotes: mergedNotes
+          ? [referral.internalNotes, mergedNotes].filter(Boolean).join('\n')
           : referral.internalNotes,
       },
     });
