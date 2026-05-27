@@ -1,6 +1,7 @@
 const prisma = require('../lib/prisma');
 const planService = require('../services/planService');
 const promoCodeService = require('../services/promoCodeService');
+const referralService = require('../services/referralService');
 const { comparePassword, hashPassword } = require('../utils/password');
 const { generateToken, generateTempToken, verifyToken } = require('../utils/jwt');
 const {
@@ -250,7 +251,7 @@ const login = async (req, res) => {
 
 const register = async (req, res) => {
   try {
-    const { email, password, name, lastName, restaurantName, restaurantSlug, plan, country, promoCode: promoCodeInput } = req.body;
+    const { email, password, name, lastName, restaurantName, restaurantSlug, plan, country, promoCode: promoCodeInput, referralCode: referralCodeInput, referralAttributionSource, utmSource, utmMedium, utmCampaign } = req.body;
 
     if (!email || !password || !restaurantName) {
       res.status(400).json({ error: 'Se requiere email, contraseña y nombre del restaurante' });
@@ -297,6 +298,23 @@ const register = async (req, res) => {
       validatedPromoCode = promoCode;
     }
 
+    let validatedReferrer = null;
+    const referralCodeTrimmed = referralCodeInput && String(referralCodeInput).trim();
+    if (!validatedPromoCode && referralCodeTrimmed) {
+      validatedReferrer = await referralService.tryValidateReferrerOrgId(referralCodeTrimmed, {
+        refereeEmail: email,
+      });
+      if (!validatedReferrer) {
+        console.warn('[Auth] Referral code ignored (invalid):', referralCodeTrimmed);
+      }
+    } else if (validatedPromoCode && referralCodeTrimmed) {
+      console.warn('[Auth] Referral code ignored because promo code takes priority:', referralCodeTrimmed);
+    }
+
+    const signupIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || null;
+    const signupUserAgent = req.headers['user-agent'] || null;
+    const attributionSource = referralAttributionSource === 'manual_input' ? 'manual_input' : 'url';
+
     const hashedPassword = await hashPassword(password);
 
     const defaultTrialEndsAt = (() => {
@@ -322,6 +340,7 @@ const register = async (req, res) => {
       let trialEndsAt;
       let promoCodeResult = null;
       let txPromo = null;
+      let referralResult = null;
 
       if (validatedPromoCode) {
         // Re-validate inside transaction for concurrency safety (reads with tx client)
@@ -333,6 +352,10 @@ const register = async (req, res) => {
         txPromo = validated.promoCode;
         activePlan = txPromo.plan;
         trialEndsAt = promoCodeService.computeAccessEnd(txPromo.durationValue, txPromo.durationUnit);
+      } else if (validatedReferrer) {
+        const grant = await referralService.applyReferralSignupGrant(tx);
+        activePlan = grant.plan;
+        trialEndsAt = grant.trialEndsAt;
       } else {
         // 2. Find default plan
         const planSKU = planService.resolveSignupPlanSKU(plan);
@@ -378,6 +401,32 @@ const register = async (req, res) => {
         promoCodeResult = { code: txPromo.code, planName: activePlan.name, accessEndsAt: planAccessEndsAt };
       }
 
+      if (validatedReferrer && !txPromo) {
+        const referral = await referralService.attributeReferralOnSignup(
+          {
+            referrerOrgId: validatedReferrer.referrerOrganization.id,
+            refereeOrgId: organization.id,
+            refereeUserId: user.id,
+            refereeEmail: user.email,
+            refereePhone: null,
+            attributionSource,
+            signupIp,
+            signupUserAgent,
+            utmSource,
+            utmMedium,
+            utmCampaign,
+          },
+          tx,
+        );
+        if (referral) {
+          referralResult = {
+            referrerOrganizationId: referral.referrerOrganizationId,
+            planName: activePlan.name,
+            accessEndsAt: trialEndsAt,
+          };
+        }
+      }
+
       // 4. Create Restaurant (alertas: propietario activo, avisos web y panel encendidos)
       const restaurant = await tx.restaurant.create({
         data: {
@@ -401,7 +450,7 @@ const register = async (req, res) => {
         }
       });
 
-      return { user, restaurant, promoCodeResult };
+      return { user, restaurant, promoCodeResult, referralResult };
     });
 
     const userWithoutPassword = stripUser(result.user);
@@ -436,6 +485,7 @@ const register = async (req, res) => {
       token,
       requiresPayment: false,
       ...(result.promoCodeResult && { promoCode: result.promoCodeResult }),
+      ...(result.referralResult && { referral: result.referralResult }),
     });
   } catch (error) {
     if (error instanceof ValidationError) {

@@ -514,6 +514,20 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   });
 
   planService.invalidateCache(organizationId);
+
+  try {
+    const referralService = require('./referralService');
+    const activeSub = await prisma.subscription.findFirst({
+      where: { organizationId, mercadopagoPreapprovalId: preapprovalId, status: 'active' },
+      select: { id: true },
+    });
+    if (activeSub) {
+      await referralService.markCreditsApplied(organizationId, activeSub.id, preapprovalId);
+    }
+    await referralService.markFirstPayment(organizationId);
+  } catch (refErr) {
+    console.warn('[MercadoPago] activateOrganizationSubscription referral hooks failed:', refErr?.message ?? refErr);
+  }
 }
 
 async function deactivateOrganizationSubscription(organizationId) {

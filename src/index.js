@@ -35,8 +35,11 @@ const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
 const { startReconciliationJob } = require("./jobs/reconciliationJob");
 const { startReservationHoldCleanupJob } = require("./jobs/reservationHoldCleanup");
 const { startPostVisitFeedbackJob } = require("./jobs/postVisitFeedbackJob");
+const { startReferralEvaluationJob } = require("./jobs/referralEvaluationJob");
+const referralService = require("./services/referralService");
 const { publicRouter: feedbackPublicRouter, restaurantRouter: feedbackRestaurantRouter } = require("./routes/feedback.routes");
 const { publicRestaurantRouter: holdRestaurantRouter, publicHoldRouter, staffRouter: holdStaffRouter } = require("./routes/reservationHold.routes");
+const restaurantReferralsRouter = require("./routes/restaurantReferrals.routes");
 const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
 const { getClpPerUsd } = require("./services/clpUsdRateService");
 
@@ -193,6 +196,18 @@ app.get("/api/public/fx", async (req, res, next) => {
   }
 });
 
+app.get("/api/public/referrals/:orgId", async (req, res, next) => {
+  try {
+    const info = await referralService.getPublicReferrerInfo(req.params.orgId);
+    if (!info) {
+      return res.status(404).json({ error: "Código de referido no válido." });
+    }
+    res.json(info);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Hold system (soft-locks durante checkout)
 app.use("/api/public/restaurants", holdRestaurantRouter);
 app.use("/api/public/reservation-holds", publicHoldRouter);
@@ -207,6 +222,7 @@ app.use("/api/restaurants", reservationRouter);
 app.use("/api/reservations", reservationRouter);
 app.use("/api/restaurant/:restaurantId", restaurantRouter);
 app.use("/api/restaurant/:restaurantId", billingRouter);
+app.use("/api/restaurant/:restaurantId/referrals", restaurantReferralsRouter);
 app.use("/api/restaurant/:restaurantId/zones", zoneRouter);
 app.use("/api/restaurant/:restaurantId/tables", tableRouter);
 app.use("/api/restaurant/:restaurantId/schedules", scheduleRouter);
@@ -240,4 +256,5 @@ app.listen(PORT, "0.0.0.0", () => {
   startReconciliationJob();
   startReservationHoldCleanupJob();
   startPostVisitFeedbackJob();
+  startReferralEvaluationJob();
 });

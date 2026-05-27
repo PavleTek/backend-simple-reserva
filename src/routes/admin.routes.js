@@ -2252,7 +2252,7 @@ router.post('/promo-codes/:id/disable', async (req, res, next) => {
 // ─── Reservations list ───────────────────────────────────────────
 
 const RESERVATION_SORT_ALLOWLIST = new Set([
-  'dateTime', 'createdAt', 'customerName', 'partySize', 'status', 'source', 'emailSent',
+  'dateTime', 'createdAt', 'customerName', 'partySize', 'status', 'source', 'emailSent', 'teamNotifySent',
 ]);
 
 router.get('/reservations', async (req, res, next) => {
@@ -2476,5 +2476,7 @@ router.post('/reservations/send-missing-emails', async (req, res, next) => {
 
 const adminFeedbackRouter = require('./adminFeedback.routes');
 router.use('/restaurants/:id/feedback', adminFeedbackRouter);
+
+router.use('/referrals', require('./adminReferral.routes'));
 
 module.exports = router;

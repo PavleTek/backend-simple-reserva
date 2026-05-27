@@ -669,6 +669,7 @@ router.post('/', async (req, res, next) => {
     });
 
     notifyRestaurantNewReservation({
+      reservationId: reservation.id,
       source: 'web',
       organizationId: restaurant.organizationId,
       restaurantId: restaurant.id,

@@ -22,6 +22,7 @@ const {
 } = require('../services/mercadopagoService');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
+const referralService = require('../services/referralService');
 
 const router = express.Router();
 
@@ -209,6 +210,11 @@ router.post('/mercadopago', express.json({
             const activateOpts = await getActivateOptionsForPreapproval(organizationId, preapprovalId);
             await activateOrganizationSubscription(organizationId, preapprovalId, plan, activateOpts);
             console.log('[Webhook] MercadoPago subscription activated:', organizationId, plan);
+            try {
+              await referralService.markFirstPayment(organizationId);
+            } catch (refErr) {
+              console.warn('[Webhook] markFirstPayment failed:', refErr?.message ?? refErr);
+            }
           }
 
           await prisma.checkoutSession.updateMany({
@@ -290,6 +296,11 @@ router.post('/mercadopago', express.json({
         if (mpPayment.status === 'approved') {
           await createReceiptFromMPPayment(mpPayment, organizationId, planSKU);
           console.log('[Webhook] MercadoPago receipt created for payment:', paymentId);
+          try {
+            await referralService.markFirstPayment(organizationId);
+          } catch (refErr) {
+            console.warn('[Webhook] markFirstPayment failed:', refErr?.message ?? refErr);
+          }
           // Reactivar acceso si estaba en periodo de gracia por fallo de cobro
           const reactivated = await prisma.subscription.updateMany({
             where: { organizationId, status: 'grace' },
@@ -323,6 +334,13 @@ router.post('/mercadopago', express.json({
             }
           } catch (e) {
             console.warn('[Webhook] No se pudo actualizar currentPeriodEnd:', e?.message ?? e);
+          }
+        } else if (mpPayment.status === 'refunded' || mpPayment.status === 'charged_back') {
+          try {
+            await referralService.handlePaymentReversal(organizationId);
+            console.log('[Webhook] Referral payment reversal handled for org:', organizationId, mpPayment.status);
+          } catch (refErr) {
+            console.warn('[Webhook] handlePaymentReversal failed:', refErr?.message ?? refErr);
           }
         }
 

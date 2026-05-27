@@ -471,3 +471,35 @@ All jobs are in `backend-simple-reserva/src/jobs/`:
 | `src/pages/BillingPage.tsx` — N/A | No billing UI in user frontend |
 | `src/pages/BookingPage.tsx` | Hides waitlist + next-available when `reason = "subscription_expired"` |
 | `src/pages/SocialPricingCardsPage.tsx` | Static pricing cards at `/social/planes` for social media screenshots |
+
+---
+
+## Referral program (Fase 1)
+
+B2B referral loop: organization A shares its **organization ID** as referral code. New org B registers with that code and receives **30 days of plan Profesional** trial. After B pays and stays active for `REFERRAL_MIN_ACTIVE_DAYS`, admin approves; A receives **ReferralCredit** (days) applied on next Mercado Pago checkout via delayed `start_date`.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `REFERRAL_REWARD_DAYS` | 30 | Days credited to referrer per approved referral |
+| `REFERRAL_REFEREE_GRANT_DAYS` | 30 | Referee signup grant (plan profesional) |
+| `REFERRAL_MIN_ACTIVE_DAYS` | 30 | Days after first payment before admin approval queue |
+| `REFERRAL_CREDIT_EXPIRY_MONTHS` | 12 | Unused credit expiry |
+
+### Backend
+
+| File | Purpose |
+|------|---------|
+| `prisma/schema.prisma` | `Referral`, `ReferralCredit` models |
+| `src/services/referralService.js` | Validation, attribution, credits, approval |
+| `src/routes/adminReferral.routes.js` | Admin list/detail/approve/reject |
+| `src/routes/restaurantReferrals.routes.js` | Owner summary + referral list |
+| `GET /api/public/referrals/:orgId` | Public referrer info for landing/register |
+| `src/jobs/referralEvaluationJob.js` | Daily: move eligible referrals to `awaiting_admin_approval` |
+
+### Frontends
+
+| App | Entry |
+|-----|-------|
+| `user-front` | `/ref/:orgId`, `?ref=` persistence, `buildRegisterUrl()` |
+| `restaurant-front` | `/referrals`, register referral field, billing credit banner |
+| `admin-front` | `/referrals`, `/referrals/:id` |

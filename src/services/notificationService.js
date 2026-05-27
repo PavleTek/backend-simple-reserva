@@ -536,12 +536,36 @@ async function sendNewReservationAlertEmail(options) {
   }
 }
 
+const TEAM_NOTIFY_SKIP = {
+  SETTINGS_DISABLED: 'settings_disabled',
+  NO_RECIPIENTS: 'no_recipients',
+  SEND_FAILED: 'send_failed',
+};
+
+async function persistTeamNotifyOutcome(reservationId, outcome) {
+  if (!reservationId) return;
+  const prisma = require('../lib/prisma');
+  const { sent, recipients = [], skipReason = null } = outcome;
+  await prisma.reservation
+    .update({
+      where: { id: reservationId },
+      data: {
+        teamNotifySent: sent,
+        teamNotifySentAt: sent ? new Date() : null,
+        teamNotifyRecipients: recipients,
+        teamNotifySkipReason: skipReason,
+      },
+    })
+    .catch((err) => console.error('[Notification] teamNotify outcome update failed:', err.message));
+}
+
 /**
  * Notify restaurant team about a new reservation (respects org settings).
  * Does not depend on canSendConfirmations.
  */
 async function notifyRestaurantNewReservation(options) {
   const {
+    reservationId = null,
     source,
     organizationId,
     restaurantId,
@@ -558,6 +582,8 @@ async function notifyRestaurantNewReservation(options) {
   const { reservationsListUrl } = require('../utils/restaurantPanelUrl');
   const { formatInTimezone } = require('../utils/timezone');
   const { loadNotifySettings, resolveReservationNotifyEmails } = require('./reservationNotifyRecipients');
+
+  const recordOutcome = (outcome) => persistTeamNotifyOutcome(reservationId, outcome);
 
   let notify;
   try {
@@ -576,15 +602,34 @@ async function notifyRestaurantNewReservation(options) {
       restaurantId,
       source,
     });
+    await recordOutcome({
+      sent: false,
+      recipients: [],
+      skipReason: TEAM_NOTIFY_SKIP.SETTINGS_DISABLED,
+    });
     return false;
   }
 
   const emails = await resolveReservationNotifyEmails(organizationId, restaurantId);
 
+  if (!emails || emails.length === 0) {
+    console.log('[Notification] notifyRestaurantNewReservation: skipped — no recipients', {
+      organizationId,
+      restaurantId,
+      source,
+    });
+    await recordOutcome({
+      sent: false,
+      recipients: [],
+      skipReason: TEAM_NOTIFY_SKIP.NO_RECIPIENTS,
+    });
+    return false;
+  }
+
   const dateYmd = formatInTimezone(dateTime, timezone, 'yyyy-MM-dd');
   const panelUrl = reservationsListUrl({ date: dateYmd });
 
-  return sendNewReservationAlertEmail({
+  const sent = await sendNewReservationAlertEmail({
     emails,
     restaurantName,
     customerName,
@@ -599,6 +644,18 @@ async function notifyRestaurantNewReservation(options) {
     restaurantId,
     audience: 'restaurant',
   });
+
+  if (sent) {
+    await recordOutcome({ sent: true, recipients: emails, skipReason: null });
+  } else {
+    await recordOutcome({
+      sent: false,
+      recipients: emails,
+      skipReason: TEAM_NOTIFY_SKIP.SEND_FAILED,
+    });
+  }
+
+  return sent;
 }
 
 async function sendDailySummary(options) {

@@ -5,6 +5,19 @@ const { getActiveSubscription, hasActiveAccess, isTrialing, getOrganizationWithT
 const planService = require('../services/planService');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const { computePeriodEnd, estimateNextPaymentDate } = require('../lib/billingPeriod');
+const referralService = require('../services/referralService');
+
+async function applyReferralCreditsToCheckoutOptions(organizationId, createSubscriptionOptions, checkoutSessionId) {
+  const creditResult = await referralService.applyAvailableCreditsOnNextCheckout(
+    organizationId,
+    createSubscriptionOptions.startDate || null,
+    checkoutSessionId,
+  );
+  if (creditResult.startDate) {
+    createSubscriptionOptions.startDate = creditResult.startDate;
+  }
+  return creditResult;
+}
 
 /**
  * Verifica que la organización puede suscribirse al plan.
@@ -374,6 +387,8 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       createSubscriptionOptions = { startDate: orgRow.trialEndsAt };
     }
 
+    await applyReferralCreditsToCheckoutOptions(organizationId, createSubscriptionOptions, checkoutSession.id);
+
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true },
@@ -652,6 +667,7 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
 
     // end_of_period: primer cobro al vencer el periodo ya pagado. now: cobro desde inmediato (createSubscription usa +2 min si no hay fecha futura).
     const createOpts = when === 'end_of_period' ? { startDate: cancelledSub.endDate } : {};
+    await applyReferralCreditsToCheckoutOptions(organizationId, createOpts, checkoutSession.id);
     const result = await mercadopagoService.createSubscription(
       organizationId,
       req.user.id,
@@ -775,13 +791,16 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       select: { email: true },
     });
 
+    const changePlanOpts = checkoutStartDateOpt ? { startDate: checkoutStartDateOpt } : {};
+    await applyReferralCreditsToCheckoutOptions(organizationId, changePlanOpts, checkoutSession.id);
+
     const result = await mercadopagoService.createSubscription(
       organizationId,
       req.user.id,
       user?.email,
       newPlanSKU,
       restaurantId,
-      checkoutStartDateOpt ? { startDate: checkoutStartDateOpt } : {}
+      changePlanOpts
     );
 
     const checkoutUrl = result?.init_point ?? result?.initPoint ?? null;

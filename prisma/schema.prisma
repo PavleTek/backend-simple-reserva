@@ -65,6 +65,9 @@ model RestaurantOrganization {
   paymentReceipts PaymentReceipt[]
   checkoutSessions CheckoutSession[]
   customPlanOffers CustomPlanOffer[]
+  referralsAsReferrer Referral[] @relation("ReferrerOrganization")
+  referralAsReferee Referral? @relation("RefereeOrganization")
+  referralCredits ReferralCredit[]
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -439,6 +442,10 @@ model Reservation {
   customerPhone   String?
   customerEmail   String?
   emailSent       Boolean   @default(false)
+  teamNotifySent        Boolean   @default(false)
+  teamNotifySentAt      DateTime?
+  teamNotifyRecipients  String[]  @default([])
+  teamNotifySkipReason  String?
   partySize       Int
   dateTime        DateTime
   businessDate    DateTime? @db.Date
@@ -916,4 +923,71 @@ model AuditLog {
   @@index([actorUserId])
   @@index([action])
   @@index([createdAt])
+}
+
+/// Programa de referidos: relación referidor ↔ referido.
+/// El "código" de referido es el `referrerOrganizationId` (cuid de la org que invita).
+model Referral {
+  id                      String    @id @default(cuid())
+  referrerOrganizationId  String
+  referrerOrganization    RestaurantOrganization @relation("ReferrerOrganization", fields: [referrerOrganizationId], references: [id], onDelete: Cascade)
+  refereeOrganizationId   String    @unique
+  refereeOrganization     RestaurantOrganization @relation("RefereeOrganization", fields: [refereeOrganizationId], references: [id], onDelete: Cascade)
+  refereeEmail            String?
+  refereePhone            String?
+  attributionSource       String    @default("url") // "url" | "manual_input"
+  status                  String    @default("registered")
+  signupIp                String?
+  signupUserAgent         String?
+  utmSource               String?
+  utmMedium               String?
+  utmCampaign             String?
+  registeredAt            DateTime  @default(now())
+  firstPaymentAt          DateTime?
+  qualifyingPaymentAt     DateTime?
+  approvedAt              DateTime?
+  rewardAppliedAt         DateTime?
+  rejectedAt              DateTime?
+  approvedById            String?
+  rejectionReason         String?
+  internalNotes           String?
+  isFraud                 Boolean   @default(false)
+  fraudNote               String?
+  rewardCreditId          String?   @unique
+  rewardCredit            ReferralCredit? @relation("ReferralRewardCredit", fields: [rewardCreditId], references: [id], onDelete: SetNull)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  sourceCredits           ReferralCredit[] @relation("CreditSourceReferral")
+
+  @@index([referrerOrganizationId])
+  @@index([status])
+  @@index([firstPaymentAt])
+  @@index([createdAt])
+}
+
+/// Crédito interno de días de plataforma acumulable para el referidor.
+model ReferralCredit {
+  id                      String    @id @default(cuid())
+  organizationId          String
+  organization            RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  source                  String    @default("referral") // "referral" | "manual_admin"
+  sourceReferralId        String?
+  sourceReferral          Referral? @relation("CreditSourceReferral", fields: [sourceReferralId], references: [id], onDelete: SetNull)
+  amountDays              Int       @default(30)
+  status                  String    @default("available") // "available" | "applied" | "expired" | "revoked"
+  appliedAt               DateTime?
+  appliedToSubscriptionId String?
+  expiresAt               DateTime?
+  createdById             String?
+  notes                   String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  referralReward          Referral? @relation("ReferralRewardCredit")
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([sourceReferralId])
+  @@index([expiresAt])
 }

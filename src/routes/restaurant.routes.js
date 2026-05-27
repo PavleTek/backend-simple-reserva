@@ -958,6 +958,7 @@ router.post('/reservations', async (req, res, next) => {
       });
 
       notifyRestaurantNewReservation({
+        reservationId: reservation.id,
         source: 'manual',
         organizationId: restaurant.organizationId,
         restaurantId,
