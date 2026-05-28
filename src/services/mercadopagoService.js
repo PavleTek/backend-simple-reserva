@@ -84,12 +84,11 @@ async function logMercadoPagoSellerContext(accessToken) {
  *
  * Regla de prioridad:
  * 1. MP_TEST_PAYER_EMAIL definido → úsalo (modo pruebas con vendedor test).
- * 2. organizationId disponible → email sintético único por org:
- *    sub-{orgId}@simplereserva.cl
- *    Evita el error "Cannot operate between different countries" cuando el
- *    dueño del restaurante tiene una cuenta MP registrada en otro país.
- *    El usuario completa su medio de pago real en el checkout de MP.
- * 3. Fallback → email del usuario logueado.
+ * 2. En producción (MERCADOPAGO_ENV=production o NODE_ENV=production) → usa el
+ *    email real del owner logueado. El email sintético causaba 403 PolicyAgent.
+ * 3. En desarrollo sin MP_TEST_PAYER_EMAIL → email sintético para no contaminar
+ *    cuentas MP reales con emails de clientes.
+ * 4. Fallback final → email del usuario logueado.
  */
 function resolvePayerEmailForPreapproval(loginEmail, organizationId) {
   const fromLogin = (loginEmail || '').trim();
@@ -105,9 +104,23 @@ function resolvePayerEmailForPreapproval(loginEmail, organizationId) {
     return testBuyer;
   }
 
+  const { mercadoPagoUseProductionCredentials } = require('../lib/mercadopagoEnv');
+  const isProduction = mercadoPagoUseProductionCredentials();
+
+  if (isProduction) {
+    // En producción PolicyAgent rechaza emails sintéticos. Usar el email real del owner.
+    if (fromLogin) {
+      console.log('[MercadoPago] payer_email en producción (email real del owner):', {
+        payer_email_enviado_a_MP: fromLogin,
+      });
+      return fromLogin;
+    }
+    console.warn('[MercadoPago] Producción sin email de owner disponible; usando fallback sintético.');
+  }
+
   if (organizationId) {
     const syntheticEmail = `sub-${organizationId}@simplereserva.cl`;
-    console.log('[MercadoPago] payer_email sintético (evita conflicto con cuenta MP de otro país):', {
+    console.log('[MercadoPago] payer_email sintético (desarrollo):', {
       email_login: fromLogin || '(sin email)',
       payer_email_enviado_a_MP: syntheticEmail,
     });
