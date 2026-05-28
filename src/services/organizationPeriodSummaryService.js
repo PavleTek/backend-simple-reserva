@@ -213,16 +213,6 @@ function buildHighlightsAndProjection({
   const completed = statusCounts.completed ?? 0;
   const coordinated = confirmed + completed;
 
-  highlights.push(
-    trialEndsAt
-      ? `${formatClNumber(total)} ${plural(total, 'reserva gestionada', 'reservas gestionadas')} durante tu prueba`
-      : `${formatClNumber(total)} ${plural(total, 'reserva gestionada', 'reservas gestionadas')} en el periodo`,
-  );
-
-  if (covers > 0) {
-    highlights.push(`${formatClNumber(covers)} comensales en total`);
-  }
-
   if (confirmed > 0) {
     highlights.push(
       `${formatClNumber(confirmed)} ${plural(confirmed, 'reserva confirmada', 'reservas confirmadas')} (en agenda o por atender)`,
@@ -291,11 +281,11 @@ function buildHighlightsAndProjection({
 
   if (isTrialEnd) {
     if (total >= 8) {
-      projection.callout = `Tu historial, enlace y panel están listos para seguir — exactamente donde los dejaste. Solo activa tu plan para que nada se detenga.`;
+      projection.callout = `Ya probaste que funciona — con clientes reales, reservas reales y tu equipo usándolo. Activar el plan es solo hacer permanente lo que ya construiste.`;
     } else if (total >= 1) {
-      projection.callout = `Tienes la base funcionando. Activa tu plan para seguir construyendo sobre lo que ya avanzaste en la prueba.`;
+      projection.callout = `El sistema ya está integrado en tu operación. Activar el plan es el siguiente paso natural para seguir donde quedaste.`;
     } else {
-      projection.callout = `Tu enlace y panel quedan listos con un plan activo. Cuando lleguen las reservas, el sistema ya sabe cómo recibirlas.`;
+      projection.callout = `Tu enlace de reservas, el panel y la configuración ya están listos. Activa el plan y el próximo cliente que reserve lo hará directo en tu sistema.`;
     }
   } else if (coordinated >= 10 || total >= 15) {
     projection.callout =
@@ -464,7 +454,7 @@ async function computeOrganizationPeriodSummary(organizationId, { dateFrom, date
 
   const reservationWhere = {
     restaurantId: { in: restaurantIds },
-    dateTime: { gte: from, lte: to },
+    createdAt: { gte: from, lte: to },
   };
 
   const [agg, byStatus, bySource, byRestaurant] = await Promise.all([

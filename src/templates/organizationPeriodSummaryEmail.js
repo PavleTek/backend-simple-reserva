@@ -12,6 +12,11 @@ function formatNumber(n) {
   return new Intl.NumberFormat('es-CL').format(Number(n) || 0);
 }
 
+/** Limpia sufijos internos como " Org" que no deben aparecer en correos al cliente. */
+function displayOrgName(name) {
+  return (name ?? 'tu restaurante').replace(/\s+Org\s*$/i, '').trim();
+}
+
 function statCard(label, value, sub) {
   const safeLabel = escapeHtml(label);
   const safeValue = escapeHtml(String(value));
@@ -34,13 +39,14 @@ function buildHighlightsHtml(highlights) {
   const items = highlights
     .map(
       (h) =>
-        `<li style="margin:0 0 8px 0;color:${COLORS.textSecondary};font-size:14px;line-height:1.45;">${escapeHtml(h)}</li>`,
+        `<li style="margin:0 0 9px 0;color:${COLORS.textPrimary};font-size:14px;line-height:1.5;">${escapeHtml(h)}</li>`,
     )
     .join('');
   return `<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px 0;">
-    <tr><td style="padding:14px 18px;background:linear-gradient(135deg,#faf0f1 0%,#f5f4f0 100%);border:1px solid ${COLORS.border};border-radius:12px;">
-      <p style="margin:0 0 10px 0;font-size:13px;font-weight:700;color:${COLORS.primary600};">Lo que gestionaste en tu prueba</p>
-      <ul style="margin:0;padding-left:20px;">${items}</ul>
+    <tr><td style="padding:16px 20px;background:linear-gradient(135deg,#faf0f1 0%,#f5f4f0 100%);border:1px solid ${COLORS.border};border-radius:12px;">
+      <p style="margin:0 0 3px 0;font-size:11px;font-weight:700;color:${COLORS.primary600};text-transform:uppercase;letter-spacing:0.07em;">Lo que lograste en tu prueba</p>
+      <p style="margin:0 0 12px 0;font-size:12px;color:${COLORS.textMuted};">Cada número es una mesa que tu equipo no tuvo que coordinar por teléfono.</p>
+      <ul style="margin:0;padding-left:18px;">${items}</ul>
     </td></tr>
   </table>`;
 }
@@ -113,13 +119,44 @@ function buildRestaurantTableHtml(rows) {
   </table>`;
 }
 
+// Orden cognitivo positivo → negativo para estados de reserva
+const STATUS_DISPLAY_ORDER = ['confirmed', 'completed', 'no_show', 'cancelled'];
+const STATUS_CHIP_STYLES = {
+  confirmed: `background:#f0fdf4;border:1px solid #86efac;color:#166534;`,
+  completed: `background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;`,
+  cancelled: `background:#f9fafb;border:1px solid #d1d5db;color:#6b7280;`,
+  no_show:   `background:#f9fafb;border:1px solid #d1d5db;color:#6b7280;`,
+};
+const DEFAULT_CHIP_STYLE = `background:#fff;border:1px solid ${COLORS.border};color:${COLORS.textPrimary};`;
+
+function buildStatusBreakdownHtml(entries) {
+  const map = entries || {};
+  // Mostrar primero los estados positivos; negativos al final y visualmente apagados
+  const ordered = STATUS_DISPLAY_ORDER
+    .filter((k) => map[k]?.count > 0)
+    .map((k) => ({ key: k, ...map[k] }));
+  // Añadir cualquier estado desconocido al final
+  Object.entries(map).forEach(([k, v]) => {
+    if (!STATUS_DISPLAY_ORDER.includes(k) && v.count > 0) ordered.push({ key: k, ...v });
+  });
+  if (!ordered.length) return '';
+  const chips = ordered
+    .map((e) => {
+      const style = STATUS_CHIP_STYLES[e.key] ?? DEFAULT_CHIP_STYLE;
+      return `<span style="display:inline-block;margin:0 8px 8px 0;padding:6px 14px;font-size:13px;border-radius:999px;${style}"><strong>${formatNumber(e.count)}</strong> <span style="opacity:0.85;">${escapeHtml(e.label)}</span></span>`;
+    })
+    .join('');
+  return `<p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:${COLORS.textSecondary};text-transform:uppercase;letter-spacing:0.06em;">Por estado</p>
+    <p style="margin:0 0 20px 0;line-height:1.6;">${chips}</p>`;
+}
+
 function buildBreakdownHtml(title, entries) {
   const list = Object.values(entries || {}).filter((e) => e.count > 0);
   if (!list.length) return '';
   const chips = list
     .map(
       (e) =>
-        `<span style="display:inline-block;margin:0 8px 8px 0;padding:6px 12px;font-size:13px;background:#fff;border:1px solid ${COLORS.border};border-radius:999px;color:${COLORS.textPrimary};"><strong>${formatNumber(e.count)}</strong> <span style="color:${COLORS.textSecondary};">${escapeHtml(e.label)}</span></span>`,
+        `<span style="display:inline-block;margin:0 8px 8px 0;padding:6px 14px;font-size:13px;background:#fff;border:1px solid ${COLORS.border};border-radius:999px;color:${COLORS.textPrimary};"><strong>${formatNumber(e.count)}</strong> <span style="color:${COLORS.textSecondary};">${escapeHtml(e.label)}</span></span>`,
     )
     .join('');
   return `<p style="margin:0 0 8px 0;font-size:13px;font-weight:700;color:${COLORS.textSecondary};text-transform:uppercase;letter-spacing:0.06em;">${escapeHtml(title)}</p>
@@ -130,7 +167,7 @@ function buildBreakdownHtml(title, entries) {
  * Asunto pensado para envío manual el día de término de la prueba gratuita.
  */
 function buildOrganizationPeriodSummarySubject(summary) {
-  const orgName = summary?.organizationName ?? 'tu restaurante';
+  const orgName = displayOrgName(summary?.organizationName);
   const n = summary?.totals?.reservations ?? 0;
   const endsPhrase = summary?.trial?.endsPhrase;
 
@@ -169,7 +206,7 @@ function buildOrganizationPeriodSummaryHtml(options) {
     personalNote = '',
   } = options;
 
-  const orgName = escapeHtml(summary.organizationName);
+  const orgName = escapeHtml(displayOrgName(summary.organizationName));
   const safePanelUrl = escapeHtml(panelUrl);
   const total = summary.totals.reservations;
   const covers = summary.totals.covers;
@@ -199,9 +236,8 @@ function buildOrganizationPeriodSummaryHtml(options) {
     : null;
 
   const introParagraph = hasTrial
-    ? `La prueba gratuita de <strong style="color:${COLORS.textPrimary};">${orgName}</strong> en SimpleReserva termina <strong style="color:${COLORS.textPrimary};">${endsPhrase}</strong>.
-      Aquí está lo que el sistema gestionó${trialDaysLabel ? ` en estos ${trialDaysLabel}` : ' durante la prueba'}.`
-    : `Este es el resumen de <strong style="color:${COLORS.textPrimary};">${orgName}</strong> en SimpleReserva.`;
+    ? `Tu prueba gratuita termina <strong style="color:${COLORS.textPrimary};">${endsPhrase}</strong>.${trialDaysLabel ? ` En estos ${trialDaysLabel}, esto es lo que <strong style="color:${COLORS.textPrimary};">${orgName}</strong> logró con SimpleReserva:` : ` Esto es lo que lograste con SimpleReserva durante la prueba:`}`
+    : `Aquí está el resumen de <strong style="color:${COLORS.textPrimary};">${orgName}</strong> en SimpleReserva.`;
 
   const bodyHtml = `<p style="margin:0 0 16px 0;">Hola <strong>${orgName}</strong>,</p>
     <p style="margin:0 0 20px 0;color:${COLORS.textSecondary};">
@@ -214,7 +250,7 @@ function buildOrganizationPeriodSummaryHtml(options) {
     ${summary.growthProjections?.length ? `<p style="margin:0 0 10px 0;font-size:13px;font-weight:700;color:${COLORS.textSecondary};text-transform:uppercase;letter-spacing:0.06em;">Si continúas con SimpleReserva</p>` : ''}
     ${buildGrowthProjectionsHtml(summary.growthProjections)}
     ${buildProjectionHtml(summary.projection)}
-    ${buildBreakdownHtml('Por estado', summary.byStatus)}
+    ${buildStatusBreakdownHtml(summary.byStatus)}
     ${buildBreakdownHtml('Por canal', summary.bySource)}
     ${buildRestaurantTableHtml(summary.byRestaurant)}
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-bottom:8px;">
