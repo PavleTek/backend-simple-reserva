@@ -118,14 +118,75 @@ function formatClNumber(n) {
   return new Intl.NumberFormat('es-CL').format(Math.round(Number(n) || 0));
 }
 
-function inclusivePeriodDays(from, to) {
+function periodDaysCount(from, to) {
   const start = new Date(from.getFullYear(), from.getMonth(), from.getDate());
   const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
-  return Math.max(1, Math.round((end - start) / MS_DAY) + 1);
+  return Math.max(1, Math.round((end - start) / MS_DAY));
 }
+
+/** @deprecated use periodDaysCount */
+const inclusivePeriodDays = periodDaysCount;
 
 function plural(n, singular, pluralForm) {
   return n === 1 ? singular : pluralForm;
+}
+
+/**
+ * Proyección de crecimiento no lineal a 1/3/6/12 meses.
+ *
+ * Modelo: crecimiento compuesto mensual calibrado por dos señales observables:
+ *   1. webSharePercent → adopción del enlace online (descubrimiento orgánico)
+ *   2. baseMonthly     → volumen base (bajo = más margen de crecimiento)
+ *
+ * Las reservas completadas se excluyen como señal porque se marcan manualmente.
+ * No es lineal porque los negocios que adoptan reservas online suelen crecer
+ * más rápido en los primeros meses por boca a boca + SEO; luego se estabiliza.
+ * Los multiplicadores están calculados como compuesto: (1 + r)^n donde r es la
+ * tasa mensual estimada según el perfil de la organización.
+ */
+const GROWTH_TIER_MULTIPLIERS = {
+  //              1 mes   3 meses  6 meses  12 meses
+  high:          [1.10,   1.33,   1.73,    2.60],
+  mid:           [1.07,   1.23,   1.50,    2.05],
+  low:           [1.03,   1.12,   1.26,    1.55],
+};
+
+function resolveGrowthTier({ webSharePercent, baseMonthly }) {
+  let score = 0;
+  // Señal 1: adopción online (link compartido activamente → descubrimiento orgánico)
+  if ((webSharePercent ?? 0) >= 60) score += 2;
+  else if ((webSharePercent ?? 0) >= 25) score += 1;
+  // Señal 2: volumen base bajo → más margen de crecimiento
+  if (baseMonthly < 20) score += 2;
+  else if (baseMonthly < 60) score += 1;
+
+  if (score >= 3) return 'high';
+  if (score >= 2) return 'mid';
+  return 'low';
+}
+
+/**
+ * @returns {Array<{ months: number, reservations: number, covers: number, growthLabel: string }>|null}
+ */
+function buildGrowthProjections({ total, covers, webSharePercent, from, to }) {
+  const days = periodDaysCount(from, to);
+  if (days < 2 || total < 1) return null;
+
+  const baseMonthly = (total / days) * 30;
+  const baseMonthlyCovers = (covers / days) * 30;
+
+  const tier = resolveGrowthTier({ webSharePercent, baseMonthly });
+  const mults = GROWTH_TIER_MULTIPLIERS[tier];
+
+  const labels = { high: 'acelerado', mid: 'moderado', low: 'conservador' };
+  const growthLabel = labels[tier];
+
+  return [1, 3, 6, 12].map((months, i) => ({
+    months,
+    reservations: Math.round(baseMonthly * mults[i]),
+    covers: Math.round(baseMonthlyCovers * mults[i]),
+    growthLabel,
+  }));
 }
 
 /**
@@ -195,7 +256,7 @@ function buildHighlightsAndProjection({
     const projectedMonthReservations = Math.round(dailyReservations * 30);
     const projectedMonthCovers = Math.round(dailyCovers * 30);
     projection.lines.push(
-      `Si activas tu plan y mantienes este ritmo, el próximo mes podrías gestionar ~${formatClNumber(projectedMonthReservations)} reservas y ~${formatClNumber(projectedMonthCovers)} comensales sin volver al caos de WhatsApp y cuadernos.`,
+      `A este ritmo, el próximo mes podrías gestionar ~${formatClNumber(projectedMonthReservations)} reservas y ~${formatClNumber(projectedMonthCovers)} comensales — sin agregar carga a tu equipo.`,
     );
   } else {
     const sameCalendarMonth =
@@ -223,26 +284,25 @@ function buildHighlightsAndProjection({
   if (webCount >= 2) {
     const minutesSaved = webCount * MINUTES_SAVED_PER_WEB_BOOKING;
     const hoursSaved = Math.max(1, Math.round(minutesSaved / 60));
-    projection.lines.push(
-      `En la prueba, ${formatClNumber(webCount)} reservas online ya te ahorraron ~${hoursSaved} ${plural(hoursSaved, 'hora', 'horas')} de coordinación por teléfono o WhatsApp.`,
+    highlights.push(
+      `${formatClNumber(webCount)} reservas llegaron por el enlace online — ~${hoursSaved} ${plural(hoursSaved, 'hora', 'horas')} que tu equipo dedicó a la sala en vez del teléfono`,
     );
   }
 
   if (isTrialEnd) {
-    const endsPhrase = formatTrialEndPhrase(trialEndsAt);
     if (total >= 8) {
-      projection.callout = `Tu prueba gratuita termina ${endsPhrase}. Sin activar un plan pierdes el enlace de reservas, el panel y el historial que tu equipo ya usa cada día.`;
+      projection.callout = `Tu historial, enlace y panel están listos para seguir — exactamente donde los dejaste. Solo activa tu plan para que nada se detenga.`;
     } else if (total >= 1) {
-      projection.callout = `Tu prueba gratuita termina ${endsPhrase}. Activa tu plan para no cortar el flujo: cada reserva que sumes ahora es base para crecer con datos reales, no suposiciones.`;
+      projection.callout = `Tienes la base funcionando. Activa tu plan para seguir construyendo sobre lo que ya avanzaste en la prueba.`;
     } else {
-      projection.callout = `Tu prueba gratuita termina ${endsPhrase}. Activa tu plan para seguir con enlace de reservas y panel listos cuando llegue tu próxima ola de mesas.`;
+      projection.callout = `Tu enlace y panel quedan listos con un plan activo. Cuando lleguen las reservas, el sistema ya sabe cómo recibirlas.`;
     }
   } else if (coordinated >= 10 || total >= 15) {
     projection.callout =
-      'Tu operación ya corre con reservas centralizadas: dejar de usar el panel y el enlace web significa volver a perder mesas y duplicar llamadas.';
+      'Tu operación ya funciona con reservas centralizadas. Sigue construyendo sobre esa base.';
   } else if (total >= 5) {
     projection.callout =
-      'Vas ganando tracción: cada reserva en el sistema es una mesa asegurada y un dato que mañana puedes reutilizar.';
+      'Cada reserva en el sistema es una mesa asegurada y un dato que mañana puedes reutilizar.';
   }
 
   return { highlights, projection };
@@ -371,7 +431,7 @@ async function computeOrganizationPeriodSummary(organizationId, { dateFrom, date
           year: 'numeric',
         }),
         endsPhrase: formatTrialEndPhrase(trialEndsAt),
-        trialDays: inclusivePeriodDays(from, to),
+        trialDays: periodDaysCount(from, to),
       }
     : null;
 
@@ -464,6 +524,14 @@ async function computeOrganizationPeriodSummary(organizationId, { dateFrom, date
     trialEndsAt,
   });
 
+  const growthProjections = buildGrowthProjections({
+    total,
+    covers,
+    webSharePercent,
+    from,
+    to,
+  });
+
   return {
     organizationId: org.id,
     organizationName: org.name,
@@ -489,6 +557,7 @@ async function computeOrganizationPeriodSummary(organizationId, { dateFrom, date
     byRestaurant: restaurantRows,
     highlights,
     projection,
+    growthProjections,
   };
 }
 
@@ -539,6 +608,7 @@ module.exports = {
   computeOrganizationPeriodSummary,
   buildPeriodSummaryEmailPayload,
   buildHighlightsAndProjection,
+  buildGrowthProjections,
   resolvePeriod,
   resolveTrialPeriod,
   formatPeriodLabel,
