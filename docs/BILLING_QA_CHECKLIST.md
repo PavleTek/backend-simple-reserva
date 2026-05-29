@@ -162,6 +162,7 @@ node scripts/backfill-custom-plan-offers.js --apply
 | 10.3 | Correo MP distinto al de la cuenta | Error claro en modal | N |
 | 10.4 | Doble clic checkout mismo plan | Reutiliza sesión pendiente o expira y crea nueva | N |
 | 10.5 | `cancel-scheduled` con solo cambio DB (bug histórico) | Ya no 400 “No hay suscripción programada” | N/L |
+| 10.6 | Manual + **Subir plan ahora** | Debe abrir MP (Checkout Pro por defecto), **no** programar EOP sin redirect | N |
 
 ---
 
