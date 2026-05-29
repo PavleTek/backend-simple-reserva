@@ -209,7 +209,10 @@ async function processCheckoutProRenewal(mpPayment, parsed) {
   const baseDate = sub.currentPeriodEnd && new Date(sub.currentPeriodEnd) > new Date()
     ? new Date(sub.currentPeriodEnd)
     : new Date();
-  const nextPeriodEnd = computePeriodEnd(baseDate, sub.plan);
+  const clearingReferralWindow = !!sub.referralFreeUntil;
+  const nextPeriodEnd = clearingReferralWindow
+    ? computePeriodEnd(new Date(), sub.plan)
+    : computePeriodEnd(baseDate, sub.plan);
 
   await prisma.subscription.update({
     where: { id: sub.id },
@@ -218,6 +221,7 @@ async function processCheckoutProRenewal(mpPayment, parsed) {
       isActiveSubscription: true,
       gracePeriodEndsAt: null,
       currentPeriodEnd: nextPeriodEnd,
+      ...(clearingReferralWindow ? { referralFreeUntil: null } : {}),
     },
   });
 
@@ -227,6 +231,22 @@ async function processCheckoutProRenewal(mpPayment, parsed) {
   });
 
   planService.invalidateCache(organizationId);
+
+  if (clearingReferralWindow) {
+    try {
+      const referralService = require('./referralService');
+      await referralService.markFirstPayment(organizationId);
+    } catch (refErr) {
+      console.warn('[CheckoutPro] markFirstPayment after free window:', refErr?.message ?? refErr);
+    }
+  }
+
+  try {
+    const { resolveBillingAlerts } = require('./billing/billingEmailService');
+    await resolveBillingAlerts(organizationId, ['period_overdue', 'grace_entered', 'payment_rejected']);
+  } catch (alertErr) {
+    console.warn('[CheckoutPro] resolveBillingAlerts:', alertErr?.message ?? alertErr);
+  }
 
   return { handled: true, activated: true, renewed: true, organizationId, planSKU };
 }

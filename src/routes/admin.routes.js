@@ -497,6 +497,157 @@ router.post('/organizations/:id/period-summary/send', async (req, res, next) => 
 });
 
 /**
+ * GET /admin/organizations/:id/billing-emails/kinds?subscriptionId=
+ */
+router.get('/organizations/:id/billing-emails/kinds', async (req, res, next) => {
+  try {
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const { listKindsForOrganization } = require('../services/billing/billingEmailAdminService');
+    const kinds = await listKindsForOrganization(
+      req.params.id,
+      req.query.subscriptionId || undefined,
+    );
+    res.json({ kinds });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/organizations/:id/billing-emails/preview?kind=&subscriptionId=&dryRun=1
+ */
+router.get('/organizations/:id/billing-emails/preview', async (req, res, next) => {
+  try {
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, name: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const kind = req.query.kind;
+    if (!kind || typeof kind !== 'string') {
+      throw new ValidationError('kind requerido');
+    }
+
+    const { previewBillingEmail } = require('../services/billing/billingEmailAdminService');
+    const preview = await previewBillingEmail({
+      organizationId: req.params.id,
+      kind,
+      subscriptionId: req.query.subscriptionId || undefined,
+      dryRun: req.query.dryRun === '1' || req.query.dryRun === 'true',
+    });
+    res.json(preview);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /admin/organizations/:id/billing-emails/send
+ * Body: { kind, toEmail?, subscriptionId? }
+ */
+router.post('/organizations/:id/billing-emails/send', async (req, res, next) => {
+  try {
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const { kind, toEmail, subscriptionId } = req.body ?? {};
+    if (!kind || typeof kind !== 'string') {
+      throw new ValidationError('kind requerido');
+    }
+
+    const { sendBillingEmailFromAdmin } = require('../services/billing/billingEmailAdminService');
+    const result = await sendBillingEmailFromAdmin({
+      organizationId: req.params.id,
+      kind,
+      toEmail: typeof toEmail === 'string' ? toEmail.trim() : undefined,
+      subscriptionId: typeof subscriptionId === 'string' ? subscriptionId : undefined,
+      adminUserId: req.user?.id,
+    });
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/billing-ops-alerts
+ */
+router.get('/billing-ops-alerts', async (req, res, next) => {
+  try {
+    const { page, limit, skip } = parsePagination(req.query);
+    const where = {};
+    if (req.query.status) where.status = String(req.query.status);
+    if (req.query.severity) where.severity = String(req.query.severity);
+    if (req.query.organizationId) where.organizationId = String(req.query.organizationId);
+
+    const [items, total, openCriticalCount] = await Promise.all([
+      prisma.billingOpsAlert.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          organization: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.billingOpsAlert.count({ where }),
+      prisma.billingOpsAlert.count({
+        where: {
+          status: 'open',
+          severity: { in: ['warning', 'critical'] },
+        },
+      }),
+    ]);
+
+    res.json({
+      ...paginatedResponse(items, total, page, limit),
+      openCriticalCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PATCH /admin/billing-ops-alerts/:id
+ * Body: { status: 'resolved' | 'snoozed' }
+ */
+router.patch('/billing-ops-alerts/:id', async (req, res, next) => {
+  try {
+    const { status } = req.body ?? {};
+    if (!status || !['resolved', 'snoozed', 'open'].includes(status)) {
+      throw new ValidationError('status inválido');
+    }
+
+    const alert = await prisma.billingOpsAlert.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!alert) throw new NotFoundError('Alerta no encontrada');
+
+    const updated = await prisma.billingOpsAlert.update({
+      where: { id: req.params.id },
+      data: {
+        status,
+        resolvedAt: status === 'resolved' ? new Date() : null,
+        resolvedByUserId: status === 'resolved' ? req.user?.id : null,
+      },
+    });
+    res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /admin/organizations/:id/feedback-overview
  * Resumen de Experiencia post-visita por local de la organización.
  */

@@ -51,7 +51,9 @@ Policy: **full month** of new plan from today (no daily proration). Checkout Pro
 
 ## Jobs
 
-- `checkoutProRenewalJob` — renewal reminders (`billingStrategy=manual_monthly`)
+- `billingRenewalReminderJob` — renewal reminders 7/4/1 d (`billingStrategy=manual_monthly`)
+- `manualPeriodOverdueJob` — manual period expired → grace + email
+- `lastChanceLinkJob` — grace last chance (~24h before expiry)
 - `planChangeSchedulerJob` — apply `scheduledPlanId` at `scheduledChangeAt`; generate payment link for manual
 - `reconciliationJob` — activates MP `scheduled` subs
 

@@ -2,7 +2,15 @@
 
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
+const logger = require('../lib/logger');
 const { createRecoveryPaymentLink } = require('../services/billing/recoveryLinkService');
+const {
+  BILLING_EMAIL_KINDS,
+  sendBillingEmail,
+  periodKeyFromGrace,
+  shouldSendGraceLastChance,
+} = require('../services/billing/billingEmailService');
+const { billingUrl } = require('../utils/restaurantPanelUrl');
 
 const CRON = process.env.LAST_CHANCE_LINK_CRON || '0 8 * * *';
 const HOURS_BEFORE_EXPIRY = Number(process.env.LAST_CHANCE_HOURS_BEFORE_EXPIRY || 24);
@@ -30,7 +38,12 @@ async function runLastChanceLinkJob() {
   let sent = 0;
   for (const sub of subs) {
     const ownerId = sub.organization?.owner?.id;
-    if (!ownerId) continue;
+    const ownerEmail = sub.organization?.owner?.email;
+    if (!ownerId || !ownerEmail) continue;
+
+    const periodKey = periodKeyFromGrace(sub.gracePeriodEndsAt);
+    const eligible = await shouldSendGraceLastChance(sub.id, periodKey);
+    if (!eligible) continue;
 
     const restaurant = await prisma.restaurant.findFirst({
       where: { organizationId: sub.organizationId, isDeleted: false },
@@ -39,38 +52,46 @@ async function runLastChanceLinkJob() {
     if (!restaurant) continue;
 
     try {
-      const link = await createRecoveryPaymentLink({
+      let checkoutUrl = billingUrl();
+      try {
+        const link = await createRecoveryPaymentLink({
+          organizationId: sub.organizationId,
+          userId: ownerId,
+          restaurantId: restaurant.id,
+        });
+        checkoutUrl = link.paymentUrl;
+      } catch (linkErr) {
+        logger.warn({ linkErr, orgId: sub.organizationId }, '[lastChanceLinkJob] recovery link failed');
+      }
+
+      const result = await sendBillingEmail({
         organizationId: sub.organizationId,
-        userId: ownerId,
-        restaurantId: restaurant.id,
+        subscriptionId: sub.id,
+        kind: BILLING_EMAIL_KINDS.GRACE_LAST_CHANCE_1D,
+        periodKey,
+        toEmail: ownerEmail,
+        orgName: sub.organization.name,
+        gracePeriodEndsAt: sub.gracePeriodEndsAt,
+        checkoutUrl,
+        panelUrl: billingUrl(),
+        metadata: { checkoutUrl },
       });
 
-      const { sendEmail } = require('../services/emailService');
-      const { billingUrl } = require('../utils/restaurantPanelUrl');
-      const panelUrl = billingUrl();
-
-      await sendEmail({
-        fromEmail: process.env.RESEND_FROM_EMAIL || 'billing@simplereserva.cl',
-        toEmails: [sub.organization.owner.email],
-        subject: `Última oportunidad para regularizar tu pago — ${sub.organization.name}`,
-        content: `<p>Tu acceso a SimpleReserva se suspenderá pronto. <a href="${link.paymentUrl}">Paga ahora</a> o visita <a href="${panelUrl}">facturación</a>.</p>`,
-        isHtml: true,
-      });
-      sent += 1;
+      if (result.sent) sent += 1;
     } catch (err) {
-      console.error('[lastChanceLinkJob]', sub.organizationId, err?.message);
+      logger.error({ err, orgId: sub.organizationId }, '[lastChanceLinkJob] send failed');
     }
   }
 
-  console.log('[lastChanceLinkJob] sent', sent);
+  logger.info({ sent }, '[lastChanceLinkJob] sent');
   return { sent };
 }
 
 function startLastChanceLinkJob() {
   cron.schedule(CRON, () => {
-    runLastChanceLinkJob().catch((err) => console.error('[lastChanceLinkJob]', err));
+    runLastChanceLinkJob().catch((err) => logger.error({ err }, '[lastChanceLinkJob] cron error'));
   }, { timezone: 'America/Santiago' });
-  console.log('[lastChanceLinkJob] scheduled', CRON);
+  logger.info({ schedule: CRON }, '[lastChanceLinkJob] scheduled');
 }
 
 module.exports = { startLastChanceLinkJob, runLastChanceLinkJob };

@@ -5,20 +5,10 @@ const { getActiveSubscription, hasActiveAccess, isTrialing, getOrganizationWithT
 const planService = require('../services/planService');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const { computePeriodEnd, estimateNextPaymentDate } = require('../lib/billingPeriod');
-const referralService = require('../services/referralService');
 const { getMercadoPagoCheckoutHints } = require('../services/mercadopagoService');
-
-async function applyReferralCreditsToCheckoutOptions(organizationId, createSubscriptionOptions, checkoutSessionId) {
-  const creditResult = await referralService.applyAvailableCreditsOnNextCheckout(
-    organizationId,
-    createSubscriptionOptions.startDate || null,
-    checkoutSessionId,
-  );
-  if (creditResult.startDate) {
-    createSubscriptionOptions.startDate = creditResult.startDate;
-  }
-  return creditResult;
-}
+const {
+  tryGrantManualReferralWindowAtCheckout,
+} = require('../services/billing/referralFreeWindowService');
 
 function isValidPayerEmail(email) {
   const e = (email || '').trim();
@@ -437,6 +427,7 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
       scheduledPlanName: scheduledPlanNameOut,
       scheduledDate: scheduledDateOut,
       hasCustomPlan: !!customPlan,
+      organizationName: orgWithCustomPlan?.name ?? null,
       restaurantCount,
       maxRestaurants: planConfig?.maxRestaurants ?? 1,
       zoneCount,
@@ -789,7 +780,20 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       createSubscriptionOptions = { startDate: orgRow.trialEndsAt };
     }
 
-    await applyReferralCreditsToCheckoutOptions(organizationId, createSubscriptionOptions, null);
+    const manualGrant = await tryGrantManualReferralWindowAtCheckout({
+      organizationId,
+      planSKU,
+      paymentProvider,
+    });
+    if (manualGrant) {
+      planService.invalidateCache(organizationId);
+      return res.json({
+        referralFreeWindowGranted: true,
+        freeUntil: manualGrant.freeUntil.toISOString(),
+        totalDays: manualGrant.totalDays,
+        message: manualGrant.message,
+      });
+    }
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
@@ -1091,7 +1095,25 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
     );
 
     const createOpts = when === 'end_of_period' ? { startDate: cancelledSub.endDate } : {};
-    await applyReferralCreditsToCheckoutOptions(organizationId, createOpts, null);
+
+    if (when === 'now') {
+      const manualGrant = await tryGrantManualReferralWindowAtCheckout({
+        organizationId,
+        planSKU,
+        paymentProvider,
+        replaceSubscriptionId: cancelledSub.id,
+      });
+      if (manualGrant) {
+        planService.invalidateCache(organizationId);
+        return res.json({
+          reactivated: true,
+          referralFreeWindowGranted: true,
+          freeUntil: manualGrant.freeUntil.toISOString(),
+          totalDays: manualGrant.totalDays,
+          message: manualGrant.message,
+        });
+      }
+    }
 
     let result;
     if (when === 'end_of_period' && strategy === BILLING_STRATEGY_MANUAL) {
@@ -1182,9 +1204,6 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     const legacyProvider =
       strategy === BILLING_STRATEGY_AUTOMATIC ? 'mercadopago_preapproval' : 'mp_checkout_pro';
 
-    const changePlanOpts = {};
-    await applyReferralCreditsToCheckoutOptions(organizationId, changePlanOpts, null);
-
     const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
       organizationId,
       req.body?.mercadopagoPayerEmail,
@@ -1200,7 +1219,6 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       restaurantId,
       when,
       body: req.body,
-      createSubscriptionOptions: changePlanOpts,
     });
 
     if (result.scheduled) {
@@ -1210,6 +1228,14 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
         scheduledPlan: result.scheduledPlanSku,
         scheduledPlanName: result.scheduledPlanName,
         message: `Cambio al plan ${result.scheduledPlanName} programado para el ${result.effectiveDate.slice(0, 10)}.`,
+      });
+    }
+
+    if (result.planChanged) {
+      return res.json({
+        planChanged: true,
+        referralFreeUntil: result.referralFreeUntil,
+        message: result.message,
       });
     }
 

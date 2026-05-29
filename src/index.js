@@ -37,7 +37,8 @@ const { startReservationHoldCleanupJob } = require("./jobs/reservationHoldCleanu
 const { startPostVisitFeedbackJob } = require("./jobs/postVisitFeedbackJob");
 const { startReferralEvaluationJob } = require("./jobs/referralEvaluationJob");
 const referralService = require("./services/referralService");
-const { startCheckoutProRenewalJob } = require("./jobs/checkoutProRenewalJob");
+const { startBillingRenewalReminderJob } = require("./jobs/billingRenewalReminderJob");
+const { startManualPeriodOverdueJob } = require("./jobs/manualPeriodOverdueJob");
 const { startPlanChangeSchedulerJob } = require("./jobs/planChangeSchedulerJob");
 const { startLastChanceLinkJob } = require("./jobs/lastChanceLinkJob");
 const { assertMpEnvSafety } = require("./lib/mercadopagoEnv");
@@ -278,7 +279,8 @@ app.listen(PORT, "0.0.0.0", () => {
   startReservationHoldCleanupJob();
   startPostVisitFeedbackJob();
   startReferralEvaluationJob();
-  startCheckoutProRenewalJob();
+  startBillingRenewalReminderJob();
+  startManualPeriodOverdueJob();
   startPlanChangeSchedulerJob();
   startLastChanceLinkJob();
 });

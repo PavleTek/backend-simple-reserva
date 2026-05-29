@@ -511,10 +511,101 @@ async function getAvailableCredits(organizationId, client = prisma) {
   });
 }
 
+async function getAvailableCreditDays(organizationId, client = prisma) {
+  const credits = await getAvailableCredits(organizationId, client);
+  return credits.reduce((sum, c) => sum + c.amountDays, 0);
+}
+
+/**
+ * Consume créditos disponibles y los amarra a una suscripción (transaccional, anti-doble-gasto).
+ */
+async function consumeCreditsForSubscription({ organizationId, subscriptionId, tx: externalTx }) {
+  const run = async (tx) => {
+    const credits = await getAvailableCredits(organizationId, tx);
+    if (!credits.length) {
+      return { totalDays: 0, freeUntil: null, creditIds: [] };
+    }
+
+    const creditIds = credits.map((c) => c.id);
+    const totalDays = credits.reduce((sum, c) => sum + c.amountDays, 0);
+    const now = new Date();
+
+    const updated = await tx.referralCredit.updateMany({
+      where: {
+        id: { in: creditIds },
+        organizationId,
+        status: 'available',
+      },
+      data: {
+        status: 'applied',
+        appliedAt: now,
+        appliedToSubscriptionId: subscriptionId,
+      },
+    });
+
+    if (updated.count !== creditIds.length) {
+      const err = new Error('Los créditos ya no están disponibles. Intenta nuevamente.');
+      err.statusCode = 409;
+      throw err;
+    }
+
+    await tx.referral.updateMany({
+      where: {
+        referrerOrganizationId: organizationId,
+        status: REFERRAL_STATUSES.APPROVED,
+        rewardCreditId: { in: creditIds },
+      },
+      data: { status: REFERRAL_STATUSES.REWARD_APPLIED, rewardAppliedAt: now },
+    });
+
+    return { totalDays, freeUntil: addDays(now, totalDays), creditIds };
+  };
+
+  if (externalTx) return run(externalTx);
+  return prisma.$transaction(run);
+}
+
+/**
+ * Libera créditos aplicados a una suscripción (activación fallida / reversa de reserva).
+ */
+async function releaseCreditsForSubscription(subscriptionId, client = prisma) {
+  const credits = await client.referralCredit.findMany({
+    where: { appliedToSubscriptionId: subscriptionId, status: 'applied' },
+    select: { id: true },
+  });
+  if (!credits.length) return 0;
+
+  const creditIds = credits.map((c) => c.id);
+  const result = await client.referralCredit.updateMany({
+    where: { id: { in: creditIds }, status: 'applied' },
+    data: {
+      status: 'available',
+      appliedAt: null,
+      appliedToSubscriptionId: null,
+    },
+  });
+
+  await client.referral.updateMany({
+    where: {
+      rewardCreditId: { in: creditIds },
+      status: REFERRAL_STATUSES.REWARD_APPLIED,
+    },
+    data: { status: REFERRAL_STATUSES.APPROVED, rewardAppliedAt: null },
+  });
+
+  return result.count;
+}
+
 /**
  * Reserva créditos para un checkout y calcula startDate con días extra.
  */
 async function applyAvailableCreditsOnNextCheckout(organizationId, plannedStartDate, checkoutSessionId) {
+  if (!checkoutSessionId) {
+    const err = new Error('checkoutSessionId requerido para reservar créditos de referido.');
+    err.statusCode = 500;
+    throw err;
+  }
+
   const credits = await getAvailableCredits(organizationId);
   if (!credits.length) {
     return { startDate: plannedStartDate ? new Date(plannedStartDate) : null, totalDays: 0, creditIds: [] };
@@ -522,15 +613,13 @@ async function applyAvailableCreditsOnNextCheckout(organizationId, plannedStartD
 
   const totalDays = credits.reduce((sum, c) => sum + c.amountDays, 0);
   const base = plannedStartDate ? new Date(plannedStartDate) : new Date();
-  const minFuture = addDays(new Date(), 0);
-  const effectiveBase = base > minFuture ? base : addDays(new Date(), 2 / (24 * 60)); // +2 min approx handled by MP
-  const startDate = addDays(effectiveBase, totalDays);
+  const startDate = addDays(base, totalDays);
 
   const creditIds = credits.map((c) => c.id);
-  const pendingKey = checkoutSessionId ? `checkout:${checkoutSessionId}` : null;
+  const pendingKey = `checkout:${checkoutSessionId}`;
 
   await prisma.referralCredit.updateMany({
-    where: { id: { in: creditIds } },
+    where: { id: { in: creditIds }, status: 'available' },
     data: {
       status: 'applied',
       appliedAt: new Date(),
@@ -542,6 +631,15 @@ async function applyAvailableCreditsOnNextCheckout(organizationId, plannedStartD
 }
 
 async function markCreditsApplied(organizationId, subscriptionId, preapprovalId) {
+  const alreadyLinked = await prisma.referralCredit.count({
+    where: {
+      organizationId,
+      appliedToSubscriptionId: subscriptionId,
+      status: 'applied',
+    },
+  });
+  if (alreadyLinked > 0) return [];
+
   const checkoutSession = preapprovalId
     ? await prisma.checkoutSession.findFirst({
         where: { organizationId, mercadopagoPreapprovalId: preapprovalId },
@@ -706,8 +804,12 @@ module.exports = {
   markAsFraud,
   revokeReward,
   getAvailableCredits,
+  getAvailableCreditDays,
+  consumeCreditsForSubscription,
+  releaseCreditsForSubscription,
   applyAvailableCreditsOnNextCheckout,
   markCreditsApplied,
+  addDays,
   releaseExpiredCheckoutCredits,
   getReferralSummary,
   listReferralsForOrganization,

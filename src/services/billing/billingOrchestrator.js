@@ -23,6 +23,11 @@ const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
 const { canSelfServeBillingOrThrow } = require('../../lib/canSelfServeBilling');
 const { resolvePlanOfferFlags } = require('../../lib/planSource');
 const { getActiveSubscription } = require('../subscriptionService');
+const {
+  isInReferralFreeWindow,
+  changePlanInReferralFreeWindow,
+  deferredStartDateForCollectionSwitch,
+} = require('./referralFreeWindowService');
 
 /**
  * Programa cambio al fin del periodo sin checkout MP (estrategia manual).
@@ -114,6 +119,18 @@ async function executePlanChange({
     const err = new Error('Ya tienes este plan activo.');
     err.statusCode = 400;
     throw err;
+  }
+
+  if (isInReferralFreeWindow(currentSubFull)) {
+    return changePlanInReferralFreeWindow({
+      organizationId,
+      userId,
+      payerEmail,
+      restaurantId,
+      currentSub: currentSubFull,
+      newPlan,
+      whenNorm,
+    });
   }
 
   const offerFlags = await resolvePlanOfferFlags(organizationId, currentSubFull.plan.id);
@@ -239,6 +256,9 @@ async function updateCollectionMethod({
   }
 
   // manual → automatic (y demás): autorización en Mercado Pago vía preapproval
+  const deferredStart = deferredStartDateForCollectionSwitch(currentSubFull);
+  const createSubscriptionOptions = deferredStart ? { startDate: deferredStart } : {};
+
   return mercadopagoAdapter.createCheckout({
     organizationId,
     userId,
@@ -248,7 +268,7 @@ async function updateCollectionMethod({
     when: 'now',
     billingStrategy,
     pendingChangeFromSubscriptionId: currentSubFull.id,
-    createSubscriptionOptions: {},
+    createSubscriptionOptions,
   });
 }
 

@@ -20,11 +20,30 @@ function buildPaymentFailureSubject(restaurantName) {
  * @param {Object} options
  * @param {string} options.restaurantName
  * @param {string} options.panelUrl
+ * @param {Date|string} [options.gracePeriodEndsAt]
+ * @param {string} [options.recoveryUrl]
  * @param {string} [options.assetBaseUrl]
  * @returns {string}
  */
 function buildPaymentFailureNotificationHtml(options) {
-  const { restaurantName, panelUrl, assetBaseUrl = '' } = options;
+  const {
+    restaurantName,
+    panelUrl,
+    gracePeriodEndsAt,
+    recoveryUrl,
+    assetBaseUrl = '',
+  } = options;
+
+  const graceStr = gracePeriodEndsAt
+    ? new Date(gracePeriodEndsAt).toLocaleDateString('es-CL', { day: 'numeric', month: 'long', year: 'numeric' })
+    : null;
+
+  const graceLine = graceStr
+    ? `Tienes hasta el <strong>${escapeHtml(graceStr)}</strong> para regularizar tu situación.`
+    : 'Tu cuenta entró en un periodo de gracia de <strong>7 días</strong>.';
+
+  const ctaUrl = recoveryUrl || panelUrl;
+  const ctaLabel = recoveryUrl ? 'Regularizar pago' : 'Actualizar pago';
 
   const bodyHtml = `<p style="margin:0 0 16px 0;">Hola,</p>
     <p style="margin:0 0 20px 0;color:${COLORS.textSecondary};">
@@ -32,12 +51,12 @@ function buildPaymentFailureNotificationHtml(options) {
       <strong style="color:${COLORS.textPrimary};">${escapeHtml(restaurantName)}</strong>.
     </p>
     <p style="margin:0 0 20px 0;color:${COLORS.textSecondary};">
-      Tu cuenta entró en un periodo de gracia de <strong>7 días</strong>.
+      ${graceLine}
       Actualiza tu método de pago para evitar interrupciones en el servicio.
     </p>
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
       <tr><td align="center">
-        <a href="${escapeHtml(panelUrl)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 32px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;font-weight:600;color:#ffffff !important;text-decoration:none;border-radius:12px;background-color:${COLORS.primary600};">Actualizar pago</a>
+        <a href="${escapeHtml(ctaUrl)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:14px 32px;font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;font-weight:600;color:#ffffff !important;text-decoration:none;border-radius:12px;background-color:${COLORS.primary600};">${escapeHtml(ctaLabel)}</a>
       </td></tr>
     </table>`;
 

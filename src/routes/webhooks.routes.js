@@ -221,15 +221,37 @@ router.post('/mercadopago', express.json({
           const isFutureStart = mpStartDate && (new Date(mpStartDate).getTime() - Date.now() > THRESHOLD_MS);
 
           if (isFutureStart) {
-            await scheduleOrganizationSubscription(organizationId, preapprovalId, plan, new Date(mpStartDate));
-            await cancelReplacedPreapprovalOnSchedule(organizationId, preapprovalId);
-            console.log('[Webhook] MercadoPago subscription scheduled (future start):', organizationId, plan, mpStartDate);
+            const referralFreeWindowService = require('../services/billing/referralFreeWindowService');
+            const isReferralWindow = await referralFreeWindowService.isReferralFreeWindowPreapproval(
+              organizationId,
+              preapprovalId,
+            );
+            if (isReferralWindow) {
+              const activateOpts = await getActivateOptionsForPreapproval(organizationId, preapprovalId);
+              await activateOrganizationSubscription(organizationId, preapprovalId, plan, {
+                ...activateOpts,
+                referralFreeUntil: new Date(mpStartDate),
+                skipMarkFirstPayment: true,
+              });
+              await cancelReplacedPreapprovalOnSchedule(organizationId, preapprovalId);
+              console.log('[Webhook] MercadoPago referral free window activated:', organizationId, plan, mpStartDate);
+            } else {
+              await scheduleOrganizationSubscription(organizationId, preapprovalId, plan, new Date(mpStartDate));
+              await cancelReplacedPreapprovalOnSchedule(organizationId, preapprovalId);
+              console.log('[Webhook] MercadoPago subscription scheduled (future start):', organizationId, plan, mpStartDate);
+            }
           } else {
             const activateOpts = await getActivateOptionsForPreapproval(organizationId, preapprovalId);
             await activateOrganizationSubscription(organizationId, preapprovalId, plan, activateOpts);
             console.log('[Webhook] MercadoPago subscription activated:', organizationId, plan);
             try {
-              await referralService.markFirstPayment(organizationId);
+              const activeSub = await prisma.subscription.findFirst({
+                where: { organizationId, mercadopagoPreapprovalId: preapprovalId, status: 'active' },
+                select: { referralFreeUntil: true },
+              });
+              if (!activeSub?.referralFreeUntil) {
+                await referralService.markFirstPayment(organizationId);
+              }
             } catch (refErr) {
               console.warn('[Webhook] markFirstPayment failed:', refErr?.message ?? refErr);
             }
@@ -331,6 +353,58 @@ router.post('/mercadopago', express.json({
               await createReceiptFromMPPayment(mpPayment, organizationId, planSKU);
               console.log('[Webhook] Checkout Pro: suscripción activada/renovada:', organizationId);
             }
+          } else if (mpPayment.status === 'rejected' || mpPayment.status === 'cancelled') {
+            try {
+              const org = await prisma.restaurantOrganization.findUnique({
+                where: { id: organizationId },
+                select: {
+                  name: true,
+                  owner: { select: { email: true } },
+                },
+              });
+              const activeSub = await prisma.subscription.findFirst({
+                where: { organizationId, isActiveSubscription: true },
+                select: { id: true },
+                orderBy: { createdAt: 'desc' },
+              });
+              const { handleCheckoutPaymentRejected } = require('../services/billing/billingEmailService');
+              await handleCheckoutPaymentRejected({
+                organizationId,
+                subscriptionId: activeSub?.id,
+                mpPayment,
+                orgName: org?.name || organizationId,
+                ownerEmail: org?.owner?.email,
+              });
+            } catch (rejectErr) {
+              console.error('[Webhook] Checkout Pro rejected notify:', rejectErr?.message ?? rejectErr);
+            }
+          } else if (mpPayment.status === 'refunded' || mpPayment.status === 'charged_back') {
+            try {
+              await referralService.handlePaymentReversal(organizationId);
+              const { createOpsAlert } = require('../services/billing/billingEmailService');
+              const org = await prisma.restaurantOrganization.findUnique({
+                where: { id: organizationId },
+                select: { name: true },
+              });
+              const activeSub = await prisma.subscription.findFirst({
+                where: { organizationId, isActiveSubscription: true },
+                select: { id: true },
+                orderBy: { createdAt: 'desc' },
+              });
+              await createOpsAlert({
+                organizationId,
+                subscriptionId: activeSub?.id,
+                kind: 'payment_reversal',
+                severity: 'warning',
+                title: `Reversión de pago Checkout Pro — ${org?.name || organizationId}`,
+                detail: `paymentId=${paymentId} status=${mpPayment.status}`,
+                suggestedAction: 'Revisar referido y estado de suscripción; contactar al cliente si corresponde.',
+                dedupeKey: `org:${organizationId}:payment_reversal:${paymentId}`,
+              });
+              console.log('[Webhook] Checkout Pro payment reversal handled:', organizationId, mpPayment.status);
+            } catch (refErr) {
+              console.warn('[Webhook] Checkout Pro handlePaymentReversal failed:', refErr?.message ?? refErr);
+            }
           }
           await prisma.webhookEvent.update({
             where: { id: webhookEvent.id },
@@ -354,6 +428,24 @@ router.post('/mercadopago', express.json({
           }
           await createReceiptFromMPPayment(mpPayment, organizationId, planSKU);
           console.log('[Webhook] MercadoPago receipt created for payment:', paymentId);
+
+          const referralFreeWindowService = require('../services/billing/referralFreeWindowService');
+          const activeSubWithWindow = await prisma.subscription.findFirst({
+            where: {
+              organizationId,
+              status: 'active',
+              referralFreeUntil: { not: null },
+            },
+            include: { plan: true },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (activeSubWithWindow?.plan) {
+            await referralFreeWindowService.clearReferralFreeWindowOnFirstPayment(
+              activeSubWithWindow,
+              activeSubWithWindow.plan,
+            );
+          }
+
           try {
             await referralService.markFirstPayment(organizationId);
           } catch (refErr) {
@@ -397,6 +489,28 @@ router.post('/mercadopago', express.json({
             console.log('[Webhook] Referral payment reversal handled for org:', organizationId, mpPayment.status);
           } catch (refErr) {
             console.warn('[Webhook] handlePaymentReversal failed:', refErr?.message ?? refErr);
+          }
+        } else if (mpPayment.status === 'rejected' || mpPayment.status === 'cancelled') {
+          try {
+            const org = await prisma.restaurantOrganization.findUnique({
+              where: { id: organizationId },
+              select: { name: true, owner: { select: { email: true } } },
+            });
+            const activeSub = await prisma.subscription.findFirst({
+              where: { organizationId, isActiveSubscription: true },
+              select: { id: true },
+              orderBy: { createdAt: 'desc' },
+            });
+            const { handleCheckoutPaymentRejected } = require('../services/billing/billingEmailService');
+            await handleCheckoutPaymentRejected({
+              organizationId,
+              subscriptionId: activeSub?.id,
+              mpPayment,
+              orgName: org?.name || organizationId,
+              ownerEmail: org?.owner?.email,
+            });
+          } catch (rejectErr) {
+            console.error('[Webhook] Preapproval payment rejected notify:', rejectErr?.message ?? rejectErr);
           }
         }
 

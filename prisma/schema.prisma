@@ -68,6 +68,8 @@ model RestaurantOrganization {
   referralsAsReferrer Referral[] @relation("ReferrerOrganization")
   referralAsReferee Referral? @relation("RefereeOrganization")
   referralCredits ReferralCredit[]
+  billingEmailLogs BillingEmailLog[]
+  billingOpsAlerts BillingOpsAlert[]
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -599,6 +601,8 @@ model Subscription {
   endDate       DateTime?
   /// Fin del periodo de facturación actual (persistido al activar/renovar; alineado con computePeriodEnd)
   currentPeriodEnd DateTime?
+  /// Fin de ventana de días gratis por créditos de referido (sin primer cobro real aún). null = sin ventana / ya cobrado.
+  referralFreeUntil DateTime?
   /// Access deadline: 7 days after payment failure, OR set equal to endDate on manual cancellation
   gracePeriodEndsAt DateTime?
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid (preapproval)
@@ -634,12 +638,61 @@ model Subscription {
   paymentReceipts PaymentReceipt[]
   addons          SubscriptionAddon[]
   cancellationEvents SubscriptionCancellation[]
+  billingEmailLogs BillingEmailLog[]
+  billingOpsAlerts BillingOpsAlert[]
 
   @@unique([organizationId, mercadopagoPreapprovalId])
   @@index([organizationId])
   @@index([currentPeriodEnd])
   @@index([isActiveSubscription])
   @@index([scheduledChangeAt])
+}
+
+/// Registro de correos de facturación enviados al owner (idempotencia por ciclo).
+model BillingEmailLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  /// renewal_7d | renewal_4d | renewal_1d | period_overdue | grace_entered | grace_last_chance_1d | checkout_payment_rejected
+  kind           String
+  /// currentPeriodEnd ISO date o grace:{gracePeriodEndsAt ISO}
+  periodKey      String
+  sentAt         DateTime @default(now())
+  metadata       Json?
+
+  @@unique([subscriptionId, kind, periodKey])
+  @@index([organizationId])
+  @@index([sentAt])
+}
+
+/// Alertas operativas de facturación para el panel admin.
+model BillingOpsAlert {
+  id               String    @id @default(cuid())
+  organizationId   String
+  organization     RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptionId   String?
+  subscription     Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  kind             String
+  severity         String    @default("warning") // info | warning | critical
+  title            String
+  detail           String?
+  suggestedAction  String?
+  mpPaymentId      String?
+  mpStatus         String?
+  mpStatusDetail   String?
+  checkoutSessionId String?
+  status           String    @default("open") // open | resolved | snoozed
+  dedupeKey        String    @unique
+  createdAt        DateTime  @default(now())
+  resolvedAt       DateTime?
+  resolvedByUserId String?
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([severity])
+  @@index([createdAt])
 }
 
 model EmailDomain {

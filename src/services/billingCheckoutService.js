@@ -100,6 +100,13 @@ async function createBillingCheckout({
     };
   }
 
+  const referralFreeWindowService = require('./billing/referralFreeWindowService');
+  await referralFreeWindowService.prepareAutomaticReferralCheckout(
+    organizationId,
+    createSubscriptionOptions,
+    checkoutSession.id,
+  );
+
   const result = await mercadopagoService.createSubscription(
     organizationId,
     userId,
@@ -194,6 +201,13 @@ async function createBillingCheckoutWithPendingChange({
       checkoutHints: mercadopagoCheckoutProService.getCheckoutProHints(),
     };
   }
+
+  const referralFreeWindowService = require('./billing/referralFreeWindowService');
+  await referralFreeWindowService.prepareAutomaticReferralCheckout(
+    organizationId,
+    createSubscriptionOptions,
+    checkoutSession.id,
+  );
 
   const result = await mercadopagoService.createSubscription(
     organizationId,

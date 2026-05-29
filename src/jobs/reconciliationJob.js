@@ -92,8 +92,23 @@ async function runReconciliation() {
         const isFutureStart = mpStartDate && (new Date(mpStartDate).getTime() - Date.now() > THRESHOLD_MS);
 
         if (isFutureStart) {
-          await scheduleOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, new Date(mpStartDate));
-          console.warn(`[Reconciliation] Session scheduled (future start ${mpStartDate}): ${session.id} org=${orgId}`);
+          const referralFreeWindowService = require('../services/billing/referralFreeWindowService');
+          const isReferralWindow = await referralFreeWindowService.isReferralFreeWindowPreapproval(
+            orgId,
+            session.mercadopagoPreapprovalId,
+          );
+          if (isReferralWindow) {
+            const activateOpts = await getActivateOptionsForPreapproval(orgId, session.mercadopagoPreapprovalId);
+            await activateOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, {
+              ...activateOpts,
+              referralFreeUntil: new Date(mpStartDate),
+              skipMarkFirstPayment: true,
+            });
+            console.warn(`[Reconciliation] Session referral free window: ${session.id} org=${orgId}`);
+          } else {
+            await scheduleOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, new Date(mpStartDate));
+            console.warn(`[Reconciliation] Session scheduled (future start ${mpStartDate}): ${session.id} org=${orgId}`);
+          }
         } else {
           const activateOpts = await getActivateOptionsForPreapproval(orgId, session.mercadopagoPreapprovalId);
           await activateOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, activateOpts);
@@ -258,7 +273,21 @@ async function runReconciliation() {
           const isFutureStart = mpStartDate && (new Date(mpStartDate).getTime() - Date.now() > THRESHOLD_MS);
 
           if (isFutureStart) {
-            await scheduleOrganizationSubscription(orgId, event.mpDataId, planSKU, new Date(mpStartDate));
+            const referralFreeWindowService = require('../services/billing/referralFreeWindowService');
+            const isReferralWindow = await referralFreeWindowService.isReferralFreeWindowPreapproval(
+              orgId,
+              event.mpDataId,
+            );
+            if (isReferralWindow) {
+              const activateOpts = await getActivateOptionsForPreapproval(orgId, event.mpDataId);
+              await activateOrganizationSubscription(orgId, event.mpDataId, planSKU, {
+                ...activateOpts,
+                referralFreeUntil: new Date(mpStartDate),
+                skipMarkFirstPayment: true,
+              });
+            } else {
+              await scheduleOrganizationSubscription(orgId, event.mpDataId, planSKU, new Date(mpStartDate));
+            }
           } else {
             const activateOpts = await getActivateOptionsForPreapproval(orgId, event.mpDataId);
             await activateOrganizationSubscription(orgId, event.mpDataId, planSKU, activateOpts);

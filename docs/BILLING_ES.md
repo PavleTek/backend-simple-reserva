@@ -55,8 +55,46 @@ node scripts/backfill-custom-plan-offers.js --apply
 ### Pago mensual manual (`manual_monthly`)
 
 - API MP: Checkout Pro (preferencias + link)
-- Job `checkoutProRenewalJob` envía link antes de `currentPeriodEnd`
+- Job `billingRenewalReminderJob`: recordatorios **7, 4 y 1** día antes de `currentPeriodEnd` (solo si no renovó)
+- Job `manualPeriodOverdueJob`: si vence el periodo sin pago → `grace` 7 días + correo + link recovery
+- Job `lastChanceLinkJob`: ~24 h antes de `gracePeriodEndsAt`
+- Idempotencia: tabla `BillingEmailLog` (`subscriptionId`, `kind`, `periodKey`)
 - Cambio de plan al fin de periodo: **no** se aplica `planId` hasta pago aprobado (`planChangeSchedulerJob` solo genera link)
+
+### Correos al owner (kinds)
+
+| kind | Cuándo |
+|------|--------|
+| `renewal_7d` / `renewal_4d` / `renewal_1d` | Manual activo, antes del vencimiento |
+| `period_overdue` | Manual vencido, entrada a gracia |
+| `grace_entered` | Fallo de cobro (débito automático o webhook) |
+| `grace_last_chance_1d` | Fin de gracia próximo |
+| `checkout_payment_rejected` | Pago MP rechazado en checkout |
+
+### Admin: preview y alertas
+
+- **Organización → Correos de facturación** o **Suscripciones → panel → Correos de facturación**
+- `GET /admin/organizations/:id/billing-emails/preview?kind=&dryRun=1`
+- `POST /admin/organizations/:id/billing-emails/send`
+- **Alertas facturación** (`/billing-alerts`): pagos rechazados, mora, fallos de link (`BillingOpsAlert`)
+
+## Referidos: ventana de días gratis
+
+Los créditos del referidor otorgan una **ventana de acceso gratis** (`Subscription.referralFreeUntil` + `currentPeriodEnd`), agnóstica al método de cobro:
+
+| Método | Durante la ventana | Primer cobro real |
+|--------|-------------------|-------------------|
+| **Pago manual** | Acceso activo sin cobro en MP | Link de renovación (job `billingRenewalReminderJob`) antes de `referralFreeUntil` |
+| **Débito automático** | Sub `active`; preapproval autorizado con `start_date = referralFreeUntil` | Primer cargo al vencer la ventana |
+
+Reglas de producto:
+
+- En ventana activa se puede **cambiar a cualquier plan**; se conservan `referralFreeUntil` y `currentPeriodEnd`.
+- **Cambiar método de cobro no modifica** la ventana (manual→automático difiere solo el `start_date` del preapproval).
+- El tiempo ya otorgado **no se revoca** ante refund/chargeback; sí se procesa reversa del referido y alerta admin.
+- Primer pago aprobado (CP o preapproval) limpia `referralFreeUntil` y avanza el periodo de facturación.
+
+Implementación: `referralFreeWindowService.js`, `consumeCreditsForSubscription` en `referralService.js`.
 
 ## Cambios de plan
 
@@ -95,7 +133,8 @@ Permitido con acceso activo y `status` en `active` o `trial` (checkout). Bloquea
 
 - `BILLING_STRATEGIES_ENABLED=automatic_recurring,manual_monthly`
 - `PLAN_CHANGE_SCHEDULER_ENABLED` / `PLAN_CHANGE_SCHEDULER_CRON`
-- `CHECKOUT_PRO_RENEWAL_CRON` / `CHECKOUT_PRO_RENEWAL_DAYS_BEFORE`
+- `CHECKOUT_PRO_RENEWAL_CRON` / `CHECKOUT_PRO_RENEWAL_REMINDER_DAYS` (legacy: `CHECKOUT_PRO_RENEWAL_DAYS_BEFORE`)
+- `MANUAL_PERIOD_OVERDUE_CRON` / `LAST_CHANCE_HOURS_BEFORE_EXPIRY` / `BILLING_OPS_ALERTS_ENABLED`
 - `MP_WEBHOOK_SECRET` o `MP_WEBHOOK_SECRET_*`
 
 ## Checklist QA manual
