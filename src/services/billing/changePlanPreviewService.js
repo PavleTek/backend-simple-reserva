@@ -15,6 +15,8 @@ const {
   normalizePlanChangeWhen,
 } = require('../../lib/billingDomain');
 const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
+const { canSelfServeBilling } = require('../../lib/canSelfServeBilling');
+const { resolvePlanOfferFlags } = require('../../lib/planSource');
 
 function formatEffectDate(isoDate) {
   if (!isoDate) return '';
@@ -134,19 +136,15 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
   }
 
   const sub = await getActiveSubscription(organizationId);
-  if (!sub || !sub.isActiveSubscription) {
-    return {
-      allowed: false,
-      error: 'No tienes una suscripción con acceso activo para cambiar de plan.',
-    };
+  const gate = canSelfServeBilling(sub);
+  if (!gate.allowed) {
+    return { allowed: false, error: gate.reason, code: gate.code };
   }
   if (sub.status !== 'active') {
     return {
       allowed: false,
-      error:
-        sub.status === 'grace'
-          ? 'Regulariza el cobro pendiente antes de cambiar de plan.'
-          : 'Solo puedes cambiar de plan con una suscripción activa.',
+      error: 'Activa un plan de pago antes de cambiar de plan.',
+      code: 'trial_checkout_required',
     };
   }
 
@@ -160,6 +158,7 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
   if (!(await orgCanUsePlan(organizationId, newPlan))) {
     return { allowed: false, error: 'Este plan no está disponible para tu cuenta.' };
   }
+
   if (sub.plan?.productSKU === sku || sub.planId === newPlan.id) {
     return { allowed: false, error: 'Ya tienes este plan activo.' };
   }
@@ -171,6 +170,15 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
     return {
       allowed: false,
       error: 'No pudimos cargar tu plan actual. Si el problema continúa, contacta a soporte.',
+    };
+  }
+
+  const offerFlags = await resolvePlanOfferFlags(organizationId, currentPlan.id);
+  if (!offerFlags.selfServicePlanChanges) {
+    return {
+      allowed: false,
+      error: 'Los cambios de plan de tu cuenta están gestionados por SimpleReserva. Contacta a soporte.',
+      code: 'plan_changes_managed',
     };
   }
   const currentPrice = priceWithIva(currentPlan.priceCLP ?? 0);
@@ -245,7 +253,9 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
       end_of_period: previewEndOfPeriod,
     },
     recommendedWhen,
-    requiresCheckout: true,
+    requiresCheckout:
+      when === PLAN_CHANGE_IMMEDIATE ||
+      (when === PLAN_CHANGE_END_OF_PERIOD && billingStrategy === BILLING_STRATEGY_AUTOMATIC),
     requiresCheckoutForWhen: {
       immediate: true,
       end_of_period: billingStrategy === BILLING_STRATEGY_AUTOMATIC,

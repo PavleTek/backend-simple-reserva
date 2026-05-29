@@ -16,6 +16,8 @@ const {
 const { normalizeBillingInput, getDefaultBillingStrategy } = require('../../lib/billingProviders');
 const mercadopagoAdapter = require('./adapters/mercadopagoBillingAdapter');
 const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
+const { canSelfServeBillingOrThrow } = require('../../lib/canSelfServeBilling');
+const { getActiveSubscription } = require('../subscriptionService');
 
 /**
  * Programa cambio al fin del periodo sin checkout MP (estrategia manual).
@@ -87,28 +89,34 @@ async function executePlanChange({
     throw err;
   }
 
-  const currentSub = await prisma.subscription.findFirst({
-    where: { organizationId, status: 'active' },
-    orderBy: { startDate: 'desc' },
-    include: { plan: true },
-  });
-  if (!currentSub) {
-    const err = new Error('No tienes una suscripción activa para cambiar.');
+  const currentSub = await getActiveSubscription(organizationId);
+  canSelfServeBillingOrThrow(currentSub);
+  if (!currentSub || currentSub.status !== 'active') {
+    const err = new Error('Activa un plan de pago antes de cambiar de plan.');
     err.statusCode = 400;
     throw err;
   }
-  if (currentSub.plan.productSKU === planSKU) {
+  const currentSubFull = await prisma.subscription.findUnique({
+    where: { id: currentSub.id },
+    include: { plan: true },
+  });
+  if (!currentSubFull?.plan) {
+    const err = new Error('No pudimos cargar tu suscripción actual.');
+    err.statusCode = 400;
+    throw err;
+  }
+  if (currentSubFull.plan.productSKU === planSKU) {
     const err = new Error('Ya tienes este plan activo.');
     err.statusCode = 400;
     throw err;
   }
 
-  const billing = subscriptionBillingView(currentSub);
+  const billing = subscriptionBillingView(currentSubFull);
   const billingStrategy = billing.billingStrategy;
 
   if (whenNorm === PLAN_CHANGE_END_OF_PERIOD && billingStrategy === BILLING_STRATEGY_MANUAL) {
     return schedulePlanChangeInDb({
-      activeSub: currentSub,
+      activeSub: currentSubFull,
       newPlan,
       when: whenNorm,
     });
@@ -116,9 +124,9 @@ async function executePlanChange({
 
   let checkoutStartDateOpt = null;
   if (whenNorm === PLAN_CHANGE_END_OF_PERIOD) {
-    const periodEnd = currentSub.currentPeriodEnd
-      ? new Date(currentSub.currentPeriodEnd)
-      : computePeriodEnd(currentSub.startDate, currentSub.plan);
+    const periodEnd = currentSubFull.currentPeriodEnd
+      ? new Date(currentSubFull.currentPeriodEnd)
+      : computePeriodEnd(currentSubFull.startDate, currentSubFull.plan);
     if (!periodEnd) {
       const err = new Error('No se pudo calcular el fin del periodo.');
       err.statusCode = 500;
@@ -142,12 +150,12 @@ async function executePlanChange({
     restaurantId,
     when: whenNorm === PLAN_CHANGE_END_OF_PERIOD ? 'end_of_period' : 'now',
     billingStrategy,
-    pendingChangeFromSubscriptionId: currentSub.id,
+    pendingChangeFromSubscriptionId: currentSubFull.id,
     createSubscriptionOptions: changePlanOpts,
   });
 
   await prisma.subscription.update({
-    where: { id: currentSub.id },
+    where: { id: currentSubFull.id },
     data: { planChangeWhen: whenNorm },
   });
 
@@ -175,18 +183,19 @@ async function updateCollectionMethod({
   billingStrategy,
   paymentProviderPsp = 'mercadopago',
 }) {
-  const currentSub = await prisma.subscription.findFirst({
-    where: { organizationId, status: 'active' },
-    orderBy: { startDate: 'desc' },
-    include: { plan: true },
-  });
-  if (!currentSub) {
-    const err = new Error('No tienes una suscripción activa.');
+  const currentSub = await getActiveSubscription(organizationId);
+  canSelfServeBillingOrThrow(currentSub);
+  if (!currentSub || currentSub.status !== 'active') {
+    const err = new Error('Activa un plan de pago antes de cambiar el método de cobro.');
     err.statusCode = 400;
     throw err;
   }
+  const currentSubFull = await prisma.subscription.findUnique({
+    where: { id: currentSub.id },
+    include: { plan: true },
+  });
 
-  const sku = planSKU || currentSub.plan?.productSKU || 'plan-profesional';
+  const sku = planSKU || currentSubFull?.plan?.productSKU || 'plan-profesional';
 
   return mercadopagoAdapter.createCheckout({
     organizationId,
@@ -196,7 +205,7 @@ async function updateCollectionMethod({
     restaurantId,
     when: 'now',
     billingStrategy,
-    pendingChangeFromSubscriptionId: currentSub.id,
+    pendingChangeFromSubscriptionId: currentSubFull.id,
     createSubscriptionOptions: {},
   });
 }

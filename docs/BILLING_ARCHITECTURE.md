@@ -1,5 +1,7 @@
 # Billing architecture (SimpleReserva)
 
+> Documentación de producto y operaciones en español: [BILLING_ES.md](./BILLING_ES.md)
+
 ## Domain model (SaaS)
 
 Three orthogonal concepts:

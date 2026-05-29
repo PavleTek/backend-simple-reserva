@@ -3,15 +3,16 @@
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const planService = require('../services/planService');
-const { computePeriodEnd } = require('../lib/billingPeriod');
 const { BILLING_STRATEGY_MANUAL } = require('../lib/billingDomain');
-const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutProService');
+const { PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
+const { createBillingCheckoutWithPendingChange } = require('../services/billingCheckoutService');
 const logger = require('../lib/logger');
 
 const CRON = process.env.PLAN_CHANGE_SCHEDULER_CRON || '15 */6 * * *';
 
 /**
- * Aplica cambios de plan programados en DB (manual_monthly) al vencer scheduledChangeAt.
+ * Cambios de plan programados en DB (manual_monthly): envía link de cobro sin mutar planId
+ * hasta que el pago quede aprobado (webhook Checkout Pro).
  */
 async function runPlanChangeScheduler() {
   const now = new Date();
@@ -21,8 +22,9 @@ async function runPlanChangeScheduler() {
       isActiveSubscription: true,
       scheduledPlanId: { not: null },
       scheduledChangeAt: { lte: now },
+      billingStrategy: BILLING_STRATEGY_MANUAL,
     },
-    include: { plan: true, scheduledPlan: true, organization: { select: { ownerId: true } } },
+    include: { plan: true, scheduledPlan: true, organization: { select: { ownerId: true, billingEmail: true } } },
   });
 
   for (const sub of due) {
@@ -30,60 +32,51 @@ async function runPlanChangeScheduler() {
       const newPlan = sub.scheduledPlan;
       if (!newPlan) continue;
 
-      const activatedAt = new Date();
-      const nextPeriodEnd = computePeriodEnd(activatedAt, newPlan);
-
-      await prisma.subscription.update({
-        where: { id: sub.id },
-        data: {
+      const existingPending = await prisma.checkoutSession.findFirst({
+        where: {
+          organizationId: sub.organizationId,
+          status: 'pending',
           planId: newPlan.id,
-          scheduledPlanId: null,
-          scheduledChangeAt: null,
-          planChangeWhen: null,
-          currentPeriodEnd: nextPeriodEnd,
+          pendingChangeFromSubscriptionId: sub.id,
+          expiresAt: { gt: now },
         },
       });
-
-      await prisma.restaurantOrganization.update({
-        where: { id: sub.organizationId },
-        data: { planId: newPlan.id },
-      });
-
-      planService.invalidateCache(sub.organizationId);
-
-      if (sub.billingStrategy === BILLING_STRATEGY_MANUAL) {
-        const ownerId = sub.organization?.ownerId;
-        if (ownerId) {
-          const restaurant = await prisma.restaurant.findFirst({
-            where: { organizationId: sub.organizationId, isDeleted: false },
-            select: { id: true },
-          });
-          if (restaurant) {
-            try {
-              await mercadopagoCheckoutProService.createCheckoutPreference({
-                organizationId: sub.organizationId,
-                userId: ownerId,
-                payerEmail: null,
-                planSKU: newPlan.productSKU,
-                restaurantId: restaurant.id,
-                checkoutSessionId: `plan-change-${sub.id}-${Date.now()}`,
-              });
-            } catch (linkErr) {
-              logger.warn('[planChangeScheduler] No se pudo generar link de cobro', {
-                organizationId: sub.organizationId,
-                error: linkErr?.message,
-              });
-            }
-          }
-        }
+      if (existingPending?.checkoutUrl) {
+        logger.info('[planChangeScheduler] Link pendiente ya existe', {
+          organizationId: sub.organizationId,
+          checkoutSessionId: existingPending.id,
+        });
+        continue;
       }
 
-      logger.info('[planChangeScheduler] Plan aplicado', {
+      const ownerId = sub.organization?.ownerId;
+      if (!ownerId) continue;
+
+      const restaurant = await prisma.restaurant.findFirst({
+        where: { organizationId: sub.organizationId, isDeleted: false },
+        select: { id: true },
+      });
+      if (!restaurant) continue;
+
+      const payerEmail = sub.organization?.billingEmail || null;
+
+      await createBillingCheckoutWithPendingChange({
+        organizationId: sub.organizationId,
+        userId: ownerId,
+        payerEmail,
+        planSKU: newPlan.productSKU,
+        restaurantId: restaurant.id,
+        when: 'now',
+        paymentProvider: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
+        pendingChangeFromSubscriptionId: sub.id,
+      });
+
+      logger.info('[planChangeScheduler] Link de cobro generado (plan sin aplicar hasta pago)', {
         organizationId: sub.organizationId,
         planSKU: newPlan.productSKU,
       });
     } catch (err) {
-      logger.error('[planChangeScheduler] Error aplicando cambio', {
+      logger.error('[planChangeScheduler] Error generando link', {
         subscriptionId: sub.id,
         error: err?.message ?? err,
       });

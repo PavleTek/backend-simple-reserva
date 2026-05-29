@@ -375,24 +375,44 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
     const renewalScheduledSamePlan = isSamePlanRenewalScheduled(sub, scheduledSub);
     const renewalScheduledAt = renewalScheduledSamePlan ? scheduledSub.startDate.toISOString() : null;
 
-    const { resolveScheduledPlanFromSub } = require('../services/billing/billingOrchestrator');
     const { subscriptionBillingView } = require('../lib/billingDomain');
-    const dbScheduled = await resolveScheduledPlanFromSub(sub, scheduledSub);
+    const {
+      buildPendingChange,
+      buildBillingCapabilities,
+      buildEntitlementBlock,
+    } = require('../services/billing/billingContractService');
 
-    // Renovación del mismo plan: no exponer scheduledPlan como "cambio" (evita doble banner / mismo plan "cancelado y programado")
-    let scheduledPlanOut = dbScheduled.scheduledPlanSku ?? scheduledSub?.plan?.productSKU ?? null;
-    let scheduledPlanNameOut = dbScheduled.scheduledPlanName ?? scheduledSub?.plan?.name ?? null;
-    let scheduledDateOut = dbScheduled.scheduledDate ?? scheduledSub?.startDate?.toISOString() ?? null;
-    if (renewalScheduledSamePlan) {
+    const pendingChange = await buildPendingChange({
+      sub,
+      scheduledSub,
+      renewalScheduledSamePlan,
+    });
+
+    let scheduledPlanOut =
+      pendingChange?.type === 'plan_change_scheduled' ? pendingChange.planSku : null;
+    let scheduledPlanNameOut =
+      pendingChange?.type === 'plan_change_scheduled' ? pendingChange.planName : null;
+    let scheduledDateOut =
+      pendingChange?.type === 'plan_change_scheduled' || pendingChange?.type === 'renewal_scheduled'
+        ? pendingChange.effectiveAt
+        : null;
+    if (renewalScheduledSamePlan && scheduledSub) {
       scheduledPlanOut = null;
       scheduledPlanNameOut = null;
-      scheduledDateOut = null;
+      scheduledDateOut = scheduledSub.startDate?.toISOString() ?? null;
     }
 
     const billingView = sub ? subscriptionBillingView(sub) : null;
+    const capabilities = await buildBillingCapabilities({
+      organizationId,
+      sub,
+      scheduledSub,
+      status,
+      plan,
+    });
+    const entitlement = await buildEntitlementBlock(organizationId, sub, plan);
 
-    // Si ya tiene una sub scheduled, no puede reactivar (ya eligió)
-    const canReactivate = canReactivateBase && !scheduledSub;
+    const canReactivate = capabilities.canReactivate;
 
     res.json({
       plan: plan?.productSKU || 'plan-basico',
@@ -444,7 +464,17 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
       billingStrategy: billingView?.billingStrategy ?? null,
       collectionMethodLabel: billingView?.collectionMethodLabel ?? null,
       legacyPaymentProviderId: billingView?.legacyPaymentProviderId ?? null,
-      scheduledChangeSource: dbScheduled.source,
+      scheduledChangeSource: pendingChange?.source ?? null,
+      pendingChange,
+      capabilities,
+      entitlement,
+      billing: billingView
+        ? {
+            strategy: billingView.billingStrategy,
+            strategyLabel: billingView.collectionMethodLabel,
+            paymentProvider: billingView.paymentProvider,
+          }
+        : null,
     });
   } catch (error) {
     next(error);
@@ -576,6 +606,11 @@ async function handleCollectionMethodUpdate(req, res, next) {
       paymentProvider,
     );
     const sub = await getActiveSubscription(restaurant.organizationId);
+    const { canSelfServeBillingOrThrow } = require('../lib/canSelfServeBilling');
+    canSelfServeBillingOrThrow(sub);
+    if (!sub || sub.status !== 'active') {
+      return res.status(400).json({ error: 'Activa un plan de pago antes de cambiar el método de cobro.' });
+    }
     const planSku = sub?.plan?.productSKU || 'plan-profesional';
 
     const result = await updateCollectionMethod({
@@ -1030,7 +1065,19 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
 
     const billingCheckoutService = require('../services/billingCheckoutService');
     const { normalizePaymentProvider, PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
-    const paymentProvider = normalizePaymentProvider(req.body?.paymentProvider);
+    const {
+      resolveBillingStrategy,
+      BILLING_STRATEGY_AUTOMATIC,
+      BILLING_STRATEGY_MANUAL,
+    } = require('../lib/billingDomain');
+    const strategy = resolveBillingStrategy(cancelledSub);
+    const defaultProvider =
+      strategy === BILLING_STRATEGY_MANUAL
+        ? PAYMENT_PROVIDER_MP_CHECKOUT_PRO
+        : 'mercadopago_preapproval';
+    const paymentProvider = req.body?.paymentProvider
+      ? normalizePaymentProvider(req.body.paymentProvider)
+      : defaultProvider;
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
@@ -1048,6 +1095,24 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
     await applyReferralCreditsToCheckoutOptions(organizationId, createOpts, null);
 
     let result;
+    if (when === 'end_of_period' && strategy === BILLING_STRATEGY_MANUAL) {
+      await prisma.subscription.update({
+        where: { id: cancelledSub.id },
+        data: {
+          status: 'active',
+          endDate: null,
+          gracePeriodEndsAt: null,
+          isActiveSubscription: true,
+        },
+      });
+      planService.invalidateCache(organizationId);
+      return res.json({
+        reactivated: true,
+        scheduled: false,
+        message:
+          'Tu suscripción con pago mensual manual quedó reactivada. Te enviaremos el link de cobro al renovar el periodo.',
+      });
+    }
     if (when === 'now') {
       result = await billingCheckoutService.createBillingCheckoutWithPendingChange({
         organizationId,
@@ -1068,7 +1133,8 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
         planSKU,
         restaurantId,
         when: 'end_of_period',
-        paymentProvider: 'mercadopago_preapproval',
+        paymentProvider:
+          strategy === BILLING_STRATEGY_MANUAL ? PAYMENT_PROVIDER_MP_CHECKOUT_PRO : 'mercadopago_preapproval',
         createSubscriptionOptions: createOpts,
       });
     }

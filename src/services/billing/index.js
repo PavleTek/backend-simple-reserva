@@ -7,6 +7,9 @@ module.exports = {
   updatePaymentMethod: require('./paymentMethodUpdateService').updatePaymentMethod,
   persistPaymentMethodSnapshot: require('./paymentMethodSnapshot').persistPaymentMethodSnapshot,
   subscriptionStateMachine: require('./subscriptionStateMachine'),
+  applyBillingEvent: require('./billingStateService').applyBillingEvent,
+  buildPendingChange: require('./billingContractService').buildPendingChange,
+  buildBillingCapabilities: require('./billingContractService').buildBillingCapabilities,
   pauseSubscription: require('./pauseSubscriptionService').pauseSubscription,
   trackCancellationAnalytics: require('./cancelAnalyticsService').trackCancellationAnalytics,
 };

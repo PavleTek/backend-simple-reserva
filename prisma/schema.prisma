@@ -918,6 +918,10 @@ model CustomPlanOffer {
   organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   offeredById    String?
   offeredBy      User?                  @relation(fields: [offeredById], references: [id], onDelete: SetNull)
+  /// Si false, el restaurante no puede cambiar de plan sin contactar a soporte (enterprise).
+  selfServicePlanChanges            Boolean @default(true)
+  /// Si false, no puede cambiar débito automático / pago manual desde el portal.
+  selfServiceBillingStrategyChanges Boolean @default(true)
   createdAt      DateTime               @default(now())
 
   @@unique([planId, organizationId])

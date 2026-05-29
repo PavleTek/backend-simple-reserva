@@ -802,11 +802,18 @@ router.get('/plans/:id/offers', async (req, res, next) => {
 router.put('/plans/:id/offers', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { organizationIds } = req.body;
+    const { organizationIds, selfServicePlanChanges, selfServiceBillingStrategyChanges } = req.body;
 
     if (!Array.isArray(organizationIds)) {
       throw new ValidationError('organizationIds debe ser un array');
     }
+
+    const planChangesFlag =
+      typeof selfServicePlanChanges === 'boolean' ? selfServicePlanChanges : true;
+    const strategyChangesFlag =
+      typeof selfServiceBillingStrategyChanges === 'boolean'
+        ? selfServiceBillingStrategyChanges
+        : true;
 
     const plan = await prisma.plan.findUnique({ where: { id } });
     if (!plan) throw new NotFoundError('Plan no encontrado');
@@ -830,8 +837,18 @@ router.put('/plans/:id/offers', async (req, res, next) => {
       for (const organizationId of organizationIds) {
         await tx.customPlanOffer.upsert({
           where: { planId_organizationId: { planId: id, organizationId } },
-          create: { planId: id, organizationId, offeredById },
-          update: { offeredById },
+          create: {
+            planId: id,
+            organizationId,
+            offeredById,
+            selfServicePlanChanges: planChangesFlag,
+            selfServiceBillingStrategyChanges: strategyChangesFlag,
+          },
+          update: {
+            offeredById,
+            selfServicePlanChanges: planChangesFlag,
+            selfServiceBillingStrategyChanges: strategyChangesFlag,
+          },
         });
       }
     });

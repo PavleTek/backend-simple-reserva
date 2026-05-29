@@ -13,7 +13,12 @@ const {
 const { formatPaymentMethodForApi } = require('./paymentMethodSnapshot');
 const { fetchMpRetrySchedule } = require('./retryScheduleService');
 const { subscriptionBillingView } = require('../../lib/billingDomain');
-const { resolveScheduledPlanFromSub } = require('./billingOrchestrator');
+const {
+  buildPendingChange,
+  buildBillingCapabilities,
+  buildEntitlementBlock,
+  isSamePlanRenewalScheduled,
+} = require('./billingContractService');
 
 const IVA_RATE = 0.19;
 
@@ -27,19 +32,6 @@ function daysUntil(isoDate) {
   if (!isoDate) return null;
   const diff = new Date(isoDate).getTime() - Date.now();
   return Math.max(0, Math.ceil(diff / (24 * 60 * 60 * 1000)));
-}
-
-function isSamePlanRenewalScheduled(sub, scheduledSub) {
-  if (!sub || !scheduledSub) return false;
-  if (sub.status !== 'cancelled' || !sub.endDate || new Date() >= sub.endDate) return false;
-  const skuA = sub.plan?.productSKU;
-  const skuB = scheduledSub.plan?.productSKU;
-  if (!skuA || !skuB || skuA !== skuB) return false;
-  if (!scheduledSub.startDate || !sub.endDate) return false;
-  const driftMs = Math.abs(
-    new Date(scheduledSub.startDate).getTime() - new Date(sub.endDate).getTime(),
-  );
-  return driftMs <= 48 * 60 * 60 * 1000;
 }
 
 function buildAlerts(ctx) {
@@ -174,17 +166,35 @@ async function getBillingOverview(organizationId, restaurantId) {
   const renewalScheduledSamePlan = isSamePlanRenewalScheduled(sub, scheduledSub);
   const renewalScheduledAt = renewalScheduledSamePlan ? scheduledSub.startDate.toISOString() : null;
 
-  const dbScheduled = await resolveScheduledPlanFromSub(sub, scheduledSub);
-  let scheduledPlanOut = dbScheduled.scheduledPlanSku ?? scheduledSub?.plan?.productSKU ?? null;
-  let scheduledPlanNameOut = dbScheduled.scheduledPlanName ?? scheduledSub?.plan?.name ?? null;
-  let scheduledDateOut = dbScheduled.scheduledDate ?? scheduledSub?.startDate?.toISOString() ?? null;
-  if (renewalScheduledSamePlan) {
+  const pendingChange = await buildPendingChange({
+    sub,
+    scheduledSub,
+    renewalScheduledSamePlan,
+  });
+
+  let scheduledPlanOut = pendingChange?.type === 'plan_change_scheduled' ? pendingChange.planSku : null;
+  let scheduledPlanNameOut = pendingChange?.type === 'plan_change_scheduled' ? pendingChange.planName : null;
+  let scheduledDateOut =
+    pendingChange?.type === 'plan_change_scheduled' || pendingChange?.type === 'renewal_scheduled'
+      ? pendingChange.effectiveAt
+      : null;
+  if (renewalScheduledSamePlan && scheduledSub) {
     scheduledPlanOut = null;
     scheduledPlanNameOut = null;
-    scheduledDateOut = null;
+    scheduledDateOut = scheduledSub.startDate?.toISOString() ?? null;
   }
 
   const billingView = sub ? subscriptionBillingView(sub) : null;
+
+  const capabilities = await buildBillingCapabilities({
+    organizationId,
+    sub,
+    scheduledSub,
+    status,
+    plan,
+  });
+
+  const entitlement = await buildEntitlementBlock(organizationId, sub, plan);
 
   const nextPaymentDate =
     sub?.status === 'active' && sub.currentPeriodEnd
@@ -285,6 +295,16 @@ async function getBillingOverview(organizationId, restaurantId) {
     billingStrategy: billingView?.billingStrategy ?? null,
     collectionMethodLabel: billingView?.collectionMethodLabel ?? null,
     legacyPaymentProviderId: billingView?.legacyPaymentProviderId ?? null,
+    pendingChange,
+    capabilities,
+    entitlement,
+    billing: billingView
+      ? {
+          strategy: billingView.billingStrategy,
+          strategyLabel: billingView.collectionMethodLabel,
+          paymentProvider: billingView.paymentProvider,
+        }
+      : null,
   };
 }
 

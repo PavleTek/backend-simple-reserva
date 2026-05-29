@@ -20,6 +20,7 @@ const {
   enterGracePeriod,
   getActivateOptionsForPreapproval,
 } = require('../services/mercadopagoService');
+const { applyBillingEvent } = require('../services/billing/billingStateService');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const referralService = require('../services/referralService');
@@ -239,11 +240,14 @@ router.post('/mercadopago', express.json({
             data: { status: 'completed', completedAt: new Date() },
           });
         } else if (status === 'payment_required') {
-          await enterGracePeriod(organizationId, { scheduledPreapprovalId: preapprovalId });
+          await applyBillingEvent(organizationId, 'PAYMENT_FAILED', { preapprovalId });
           console.log('[Webhook] MercadoPago payment_required → grace period:', organizationId);
         } else if (status === 'cancelled' || status === 'expired') {
-          await enterGracePeriod(organizationId, { scheduledPreapprovalId: preapprovalId });
-          console.log('[Webhook] MercadoPago', status, '→ grace period:', organizationId);
+          const terminal = await applyBillingEvent(organizationId, 'MP_PREAPPROVAL_CANCELLED', {
+            preapprovalId,
+            mpStatus: status,
+          });
+          console.log('[Webhook] MercadoPago', status, '→', terminal.action, organizationId);
         } else {
           console.log('[Webhook] MercadoPago status ignorado:', status);
         }

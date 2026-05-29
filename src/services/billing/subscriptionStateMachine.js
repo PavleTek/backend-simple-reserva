@@ -1,6 +1,10 @@
 'use strict';
 
-/** Transiciones válidas de estado informativo de suscripción. */
+/**
+ * Transiciones válidas de estado informativo de suscripción.
+ * Los efectos secundarios reales se ejecutan vía billingStateService.applyBillingEvent.
+ */
+
 const TRANSITIONS = {
   trial: {
     CHECKOUT_APPROVED: 'active',
@@ -13,11 +17,15 @@ const TRANSITIONS = {
   },
   grace: {
     PAYMENT_APPROVED: 'active',
+    PAYMENT_RECOVERED: 'active',
     GRACE_EXPIRED: 'expired',
   },
   cancelled: {
     PERIOD_ENDED: 'expired',
     REACTIVATED: 'active',
+  },
+  cancelled_by_admin: {
+    ADMIN_REVOKED: 'expired',
   },
   scheduled: {
     ACTIVATED: 'active',
@@ -45,7 +53,6 @@ function transition(currentStatus, event, opts = {}) {
   const next = map?.[event];
   if (!next) {
     if (opts.logOnly) {
-      console.warn('[StateMachine] transición no mapeada:', currentStatus, event);
       return { newStatus: currentStatus, sideEffects: [] };
     }
     throw new InvalidTransitionError(currentStatus, event);
@@ -55,8 +62,10 @@ function transition(currentStatus, event, opts = {}) {
   if (event === 'PAYMENT_FAILED') {
     sideEffects.push('set_grace_period_7d', 'send_payment_failed_email');
   }
-  if (event === 'PAYMENT_APPROVED' && currentStatus === 'grace') {
-    sideEffects.push('clear_grace', 'send_payment_recovered_email');
+  if (event === 'PAYMENT_APPROVED' || event === 'PAYMENT_RECOVERED') {
+    if (currentStatus === 'grace') {
+      sideEffects.push('clear_grace', 'send_payment_recovered_email');
+    }
   }
   if (event === 'CHECKOUT_APPROVED') {
     sideEffects.push('activate_subscription', 'send_payment_approved_email');

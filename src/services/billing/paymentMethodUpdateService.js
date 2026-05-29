@@ -2,6 +2,8 @@
 
 const prisma = require('../../lib/prisma');
 const { getActiveSubscription } = require('../subscriptionService');
+const { canSelfServeBillingOrThrow } = require('../../lib/canSelfServeBilling');
+const { resolvePlanOfferFlags } = require('../../lib/planSource');
 const billingCheckoutService = require('../billingCheckoutService');
 
 /**
@@ -16,13 +18,22 @@ async function updatePaymentMethod({
   loginEmail,
 }) {
   const sub = await getActiveSubscription(organizationId);
+  canSelfServeBillingOrThrow(sub);
   if (!sub || sub.status !== 'active') {
-    const err = new Error('Solo puedes cambiar el método de pago con una suscripción activa.');
+    const err = new Error('Activa un plan de pago antes de cambiar el método de cobro.');
     err.statusCode = 400;
     throw err;
   }
 
   const plan = sub.plan || (await prisma.plan.findUnique({ where: { id: sub.planId } }));
+  if (plan?.id) {
+    const flags = await resolvePlanOfferFlags(organizationId, plan.id);
+    if (!flags.selfServiceBillingStrategyChanges) {
+      const err = new Error('El método de cobro de tu plan está gestionado por SimpleReserva. Contacta a soporte.');
+      err.statusCode = 403;
+      throw err;
+    }
+  }
   if (!plan) {
     const err = new Error('Plan no encontrado.');
     err.statusCode = 400;
