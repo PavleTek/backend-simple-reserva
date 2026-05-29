@@ -13,7 +13,7 @@ const {
   collectionMethodLabel,
   normalizePlanChangeWhen,
 } = require('../../lib/billingDomain');
-const { orgCanUsePlan } = require('./billingOrchestrator');
+const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
 
 function formatEffectDate(isoDate) {
   if (!isoDate) return '';
@@ -127,15 +127,29 @@ function buildPreviewForWhen({
  * @param {string} [params.when] immediate | end_of_period
  */
 async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
+  const sku = String(planSKU || '').trim();
+  if (!sku) {
+    return { allowed: false, error: 'Debes indicar el plan a previsualizar.' };
+  }
+
   const sub = await getActiveSubscription(organizationId);
-  if (!sub || sub.status !== 'active') {
+  if (!sub || !sub.isActiveSubscription) {
     return {
       allowed: false,
-      error: 'Solo puedes cambiar de plan con una suscripción activa.',
+      error: 'No tienes una suscripción con acceso activo para cambiar de plan.',
+    };
+  }
+  if (sub.status !== 'active') {
+    return {
+      allowed: false,
+      error:
+        sub.status === 'grace'
+          ? 'Regulariza el cobro pendiente antes de cambiar de plan.'
+          : 'Solo puedes cambiar de plan con una suscripción activa.',
     };
   }
 
-  const newPlan = await prisma.plan.findUnique({ where: { productSKU: planSKU } });
+  const newPlan = await prisma.plan.findUnique({ where: { productSKU: sku } });
   if (!newPlan) {
     return { allowed: false, error: `Plan no encontrado: ${planSKU}` };
   }
@@ -145,14 +159,20 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
   if (!(await orgCanUsePlan(organizationId, newPlan))) {
     return { allowed: false, error: 'Este plan no está disponible para tu cuenta.' };
   }
-  if (sub.plan?.productSKU === planSKU || sub.planId === newPlan.id) {
+  if (sub.plan?.productSKU === sku || sub.planId === newPlan.id) {
     return { allowed: false, error: 'Ya tienes este plan activo.' };
   }
 
   const currentPlan =
     sub.plan ||
     (await prisma.plan.findUnique({ where: { id: sub.planId } }));
-  const currentPrice = priceWithIva(currentPlan?.priceCLP ?? 0);
+  if (!currentPlan) {
+    return {
+      allowed: false,
+      error: 'No pudimos cargar tu plan actual. Si el problema continúa, contacta a soporte.',
+    };
+  }
+  const currentPrice = priceWithIva(currentPlan.priceCLP ?? 0);
   const newPrice = priceWithIva(newPlan.priceCLP);
 
   let periodEnd = sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
@@ -174,6 +194,7 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
   const billingView = subscriptionBillingView(sub);
   const billingStrategy = billingView.billingStrategy;
   const tierChange = resolvePlanChangeType(currentPlan?.productSKU, newPlan.productSKU);
+  const changeType = tierChange === 'upgrade' || tierChange === 'downgrade' ? tierChange : 'change';
   const recommendedWhen =
     tierChange === 'upgrade' ? PLAN_CHANGE_IMMEDIATE : PLAN_CHANGE_END_OF_PERIOD;
 
@@ -214,7 +235,7 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
     allowed: true,
     allowedWhen: [PLAN_CHANGE_IMMEDIATE, PLAN_CHANGE_END_OF_PERIOD],
     rejectedWhen: [],
-    changeType: tierChange,
+    changeType,
     effectiveDate: when === PLAN_CHANGE_IMMEDIATE ? new Date().toISOString() : periodEndIso,
     effectMessage,
     preview: activePreview,

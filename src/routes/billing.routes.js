@@ -116,22 +116,7 @@ function handleBillingRouteError(error, res, next, respondMp) {
  * o que exista un CustomPlanOffer para esta org.
  * Retorna true si está permitido, false si no.
  */
-async function orgCanUsePlan(organizationId, plan) {
-  if (plan.isDefault) return true;
-
-  const org = await prisma.restaurantOrganization.findUnique({
-    where: { id: organizationId },
-    select: { customPlanId: true },
-  });
-
-  if (org?.customPlanId === plan.id) return true;
-
-  const offer = await prisma.customPlanOffer.findUnique({
-    where: { planId_organizationId: { planId: plan.id, organizationId } },
-  });
-
-  return !!offer;
-}
+const { orgCanUsePlan } = require('../lib/orgPlanAccess');
 
 /** True si la sub programada es renovación del mismo plan al vencer el periodo (no un cambio de plan). */
 function isSamePlanRenewalScheduled(sub, scheduledSub) {
@@ -392,7 +377,7 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
 
     const { resolveScheduledPlanFromSub } = require('../services/billing/billingOrchestrator');
     const { subscriptionBillingView } = require('../lib/billingDomain');
-    const dbScheduled = resolveScheduledPlanFromSub(sub, scheduledSub);
+    const dbScheduled = await resolveScheduledPlanFromSub(sub, scheduledSub);
 
     // Renovación del mismo plan: no exponer scheduledPlan como "cambio" (evita doble banner / mismo plan "cancelado y programado")
     let scheduledPlanOut = dbScheduled.scheduledPlanSku ?? scheduledSub?.plan?.productSKU ?? null;
@@ -529,12 +514,15 @@ router.post('/billing/change-plan/preview', authenticateRestaurantRoles(['restau
       select: { organizationId: true },
     });
     if (!restaurant) throw new Error('Restaurante no encontrado');
-    const { normalizePaymentProvider } = require('../lib/billingProviders');
+    const planSKU = String(req.body?.plan ?? req.body?.planSKU ?? '').trim();
+    if (!planSKU) {
+      return res.status(400).json({ error: 'plan requerido' });
+    }
     const { previewChangePlan } = require('../services/billing/changePlanPreviewService');
     const { normalizePlanChangeWhen } = require('../lib/billingDomain');
     const result = await previewChangePlan({
       organizationId: restaurant.organizationId,
-      planSKU: req.body?.plan?.trim(),
+      planSKU,
       when: req.body?.when ? normalizePlanChangeWhen(req.body.when) : undefined,
     });
     res.json(result);

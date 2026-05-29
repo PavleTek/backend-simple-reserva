@@ -174,7 +174,7 @@ async function getBillingOverview(organizationId, restaurantId) {
   const renewalScheduledSamePlan = isSamePlanRenewalScheduled(sub, scheduledSub);
   const renewalScheduledAt = renewalScheduledSamePlan ? scheduledSub.startDate.toISOString() : null;
 
-  const dbScheduled = resolveScheduledPlanFromSub(sub, scheduledSub);
+  const dbScheduled = await resolveScheduledPlanFromSub(sub, scheduledSub);
   let scheduledPlanOut = dbScheduled.scheduledPlanSku ?? scheduledSub?.plan?.productSKU ?? null;
   let scheduledPlanNameOut = dbScheduled.scheduledPlanName ?? scheduledSub?.plan?.name ?? null;
   let scheduledDateOut = dbScheduled.scheduledDate ?? scheduledSub?.startDate?.toISOString() ?? null;

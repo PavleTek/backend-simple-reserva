@@ -15,19 +15,7 @@ const {
 } = require('../../lib/billingDomain');
 const { normalizeBillingInput, getDefaultBillingStrategy } = require('../../lib/billingProviders');
 const mercadopagoAdapter = require('./adapters/mercadopagoBillingAdapter');
-
-async function orgCanUsePlan(organizationId, plan) {
-  if (plan.isDefault) return true;
-  const org = await prisma.restaurantOrganization.findUnique({
-    where: { id: organizationId },
-    select: { customPlanId: true },
-  });
-  if (org?.customPlanId === plan.id) return true;
-  const offer = await prisma.customPlanOffer.findUnique({
-    where: { planId_organizationId: { planId: plan.id, organizationId } },
-  });
-  return !!offer;
-}
+const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
 
 /**
  * Programa cambio al fin del periodo sin checkout MP (estrategia manual).
@@ -213,11 +201,15 @@ async function updateCollectionMethod({
   });
 }
 
-function resolveScheduledPlanFromSub(activeSub, scheduledMpSub) {
+async function resolveScheduledPlanFromSub(activeSub, scheduledMpSub) {
   if (activeSub?.scheduledPlanId && activeSub?.scheduledChangeAt) {
+    const scheduledPlan = await prisma.plan.findUnique({
+      where: { id: activeSub.scheduledPlanId },
+      select: { productSKU: true, name: true },
+    });
     return {
-      scheduledPlanSku: activeSub.scheduledPlan?.productSKU ?? null,
-      scheduledPlanName: activeSub.scheduledPlan?.name ?? null,
+      scheduledPlanSku: scheduledPlan?.productSKU ?? null,
+      scheduledPlanName: scheduledPlan?.name ?? null,
       scheduledDate: activeSub.scheduledChangeAt.toISOString?.() ?? String(activeSub.scheduledChangeAt),
       source: 'db',
     };

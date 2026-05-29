@@ -24,7 +24,7 @@ async function getActiveSubscription(organizationId) {
       isActiveSubscription: true,
     },
     orderBy: { startDate: 'desc' },
-    include: { plan: true, scheduledPlan: true },
+    include: { plan: true },
   });
   return sub ?? null;
 }
