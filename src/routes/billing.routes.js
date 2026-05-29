@@ -464,10 +464,18 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
         where: { id: organizationId },
         select: { trialEndsAt: true },
       });
-      if (!orgRow?.trialEndsAt || new Date(orgRow.trialEndsAt) <= new Date()) {
+      const { isTrialExpired } = require('../lib/trialPeriod');
+      if (!orgRow?.trialEndsAt || isTrialExpired(orgRow.trialEndsAt)) {
         return res.status(400).json({ error: 'No tienes una prueba activa o ya venció.' });
       }
-      createSubscriptionOptions = { startDate: orgRow.trialEndsAt };
+      const { trialAccessEndsAt } = require('../lib/trialPeriod');
+      const { DateTime } = require('luxon');
+      const trialEnd = DateTime.fromJSDate(trialAccessEndsAt(orgRow.trialEndsAt)).setZone(
+        process.env.TZ || 'America/Santiago',
+      );
+      createSubscriptionOptions = {
+        startDate: trialEnd.plus({ days: 1 }).startOf('day').toJSDate(),
+      };
     }
 
     const user = await prisma.user.findUnique({

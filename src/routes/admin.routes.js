@@ -994,9 +994,16 @@ router.get('/subscriptions', async (req, res, next) => {
         skip,
         take: limit,
         orderBy: { createdAt: 'desc' },
-        include: { 
-          organization: { include: { restaurants: { select: { name: true } } } },
-          plan: true
+        include: {
+          organization: {
+            select: {
+              name: true,
+              trialEndsAt: true,
+              createdAt: true,
+              restaurants: { select: { name: true } },
+            },
+          },
+          plan: true,
         },
       }),
       prisma.subscription.count({ where: relevantWhere }),
@@ -1105,97 +1112,26 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
 /**
  * POST /admin/subscriptions/:id/repair
  *
- * Repara datos faltantes o inconsistentes de una suscripción:
- * - Recalcula currentPeriodEnd si está vacío o si se solicita forzar.
- * - Si la sub tiene mercadopagoPreapprovalId, consulta MP y sincroniza status.
- * - Limpia trialEndsAt de la organización si la suscripción está activa.
- * - Invalida caché del plan.
+ * Repara datos faltantes o inconsistentes (ver subscriptionRepairService).
  */
 router.post('/subscriptions/:id/repair', async (req, res, next) => {
   try {
-    const sub = await prisma.subscription.findUnique({
-      where: { id: req.params.id },
-      include: { plan: true },
+    const { repairSubscription } = require('../services/subscriptionRepairService');
+    let result;
+    try {
+      result = await repairSubscription(req.params.id, { force: Boolean(req.body?.force) });
+    } catch (err) {
+      if (err.statusCode === 404) throw new NotFoundError(err.message);
+      throw err;
+    }
+
+    planService.invalidateCache(result.subscription.organizationId);
+
+    res.json({
+      subscription: result.subscription,
+      log: result.log,
+      organization: result.organization,
     });
-    if (!sub) throw new NotFoundError('Suscripción no encontrada');
-
-    const updates = {};
-    const log = [];
-
-    // 1. Recalcular currentPeriodEnd si está vacío o se pide forzar
-    if (sub.plan && (!sub.currentPeriodEnd || req.body?.force)) {
-      const refDate = sub.startDate ?? new Date();
-      const periodEnd = computePeriodEnd(refDate, sub.plan);
-      if (periodEnd) {
-        updates.currentPeriodEnd = periodEnd;
-        log.push(`currentPeriodEnd recalculado: ${periodEnd.toISOString()}`);
-      }
-    }
-
-    // 2. Sincronizar estado desde MercadoPago si tiene preapproval
-    if (sub.mercadopagoPreapprovalId) {
-      try {
-        const { getMercadoPagoAccessToken } = require('../lib/mercadopagoEnv');
-        const accessToken = getMercadoPagoAccessToken();
-        if (accessToken) {
-          const { MercadoPagoConfig, PreApproval } = require('mercadopago');
-          const mpClient = new MercadoPagoConfig({ accessToken });
-          const preApproval = new PreApproval(mpClient);
-          const mpSub = await preApproval.get({ id: sub.mercadopagoPreapprovalId });
-          const mpStatus = mpSub?.status ?? null;
-
-          if (mpStatus && mpStatus !== sub.status) {
-            const isActive = mpStatus === 'authorized' || mpStatus === 'approved';
-            if (isActive && sub.status !== 'active') {
-              updates.status = 'active';
-              updates.isActiveSubscription = true;
-              log.push(`status sincronizado desde MP: ${sub.status} → active`);
-            } else if ((mpStatus === 'cancelled' || mpStatus === 'expired') && sub.isActiveSubscription) {
-              updates.isActiveSubscription = false;
-              log.push(`acceso revocado por MP status: ${mpStatus}`);
-            }
-          }
-          log.push(`MP preapproval status: ${mpStatus ?? 'desconocido'}`);
-        }
-      } catch (mpErr) {
-        log.push(`MP sync fallido (no bloqueante): ${mpErr?.message ?? mpErr}`);
-        console.warn('[Admin repair] MP sync failed:', mpErr?.message ?? mpErr);
-      }
-    }
-
-    // 3. Aplicar actualizaciones a la suscripción
-    const fullInclude = {
-      plan: true,
-      organization: { include: { restaurants: { select: { name: true } } } },
-    };
-
-    let updated;
-    if (Object.keys(updates).length > 0) {
-      updated = await prisma.subscription.update({
-        where: { id: sub.id },
-        data: updates,
-        include: fullInclude,
-      });
-    } else {
-      updated = await prisma.subscription.findUnique({
-        where: { id: sub.id },
-        include: fullInclude,
-      });
-    }
-
-    // 4. Limpiar trialEndsAt si la sub quedó activa
-    const isNowActive = updates.isActiveSubscription ?? sub.isActiveSubscription;
-    if (isNowActive) {
-      await prisma.restaurantOrganization.update({
-        where: { id: sub.organizationId },
-        data: { trialEndsAt: null },
-      }).catch(() => {});
-      log.push('trialEndsAt limpiado en organización');
-    }
-
-    planService.invalidateCache(sub.organizationId);
-
-    res.json({ subscription: updated, log });
   } catch (error) {
     next(error);
   }

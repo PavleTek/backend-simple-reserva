@@ -142,7 +142,7 @@ Nothing else. No status checks, no date comparisons at query time.
 Registration
     │
     ▼
-Org created (planId = plan-basico, trialEndsAt = now + 14 days)
+Org created (planId = plan-basico, trialEndsAt = fin del día calendario +14 desde alta, zona Chile)
 Subscription created (status = "trial", isActiveSubscription = true)
     │
     ├─ user pays via MercadoPago ──────────────────────────────────────┐
@@ -198,7 +198,7 @@ File: `backend-simple-reserva/src/controllers/authController.js`
 1. User created with role `restaurant_owner`.
 2. `RestaurantOrganization` created:
    - `planId` = the chosen plan SKU from the registration form (defaults to `plan-basico`)
-   - `trialEndsAt` = now + 14 days (for `plan-basico`) or null for plans with `freeTrialLength = 0`
+   - `trialEndsAt` = fin del día calendario a los 14 días desde el alta (`trialPeriod.js`, Chile); vence tras la medianoche de ese día
 3. First `Restaurant` created.
 4. `Subscription` created with `status = "trial"`, `isActiveSubscription = true` and `planId` = chosen plan.
 5. If the chosen plan has `freeTrialLength = 0` (Profesional, Premium), the registration response includes `requiresPayment: true` and the restaurant frontend redirects to `/billing?plan=<sku>` for immediate checkout.
@@ -404,6 +404,18 @@ All via `backend-simple-reserva/src/routes/admin.routes.js` (requires `super_adm
 
 ---
 
+## 13b. Admin repair (`POST /api/admin/subscriptions/:id/repair`)
+
+File: `backend-simple-reserva/src/services/subscriptionRepairService.js`
+
+- **Trial / expired without MP payment:** does not set `currentPeriodEnd`; clears a mistaken `currentPeriodEnd` if present; expires the subscription when `trialEndsAt` is in the past; keeps `trialEndsAt` on the org (restores from `createdAt + 14d` if missing).
+- **Active paid (or MP authorized preapproval):** recalculates `currentPeriodEnd` (optional `force` in body); may call `confirmSubscriptionFromPreapproval` like «Activar desde MP».
+- **Clears `trialEndsAt`** only when the subscription ends as `status = active` (paid plan), never for trial rows with `isActiveSubscription = true` alone.
+
+`hasActiveAccess` uses `isTrialExpired`: sin acceso desde la medianoche posterior al último día de prueba (fin de día Chile), aunque el job aún no haya corrido.
+
+---
+
 ## 14. Cron jobs
 
 All jobs are in `backend-simple-reserva/src/jobs/`:
@@ -411,7 +423,7 @@ All jobs are in `backend-simple-reserva/src/jobs/`:
 | Job | Schedule (env var) | What it does |
 |-----|--------------------|--------------|
 | `trialReminderJob.js` | `TRIAL_REMINDER_CRON` | Emails owners with ≤7 days and ≤2 days left in trial |
-| `trialExpiryJob.js` | `TRIAL_EXPIRY_CRON` | Sets `isActiveSubscription = false, status = 'expired'` when `trialEndsAt` has passed |
+| `trialExpiryJob.js` | `TRIAL_EXPIRY_CRON` (default `0 * * * *`, hourly) | Expires trials when the calendar end day has passed (`isTrialExpired` in `trialPeriod.js`); runs once on server startup |
 | `gracePeriodExpiryJob.js` | `GRACE_PERIOD_EXPIRY_CRON` | Sets `isActiveSubscription = false, status = 'expired'` for grace subs past `gracePeriodEndsAt`, AND for cancelled subs whose `gracePeriodEndsAt` (= endDate) has passed |
 | `reconciliationJob.js` | `RECONCILIATION_CRON` | Activates `scheduled` subs whose `startDate` has passed; cleans up stale checkout sessions; detects MP↔DB drift |
 | `reminderJob.js` | — | Sends reservation reminders; checks `canSendReminders` (same as `hasActiveAccess`) |
@@ -434,6 +446,7 @@ All jobs are in `backend-simple-reserva/src/jobs/`:
 | `src/lib/planDisplayOrder.js` | Canonical sort order for plan cards |
 | `src/routes/billing.routes.js` | `GET subscription`, `POST checkout`, `POST confirm`, `POST change-plan`, `POST reactivate`, `POST cancel` |
 | `src/routes/admin.routes.js` | Admin CRUD for plans, subscriptions, org custom plan assignment |
+| `src/services/subscriptionRepairService.js` | `POST /admin/subscriptions/:id/repair` — sync MP, cycle only for paid subs, expire overdue trials |
 | `src/routes/webhooks.routes.js` | Mercado Pago webhook handler (preapproval + payment events) |
 | `src/controllers/authController.js` | Registration: creates org + trial subscription |
 | `src/jobs/` | All cron jobs listed above |

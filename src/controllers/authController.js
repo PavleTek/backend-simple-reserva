@@ -299,11 +299,8 @@ const register = async (req, res) => {
 
     const hashedPassword = await hashPassword(password);
 
-    const defaultTrialEndsAt = (() => {
-      const d = new Date();
-      d.setDate(d.getDate() + 14);
-      return d;
-    })();
+    const { computeDefaultTrialEndsAt } = require('../lib/trialPeriod');
+    const defaultTrialEndsAt = computeDefaultTrialEndsAt(new Date());
 
     const result = await prisma.$transaction(async (tx) => {
       // 1. Create User

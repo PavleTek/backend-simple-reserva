@@ -5,6 +5,7 @@
  */
 
 const prisma = require('../lib/prisma');
+const { isTrialExpired, isTrialActive } = require('../lib/trialPeriod');
 
 async function getOrganizationWithTrial(organizationId) {
   return prisma.restaurantOrganization.findUnique({
@@ -31,10 +32,18 @@ async function getActiveSubscription(organizationId) {
 
 /**
  * Check if organization has active access.
+ * Trial con trialEndsAt vencido no cuenta como acceso aunque isActiveSubscription siga true hasta el job.
  */
 async function hasActiveAccess(organizationId) {
   const sub = await getActiveSubscription(organizationId);
-  return !!sub;
+  if (!sub) return false;
+  if (sub.status === 'trial') {
+    const organization = await getOrganizationWithTrial(organizationId);
+    if (organization?.trialEndsAt && isTrialExpired(organization.trialEndsAt)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -42,8 +51,8 @@ async function hasActiveAccess(organizationId) {
  */
 async function isTrialing(organizationId) {
   const organization = await getOrganizationWithTrial(organizationId);
-  if (!organization || !organization.trialEndsAt) return false;
-  return new Date() < organization.trialEndsAt;
+  if (!organization?.trialEndsAt) return false;
+  return isTrialActive(organization.trialEndsAt);
 }
 
 /**
