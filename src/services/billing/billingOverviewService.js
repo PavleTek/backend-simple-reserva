@@ -19,6 +19,8 @@ const {
   buildEntitlementBlock,
   isSamePlanRenewalScheduled,
 } = require('./billingContractService');
+const referralService = require('../referralService');
+const { isInReferralFreeWindow } = require('./referralFreeWindowService');
 
 const IVA_RATE = 0.19;
 
@@ -238,6 +240,36 @@ async function getBillingOverview(organizationId, restaurantId) {
     include: { plan: { select: { name: true } } },
   });
 
+  const canReactivate = !!(sub?.status === 'cancelled' && sub?.endDate && new Date() < sub.endDate && !scheduledSub);
+
+  let referralCredits = null;
+  try {
+    const referralSummary = await referralService.getReferralSummary(organizationId);
+    const creditsAvailableDays = referralSummary.creditsAvailableDays ?? 0;
+    const creditsAppliedDays = referralSummary.creditsAppliedDays ?? 0;
+    const referralFreeUntil = sub?.referralFreeUntil?.toISOString?.() ?? null;
+    const inFreeWindow = isInReferralFreeWindow(sub);
+    const canRedeemOnActivation =
+      creditsAvailableDays > 0 &&
+      !inFreeWindow &&
+      (trialing || status === 'expired' || canReactivate);
+
+    if (creditsAvailableDays > 0 || creditsAppliedDays > 0 || inFreeWindow) {
+      referralCredits = {
+        creditsAvailableDays,
+        creditsAppliedDays,
+        referralFreeUntil,
+        isInFreeWindow: inFreeWindow,
+        canRedeemOnActivation,
+        daysUntilFreeWindowEnds: inFreeWindow && sub?.referralFreeUntil
+          ? daysUntil(sub.referralFreeUntil.toISOString())
+          : null,
+      };
+    }
+  } catch (refErr) {
+    console.warn('[billingOverview] referralCredits:', refErr?.message ?? refErr);
+  }
+
   return {
     plan: {
       sku: plan?.productSKU ?? 'plan-basico',
@@ -264,7 +296,7 @@ async function getBillingOverview(organizationId, restaurantId) {
     billingStatus: inGrace ? 'recovering' : status === 'active' ? 'healthy' : status === 'trial' ? 'healthy' : status === 'expired' ? 'expired' : 'expiring_soon',
     hasAccess,
     canActivate: status !== 'active',
-    canReactivate: !!(sub?.status === 'cancelled' && sub?.endDate && new Date() < sub.endDate && !scheduledSub),
+    canReactivate,
     trialEndsAt: org?.trialEndsAt?.toISOString?.() ?? null,
     cancelAtEndDate,
     currentPeriodEnd: cancelAtEndDate ?? nextPaymentDate,
@@ -301,6 +333,7 @@ async function getBillingOverview(organizationId, restaurantId) {
           paymentProvider: billingView.paymentProvider,
         }
       : null,
+    referralCredits,
   };
 }
 
