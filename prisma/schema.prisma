@@ -602,10 +602,20 @@ model Subscription {
   /// Access deadline: 7 days after payment failure, OR set equal to endDate on manual cancellation
   gracePeriodEndsAt DateTime?
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid (preapproval)
-  /// mercadopago_preapproval | mp_checkout_pro
-  paymentProvider String @default("mercadopago_preapproval")
-  /// CheckoutSession id for mp_checkout_pro renewals / tracing
+  /// Cómo se cobra: automatic_recurring | manual_monthly
+  billingStrategy String @default("automatic_recurring")
+  /// PSP: mercadopago | paypal | stripe
+  paymentProvider String @default("mercadopago")
+  /// Implementación interna MP (preapproval | checkout_pro) durante transición
+  providerImplementation String?
+  /// CheckoutSession id for manual_monthly renewals / tracing
   providerCheckoutSessionId String?
+  /// Cambio de plan programado (dominio SaaS, independiente de MP)
+  scheduledPlanId String?
+  scheduledPlan Plan? @relation("ScheduledPlanChange", fields: [scheduledPlanId], references: [id], onDelete: SetNull)
+  scheduledChangeAt DateTime?
+  /// Última intención de timing: immediate | end_of_period
+  planChangeWhen String?
   /// Snapshot del último método de pago exitoso (desde webhook payment)
   lastPaymentMethodKind       String?
   lastPaymentMethodBrand      String?
@@ -629,6 +639,7 @@ model Subscription {
   @@index([organizationId])
   @@index([currentPeriodEnd])
   @@index([isActiveSubscription])
+  @@index([scheduledChangeAt])
 }
 
 model EmailDomain {
@@ -723,6 +734,7 @@ model Plan {
   organizations            RestaurantOrganization[]  @relation("OrgDefaultPlan")
   customOrganizations      RestaurantOrganization[]  @relation("OrgCustomPlan")
   subscriptions            Subscription[]
+  scheduledPlanSubscriptions Subscription[] @relation("ScheduledPlanChange")
   paymentReceipts          PaymentReceipt[]
   checkoutSessions         CheckoutSession[]
   promoCodes               PromoCode[]               @relation("PromoCodePlan")
@@ -832,8 +844,9 @@ model CheckoutSession {
   status                    String    @default("pending") // "pending" | "completed" | "expired" | "abandoned"
   mercadopagoPreapprovalId  String?
   mercadopagoPreferenceId   String?
-  /// mercadopago_preapproval | mp_checkout_pro
-  paymentProvider           String    @default("mercadopago_preapproval")
+  billingStrategy           String    @default("automatic_recurring")
+  paymentProvider           String    @default("mercadopago")
+  providerImplementation    String?
   checkoutUrl               String?
   /// Si existe, al autorizar el nuevo preapproval se cancela esta suscripción en MP (cambio de plan inmediato sin perder acceso antes de pagar).
   pendingChangeFromSubscriptionId String?

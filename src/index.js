@@ -38,6 +38,7 @@ const { startPostVisitFeedbackJob } = require("./jobs/postVisitFeedbackJob");
 const { startReferralEvaluationJob } = require("./jobs/referralEvaluationJob");
 const referralService = require("./services/referralService");
 const { startCheckoutProRenewalJob } = require("./jobs/checkoutProRenewalJob");
+const { startPlanChangeSchedulerJob } = require("./jobs/planChangeSchedulerJob");
 const { startLastChanceLinkJob } = require("./jobs/lastChanceLinkJob");
 const { assertMpEnvSafety } = require("./lib/mercadopagoEnv");
 const { publicRouter: feedbackPublicRouter, restaurantRouter: feedbackRestaurantRouter } = require("./routes/feedback.routes");
@@ -274,5 +275,6 @@ app.listen(PORT, "0.0.0.0", () => {
   startPostVisitFeedbackJob();
   startReferralEvaluationJob();
   startCheckoutProRenewalJob();
+  startPlanChangeSchedulerJob();
   startLastChanceLinkJob();
 });

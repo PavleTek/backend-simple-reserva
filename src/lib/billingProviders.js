@@ -1,10 +1,34 @@
 /**
- * Proveedores de cobro soportados (orquestación in-house, fase 1: MP).
+ * Proveedores de cobro: estrategia (cómo cobrar) + PSP + compat legacy MP.
  */
 
-const PAYMENT_PROVIDER_MP_PREAPPROVAL = 'mercadopago_preapproval';
-const PAYMENT_PROVIDER_MP_CHECKOUT_PRO = 'mp_checkout_pro';
+const {
+  BILLING_STRATEGY_AUTOMATIC,
+  BILLING_STRATEGY_MANUAL,
+  PAYMENT_PROVIDER_MERCADOPAGO,
+  LEGACY_MP_PREAPPROVAL,
+  LEGACY_MP_CHECKOUT_PRO,
+  isLegacyProviderId,
+  legacyIdFromStrategy,
+  strategyFromLegacyProvider,
+  normalizeBillingStrategy,
+  normalizePaymentProviderPsp,
+  collectionMethodLabel,
+  subscriptionBillingView,
+} = require('./billingDomain');
 
+const PAYMENT_PROVIDER_MP_PREAPPROVAL = LEGACY_MP_PREAPPROVAL;
+const PAYMENT_PROVIDER_MP_CHECKOUT_PRO = LEGACY_MP_CHECKOUT_PRO;
+
+function parseEnabledStrategies() {
+  const raw = process.env.BILLING_STRATEGIES_ENABLED || 'automatic_recurring,manual_monthly';
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** @deprecated use parseEnabledStrategies */
 function parseEnabledProviders() {
   const raw = process.env.BILLING_PROVIDERS_ENABLED || 'mercadopago_preapproval,mp_checkout_pro';
   return raw
@@ -13,21 +37,24 @@ function parseEnabledProviders() {
     .filter(Boolean);
 }
 
-function getDefaultPaymentProvider(organization) {
-  const enabled = parseEnabledProviders();
-  if (enabled.includes(PAYMENT_PROVIDER_MP_PREAPPROVAL) && isChileBilling(organization)) {
-    return PAYMENT_PROVIDER_MP_PREAPPROVAL;
+function getDefaultBillingStrategy(organization) {
+  const enabled = parseEnabledStrategies();
+  const legacyEnabled = parseEnabledProviders();
+  if (
+    enabled.includes(BILLING_STRATEGY_AUTOMATIC) &&
+    legacyEnabled.includes(PAYMENT_PROVIDER_MP_PREAPPROVAL) &&
+    isChileBilling(organization)
+  ) {
+    return BILLING_STRATEGY_AUTOMATIC;
   }
-  if (enabled.includes(PAYMENT_PROVIDER_MP_CHECKOUT_PRO)) return PAYMENT_PROVIDER_MP_CHECKOUT_PRO;
-  return enabled[0] || PAYMENT_PROVIDER_MP_PREAPPROVAL;
+  if (enabled.includes(BILLING_STRATEGY_MANUAL) || legacyEnabled.includes(PAYMENT_PROVIDER_MP_CHECKOUT_PRO)) {
+    return BILLING_STRATEGY_MANUAL;
+  }
+  return enabled[0] === BILLING_STRATEGY_MANUAL ? BILLING_STRATEGY_MANUAL : BILLING_STRATEGY_AUTOMATIC;
 }
 
-/** @deprecated use getDefaultPaymentProvider(org) */
-function getDefaultPaymentProviderLegacy() {
-  const def = (process.env.BILLING_DEFAULT_PROVIDER || PAYMENT_PROVIDER_MP_CHECKOUT_PRO).trim();
-  const enabled = parseEnabledProviders();
-  if (enabled.includes(def)) return def;
-  return enabled[0] || PAYMENT_PROVIDER_MP_CHECKOUT_PRO;
+function getDefaultPaymentProvider(organization) {
+  return legacyIdFromStrategy(getDefaultBillingStrategy(organization));
 }
 
 function resolveBillingCountry(organization) {
@@ -43,76 +70,108 @@ function isChileBilling(organization) {
   return resolveBillingCountry(organization) === 'CL';
 }
 
-function listBillingProvidersForApi(organization) {
-  const enabled = parseEnabledProviders();
+function listCollectionMethodsForApi(organization) {
+  const enabled = parseEnabledStrategies();
+  const legacyEnabled = parseEnabledProviders();
   const all = [
     {
-      id: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
-      label: 'Mercado Pago (pago con tarjeta)',
+      id: BILLING_STRATEGY_MANUAL,
+      billingStrategy: BILLING_STRATEGY_MANUAL,
+      paymentProvider: PAYMENT_PROVIDER_MERCADOPAGO,
+      legacyId: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
+      label: 'Pago mensual manual',
       description:
-        'Pago en mercadopago.cl en pesos (CLP). Acepta tarjetas chilenas e internacionales. Ideal si tu correo está en MP de otro país.',
+        'Recibes un link de pago cada mes. Debes pagar antes del vencimiento; si no pagas, entra período de gracia.',
       supportsInternationalCards: true,
       supportsAutoRecurring: false,
       requiresMercadoPagoChileEmail: false,
       recommended: false,
     },
     {
-      id: PAYMENT_PROVIDER_MP_PREAPPROVAL,
-      label: 'Mercado Pago (débito automático)',
+      id: BILLING_STRATEGY_AUTOMATIC,
+      billingStrategy: BILLING_STRATEGY_AUTOMATIC,
+      paymentProvider: PAYMENT_PROVIDER_MERCADOPAGO,
+      legacyId: PAYMENT_PROVIDER_MP_PREAPPROVAL,
+      label: 'Débito automático',
       description:
-        'Cobro mensual automático. Requiere cuenta mercadopago.cl y el mismo correo en el checkout.',
+        'Cobro automático mensual y renovación automática. Requiere cuenta mercadopago.cl y el mismo correo en el checkout.',
       supportsInternationalCards: false,
       supportsAutoRecurring: true,
       requiresMercadoPagoChileEmail: true,
       recommended: true,
     },
   ];
-  let filtered = all.filter((p) => enabled.includes(p.id));
+  let filtered = all.filter((p) => {
+    const strategyOk = enabled.includes(p.billingStrategy);
+    const legacyOk = legacyEnabled.includes(p.legacyId);
+    return strategyOk || legacyOk;
+  });
   if (!isChileBilling(organization)) {
-    filtered = filtered.filter((p) => p.id === PAYMENT_PROVIDER_MP_CHECKOUT_PRO);
+    filtered = filtered.filter((p) => p.billingStrategy === BILLING_STRATEGY_MANUAL);
   }
   return filtered;
 }
 
-function normalizePaymentProvider(value) {
+/** @deprecated alias */
+function listBillingProvidersForApi(organization) {
+  return listCollectionMethodsForApi(organization).map((m) => ({
+    id: m.legacyId,
+    billingStrategy: m.billingStrategy,
+    paymentProvider: m.paymentProvider,
+    label: m.label,
+    description: m.description,
+    supportsInternationalCards: m.supportsInternationalCards,
+    supportsAutoRecurring: m.supportsAutoRecurring,
+    requiresMercadoPagoChileEmail: m.requiresMercadoPagoChileEmail,
+    recommended: m.recommended,
+  }));
+}
+
+function normalizePaymentProvider(value, organization) {
   const v = String(value || '').trim();
-  if (v === PAYMENT_PROVIDER_MP_CHECKOUT_PRO) return PAYMENT_PROVIDER_MP_CHECKOUT_PRO;
-  if (v === PAYMENT_PROVIDER_MP_PREAPPROVAL) return PAYMENT_PROVIDER_MP_PREAPPROVAL;
-  return getDefaultPaymentProvider();
+  if (v === BILLING_STRATEGY_MANUAL || v === BILLING_STRATEGY_AUTOMATIC) {
+    return legacyIdFromStrategy(v);
+  }
+  if (v === PAYMENT_PROVIDER_MP_CHECKOUT_PRO || v === PAYMENT_PROVIDER_MP_PREAPPROVAL) {
+    return v;
+  }
+  if (v === PAYMENT_PROVIDER_MERCADOPAGO) {
+    return legacyIdFromStrategy(getDefaultBillingStrategy(organization));
+  }
+  return legacyIdFromStrategy(getDefaultBillingStrategy(organization));
 }
 
-function isProviderEnabled(provider) {
-  return parseEnabledProviders().includes(provider);
+function normalizeBillingInput(body, organization) {
+  const rawStrategy = body?.billingStrategy ?? body?.collectionMethod;
+  const rawProvider = body?.paymentProvider;
+  let billingStrategy = null;
+  if (rawStrategy) {
+    billingStrategy = normalizeBillingStrategy(rawStrategy, organization);
+  } else if (isLegacyProviderId(rawProvider)) {
+    billingStrategy = strategyFromLegacyProvider(rawProvider);
+  } else if (rawProvider === PAYMENT_PROVIDER_MERCADOPAGO && body?.billingStrategy) {
+    billingStrategy = normalizeBillingStrategy(body.billingStrategy, organization);
+  } else if (isLegacyProviderId(rawProvider) || rawProvider) {
+    billingStrategy = strategyFromLegacyProvider(normalizePaymentProvider(rawProvider, organization));
+  } else {
+    billingStrategy = getDefaultBillingStrategy(organization);
+  }
+  const psp = normalizePaymentProviderPsp(body?.paymentProviderPsp ?? PAYMENT_PROVIDER_MERCADOPAGO);
+  return {
+    billingStrategy,
+    paymentProvider: psp,
+    legacyPaymentProviderId: legacyIdFromStrategy(billingStrategy),
+  };
 }
 
-function listBillingProvidersForApiLegacy() {
-  const enabled = parseEnabledProviders();
-  const all = [
-    {
-      id: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
-      label: 'Mercado Pago (pago con tarjeta)',
-      description:
-        'Pago en mercadopago.cl en pesos (CLP). Acepta tarjetas chilenas e internacionales. Ideal si tu correo está en MP de otro país.',
-      supportsInternationalCards: true,
-      supportsAutoRecurring: false,
-      requiresMercadoPagoChileEmail: false,
-      recommended: true,
-    },
-    {
-      id: PAYMENT_PROVIDER_MP_PREAPPROVAL,
-      label: 'Mercado Pago (débito automático)',
-      description:
-        'Cobro mensual automático. Requiere cuenta mercadopago.cl y el mismo correo en el checkout.',
-      supportsInternationalCards: false,
-      supportsAutoRecurring: true,
-      requiresMercadoPagoChileEmail: true,
-      recommended: false,
-    },
-  ];
-  return all.filter((p) => enabled.includes(p.id));
+function isStrategyEnabled(billingStrategy) {
+  return parseEnabledStrategies().includes(billingStrategy);
 }
 
-/** external_reference: orgId|planSKU|cp|checkoutSessionId */
+function isProviderEnabled(legacyProviderId) {
+  return parseEnabledProviders().includes(legacyProviderId);
+}
+
 const CHECKOUT_PRO_REF_TAG = 'cp';
 
 function buildCheckoutProExternalReference(organizationId, planSKU, checkoutSessionId) {
@@ -143,15 +202,23 @@ function parseExternalReference(externalRef) {
 module.exports = {
   PAYMENT_PROVIDER_MP_PREAPPROVAL,
   PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
+  BILLING_STRATEGY_AUTOMATIC,
+  BILLING_STRATEGY_MANUAL,
+  PAYMENT_PROVIDER_MERCADOPAGO,
   parseEnabledProviders,
+  parseEnabledStrategies,
+  getDefaultBillingStrategy,
   getDefaultPaymentProvider,
-  getDefaultPaymentProviderLegacy,
   resolveBillingCountry,
   isChileBilling,
   normalizePaymentProvider,
+  normalizeBillingInput,
+  isStrategyEnabled,
   isProviderEnabled,
+  listCollectionMethodsForApi,
   listBillingProvidersForApi,
-  listBillingProvidersForApiLegacy,
+  collectionMethodLabel,
+  subscriptionBillingView,
   CHECKOUT_PRO_REF_TAG,
   buildCheckoutProExternalReference,
   parseExternalReference,

@@ -170,9 +170,12 @@ async function createCheckoutPreference({
  */
 async function activateFromCheckoutProPayment(organizationId, planSKU, checkoutSessionId, options = {}) {
   const mercadopagoService = require('./mercadopagoService');
+  const { BILLING_STRATEGY_MANUAL } = require('../lib/billingDomain');
   await mercadopagoService.activateOrganizationSubscription(organizationId, null, planSKU, {
     ...options,
     paymentProvider: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
+    billingStrategy: BILLING_STRATEGY_MANUAL,
+    paymentProviderPsp: 'mercadopago',
     providerCheckoutSessionId: checkoutSessionId,
   });
 }
@@ -196,7 +199,7 @@ async function processCheckoutProRenewal(mpPayment, parsed) {
   }
 
   const sub = await prisma.subscription.findFirst({
-    where: { id: subscriptionId, organizationId, paymentProvider: PAYMENT_PROVIDER_MP_CHECKOUT_PRO },
+    where: { id: subscriptionId, organizationId, billingStrategy: 'manual_monthly' },
     include: { plan: true },
   });
   if (!sub) {

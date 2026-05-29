@@ -477,9 +477,26 @@ async function getActivateOptionsForPreapproval(organizationId, preapprovalId) {
 async function activateOrganizationSubscription(organizationId, preapprovalId, planSKU = 'plan-profesional', options = {}) {
   const {
     replaceSubscriptionId,
-    paymentProvider = 'mercadopago_preapproval',
+    paymentProvider: legacyPaymentProvider = 'mercadopago_preapproval',
     providerCheckoutSessionId = null,
+    billingStrategy: billingStrategyOpt = null,
+    paymentProviderPsp = 'mercadopago',
   } = options;
+
+  const {
+    checkoutSessionBillingData,
+    BILLING_STRATEGY_MANUAL,
+    LEGACY_MP_CHECKOUT_PRO,
+  } = require('../lib/billingDomain');
+  const billingStrategy =
+    billingStrategyOpt ||
+    (legacyPaymentProvider === LEGACY_MP_CHECKOUT_PRO
+      ? BILLING_STRATEGY_MANUAL
+      : 'automatic_recurring');
+  const billingFields = checkoutSessionBillingData({
+    billingStrategy,
+    paymentProvider: paymentProviderPsp,
+  });
 
   if (preapprovalId) {
     const existing = await prisma.subscription.findFirst({
@@ -488,11 +505,11 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     if (existing) return;
   }
 
-  if (paymentProvider === 'mp_checkout_pro' && providerCheckoutSessionId) {
+  if (billingStrategy === BILLING_STRATEGY_MANUAL && providerCheckoutSessionId) {
     const existingCp = await prisma.subscription.findFirst({
       where: {
         organizationId,
-        paymentProvider: 'mp_checkout_pro',
+        billingStrategy: BILLING_STRATEGY_MANUAL,
         providerCheckoutSessionId,
         status: 'active',
       },
@@ -570,6 +587,15 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
       where: { organizationId, status: { in: ['trial', 'active', 'scheduled', 'grace'] } },
       data: { status: 'cancelled', isActiveSubscription: false },
     });
+    await tx.subscription.updateMany({
+      where: { organizationId, status: 'active' },
+      data: {
+        scheduledPlanId: null,
+        scheduledChangeAt: null,
+        planChangeWhen: null,
+      },
+    });
+
     await tx.subscription.create({
       data: {
         organizationId,
@@ -577,7 +603,9 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
         status: 'active',
         isActiveSubscription: true,
         mercadopagoPreapprovalId: preapprovalId || null,
-        paymentProvider,
+        billingStrategy: billingFields.billingStrategy,
+        paymentProvider: billingFields.paymentProvider,
+        providerImplementation: billingFields.providerImplementation,
         providerCheckoutSessionId: providerCheckoutSessionId || null,
         startDate: activatedAt,
         currentPeriodEnd: nextPeriodEnd,

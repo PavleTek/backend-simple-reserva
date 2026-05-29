@@ -29,7 +29,7 @@ async function updatePaymentMethod({
     throw err;
   }
 
-  return billingCheckoutService.createBillingCheckout({
+  return billingCheckoutService.createBillingCheckoutWithPendingChange({
     organizationId,
     userId,
     payerEmail: payerEmail || loginEmail,
@@ -37,9 +37,8 @@ async function updatePaymentMethod({
     restaurantId,
     when: 'now',
     paymentProvider,
-    createSubscriptionOptions: {},
     pendingChangeFromSubscriptionId: sub.id,
-    purpose: 'update_payment_method',
+    createSubscriptionOptions: {},
   });
 }
 

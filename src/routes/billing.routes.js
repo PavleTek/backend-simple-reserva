@@ -188,7 +188,34 @@ router.use(authorizeRestaurant);
 const ROLES_BILLING = ['restaurant_owner', 'restaurant_manager'];
 
 router.get('/billing/providers', authenticateRestaurantRoles(ROLES_BILLING), async (req, res) => {
-  const { listBillingProvidersForApi, getDefaultPaymentProvider } = require('../lib/billingProviders');
+  const {
+    listBillingProvidersForApi,
+    listCollectionMethodsForApi,
+    getDefaultPaymentProvider,
+    getDefaultBillingStrategy,
+  } = require('../lib/billingProviders');
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: req.activeRestaurant.restaurantId },
+    select: { organizationId: true },
+  });
+  const org = restaurant
+    ? await prisma.restaurantOrganization.findUnique({
+        where: { id: restaurant.organizationId },
+        select: { billingCountry: true, owner: { select: { country: true } } },
+      })
+    : null;
+  const collectionMethods = listCollectionMethodsForApi(org);
+  res.json({
+    providers: listBillingProvidersForApi(org),
+    collectionMethods,
+    defaultProvider: getDefaultPaymentProvider(org),
+    defaultBillingStrategy: getDefaultBillingStrategy(org),
+    billingCountry: org?.billingCountry ?? org?.owner?.country ?? 'CL',
+  });
+});
+
+router.get('/billing/collection-methods', authenticateRestaurantRoles(ROLES_BILLING), async (req, res) => {
+  const { listCollectionMethodsForApi, getDefaultBillingStrategy } = require('../lib/billingProviders');
   const restaurant = await prisma.restaurant.findUnique({
     where: { id: req.activeRestaurant.restaurantId },
     select: { organizationId: true },
@@ -200,8 +227,8 @@ router.get('/billing/providers', authenticateRestaurantRoles(ROLES_BILLING), asy
       })
     : null;
   res.json({
-    providers: listBillingProvidersForApi(org),
-    defaultProvider: getDefaultPaymentProvider(org),
+    collectionMethods: listCollectionMethodsForApi(org),
+    defaultBillingStrategy: getDefaultBillingStrategy(org),
     billingCountry: org?.billingCountry ?? org?.owner?.country ?? 'CL',
   });
 });
@@ -363,15 +390,21 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
     const renewalScheduledSamePlan = isSamePlanRenewalScheduled(sub, scheduledSub);
     const renewalScheduledAt = renewalScheduledSamePlan ? scheduledSub.startDate.toISOString() : null;
 
+    const { resolveScheduledPlanFromSub } = require('../services/billing/billingOrchestrator');
+    const { subscriptionBillingView } = require('../lib/billingDomain');
+    const dbScheduled = resolveScheduledPlanFromSub(sub, scheduledSub);
+
     // Renovación del mismo plan: no exponer scheduledPlan como "cambio" (evita doble banner / mismo plan "cancelado y programado")
-    let scheduledPlanOut = scheduledSub?.plan?.productSKU ?? null;
-    let scheduledPlanNameOut = scheduledSub?.plan?.name ?? null;
-    let scheduledDateOut = scheduledSub?.startDate?.toISOString() ?? null;
+    let scheduledPlanOut = dbScheduled.scheduledPlanSku ?? scheduledSub?.plan?.productSKU ?? null;
+    let scheduledPlanNameOut = dbScheduled.scheduledPlanName ?? scheduledSub?.plan?.name ?? null;
+    let scheduledDateOut = dbScheduled.scheduledDate ?? scheduledSub?.startDate?.toISOString() ?? null;
     if (renewalScheduledSamePlan) {
       scheduledPlanOut = null;
       scheduledPlanNameOut = null;
       scheduledDateOut = null;
     }
+
+    const billingView = sub ? subscriptionBillingView(sub) : null;
 
     // Si ya tiene una sub scheduled, no puede reactivar (ya eligió)
     const canReactivate = canReactivateBase && !scheduledSub;
@@ -422,6 +455,11 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
       allPlans: sortPlansByDisplayOrder(allPlansForOrg),
       offeredPlans,
       billingEmail: orgWithCustomPlan?.billingEmail ?? null,
+      paymentProvider: billingView?.paymentProvider ?? sub?.paymentProvider ?? null,
+      billingStrategy: billingView?.billingStrategy ?? null,
+      collectionMethodLabel: billingView?.collectionMethodLabel ?? null,
+      legacyPaymentProviderId: billingView?.legacyPaymentProviderId ?? null,
+      scheduledChangeSource: dbScheduled.source,
     });
   } catch (error) {
     next(error);
@@ -493,15 +531,12 @@ router.post('/billing/change-plan/preview', authenticateRestaurantRoles(['restau
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const { normalizePaymentProvider } = require('../lib/billingProviders');
     const { previewChangePlan } = require('../services/billing/changePlanPreviewService');
+    const { normalizePlanChangeWhen } = require('../lib/billingDomain');
     const result = await previewChangePlan({
       organizationId: restaurant.organizationId,
       planSKU: req.body?.plan?.trim(),
-      when: 'end_of_period',
-      paymentProvider: normalizePaymentProvider(req.body?.paymentProvider),
+      when: req.body?.when ? normalizePlanChangeWhen(req.body.when) : undefined,
     });
-    if (!result.allowed) {
-      return res.status(400).json(result);
-    }
     res.json(result);
   } catch (error) {
     next(error);
@@ -529,7 +564,7 @@ router.post('/billing/recovery/create-link', authenticateRestaurantRoles(['resta
   }
 });
 
-router.post('/billing/payment-method/update', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+async function handleCollectionMethodUpdate(req, res, next) {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
     const restaurant = await prisma.restaurant.findUnique({
@@ -537,32 +572,45 @@ router.post('/billing/payment-method/update', authenticateRestaurantRoles(['rest
       select: { organizationId: true },
     });
     if (!restaurant) throw new Error('Restaurante no encontrado');
-    const { normalizePaymentProvider } = require('../lib/billingProviders');
-    const { updatePaymentMethod } = require('../services/billing/paymentMethodUpdateService');
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: restaurant.organizationId },
+      select: { billingCountry: true, owner: { select: { country: true } } },
+    });
+    const { normalizeBillingInput } = require('../lib/billingProviders');
+    const { updateCollectionMethod } = require('../services/billing/billingOrchestrator');
     const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: { email: true } });
-    const paymentProvider = normalizePaymentProvider(req.body?.paymentProvider);
+    const billing = normalizeBillingInput(req.body, org);
+    const paymentProvider = billing.legacyPaymentProviderId;
     const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
       restaurant.organizationId,
       req.body?.mercadopagoPayerEmail,
       user?.email,
       paymentProvider,
     );
-    const result = await updatePaymentMethod({
+    const sub = await getActiveSubscription(restaurant.organizationId);
+    const planSku = sub?.plan?.productSKU || 'plan-profesional';
+
+    const result = await updateCollectionMethod({
       organizationId: restaurant.organizationId,
       userId: req.user.id,
-      restaurantId,
-      paymentProvider,
       payerEmail: mercadopagoPayerEmail,
-      loginEmail: user?.email,
+      planSKU: planSku,
+      restaurantId,
+      billingStrategy: billing.billingStrategy,
+      paymentProviderPsp: billing.paymentProvider,
     });
     sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
       paymentProvider: result.providerId,
+      billingStrategy: billing.billingStrategy,
       hints: result.checkoutHints,
     });
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }
-});
+}
+
+router.post('/billing/payment-method/update', authenticateRestaurantRoles(['restaurant_owner']), handleCollectionMethodUpdate);
+router.post('/billing/collection-method/update', authenticateRestaurantRoles(['restaurant_owner']), handleCollectionMethodUpdate);
 
 router.get('/billing/invoices/:invoiceId/pdf', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
@@ -952,7 +1000,8 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const organizationId = restaurant.organizationId;
 
-    const when = req.body?.when === 'now' ? 'now' : 'end_of_period';
+    const whenRaw = String(req.body?.when || '').trim();
+    const when = whenRaw === 'now' || whenRaw === 'immediate' ? 'now' : 'end_of_period';
 
     // Buscar sub cancelada con acceso vigente
     const cancelledSub = await prisma.subscription.findFirst({
@@ -994,13 +1043,6 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
     const billingCheckoutService = require('../services/billingCheckoutService');
     const { normalizePaymentProvider, PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
     const paymentProvider = normalizePaymentProvider(req.body?.paymentProvider);
-
-    if (when === 'end_of_period' && paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO) {
-      return res.status(400).json({
-        error:
-          'Para reactivar al vencer el periodo usa débito automático Mercado Pago. El pago con tarjeta solo permite activación inmediata.',
-      });
-    }
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
@@ -1054,13 +1096,7 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
 
 /**
  * POST /billing/change-plan
- * Cambia de plan desde una suscripción activa.
- *
- * when='now' (default): abre checkout inmediato; la sub actual en MP se mantiene hasta que
- *   el nuevo pago autorice (CheckoutSession.pendingChangeFromSubscriptionId).
- * when='end_of_period': cancela el preapproval de MP (deja de cobrar el plan viejo),
- *   mantiene acceso hasta el fin del periodo ya pagado, y abre un checkout cuyo
- *   primer cobro es en esa fecha (igual que reactivate pero partiendo de un estado activo).
+ * when: immediate | end_of_period — independiente del método de cobro.
  */
 router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
@@ -1075,93 +1111,58 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     const newPlanSKU = req.body?.plan?.trim();
     if (!newPlanSKU) return res.status(400).json({ error: 'plan requerido' });
 
-    const when = 'end_of_period';
-
-    const newPlan = await prisma.plan.findUnique({ where: { productSKU: newPlanSKU } });
-    if (!newPlan) return res.status(400).json({ error: `Plan no encontrado: ${newPlanSKU}` });
-
-    if (newPlan.comingSoon) {
-      return res.status(400).json({ error: 'Este plan aún no está disponible. Pronto podrás contratarlo.' });
-    }
-
-    if (!(await orgCanUsePlan(organizationId, newPlan))) {
-      return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
-    }
-
-    const currentSub = await prisma.subscription.findFirst({
-      where: { organizationId, status: 'active' },
-      orderBy: { startDate: 'desc' },
-      include: { plan: true },
-    });
-    if (!currentSub) {
-      return res.status(400).json({ error: 'No tienes una suscripción activa para cambiar.' });
-    }
-    if (currentSub.plan.productSKU === newPlanSKU) {
-      return res.status(400).json({ error: 'Ya tienes este plan activo.' });
-    }
-
-    let checkoutStartDateOpt = null;
-
-    if (when === 'end_of_period') {
-      const periodEnd = computePeriodEnd(currentSub.startDate, currentSub.plan);
-      if (!periodEnd) {
-        return res.status(500).json({ error: 'No se pudo calcular el fin del periodo.' });
-      }
-      checkoutStartDateOpt = periodEnd;
-      // No cancelar en MP ni en DB aquí: el plan activo sigue vigente hasta que el usuario
-      // complete el pago. Si abandona el checkout, su plan no se ve afectado.
-      // La cancelación del preapproval anterior en MP ocurre al confirmar el nuevo
-      // (ver cancelReplacedPreapprovalOnSchedule en webhook / confirmSubscriptionFromPreapproval).
-    }
-    // when === 'now': igual — no cancelar hasta que el nuevo preapproval autorice.
-
-    planService.invalidateCache(organizationId);
-
-    await prisma.checkoutSession.updateMany({
-      where: { organizationId, status: 'pending' },
-      data: { status: 'expired' },
-    });
-
-    const billingCheckoutService = require('../services/billingCheckoutService');
-    const { normalizePaymentProvider, PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
-    const paymentProvider = normalizePaymentProvider(req.body?.paymentProvider);
-
-    if (when === 'end_of_period' && paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO) {
-      return res.status(400).json({
-        error:
-          'Para programar un cambio al fin del periodo necesitas débito automático Mercado Pago. Actualiza tu método de pago.',
-      });
-    }
+    const { normalizePlanChangeWhen } = require('../lib/billingDomain');
+    const { executePlanChange } = require('../services/billing/billingOrchestrator');
+    const when = normalizePlanChangeWhen(req.body?.when || 'end_of_period');
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true },
     });
 
-    const changePlanOpts = checkoutStartDateOpt ? { startDate: checkoutStartDateOpt } : {};
+    const activeSub = await prisma.subscription.findFirst({
+      where: { organizationId, status: 'active' },
+      include: { plan: true },
+    });
+    const { resolveBillingStrategy, BILLING_STRATEGY_AUTOMATIC } = require('../lib/billingDomain');
+    const strategy = activeSub ? resolveBillingStrategy(activeSub) : BILLING_STRATEGY_AUTOMATIC;
+    const legacyProvider =
+      strategy === BILLING_STRATEGY_AUTOMATIC ? 'mercadopago_preapproval' : 'mp_checkout_pro';
+
+    const changePlanOpts = {};
     await applyReferralCreditsToCheckoutOptions(organizationId, changePlanOpts, null);
 
     const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
       organizationId,
       req.body?.mercadopagoPayerEmail,
       user?.email,
-      when === 'end_of_period' ? 'mercadopago_preapproval' : paymentProvider,
+      legacyProvider,
     );
 
-    const result = await billingCheckoutService.createBillingCheckoutWithPendingChange({
+    const result = await executePlanChange({
       organizationId,
       userId: req.user.id,
       payerEmail: mercadopagoPayerEmail || user?.email,
       planSKU: newPlanSKU,
       restaurantId,
-      when: when === 'end_of_period' ? 'end_of_period' : 'now',
-      paymentProvider: when === 'end_of_period' ? 'mercadopago_preapproval' : paymentProvider,
-      pendingChangeFromSubscriptionId: currentSub.id,
+      when,
+      body: req.body,
       createSubscriptionOptions: changePlanOpts,
     });
 
+    if (result.scheduled) {
+      return res.json({
+        scheduled: true,
+        effectiveDate: result.effectiveDate,
+        scheduledPlan: result.scheduledPlanSku,
+        scheduledPlanName: result.scheduledPlanName,
+        message: `Cambio al plan ${result.scheduledPlanName} programado para el ${result.effectiveDate.slice(0, 10)}.`,
+      });
+    }
+
     sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
       paymentProvider: result.providerId,
+      billingStrategy: result.billingStrategy,
       hints: result.checkoutHints,
     });
   } catch (error) {

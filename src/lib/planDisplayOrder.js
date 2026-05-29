@@ -10,4 +10,26 @@ function sortPlansByDisplayOrder(plans) {
   return [...plans].sort((a, b) => rank(a.productSKU) - rank(b.productSKU));
 }
 
-module.exports = { PLAN_DISPLAY_ORDER, sortPlansByDisplayOrder };
+function getStandardPlanTier(productSKU) {
+  const index = PLAN_DISPLAY_ORDER.indexOf(productSKU);
+  return index === -1 ? null : index;
+}
+
+/**
+ * upgrade | downgrade | null (custom o mismo tier estándar → sin etiqueta de dirección)
+ */
+function resolvePlanChangeType(currentSku, targetSku) {
+  const currentTier = getStandardPlanTier(currentSku);
+  const targetTier = getStandardPlanTier(targetSku);
+  if (currentTier === null || targetTier === null) return null;
+  if (targetTier > currentTier) return 'upgrade';
+  if (targetTier < currentTier) return 'downgrade';
+  return null;
+}
+
+module.exports = {
+  PLAN_DISPLAY_ORDER,
+  sortPlansByDisplayOrder,
+  getStandardPlanTier,
+  resolvePlanChangeType,
+};

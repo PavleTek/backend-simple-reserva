@@ -12,7 +12,8 @@ const {
 } = require('../subscriptionService');
 const { formatPaymentMethodForApi } = require('./paymentMethodSnapshot');
 const { fetchMpRetrySchedule } = require('./retryScheduleService');
-const { PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../../lib/billingProviders');
+const { subscriptionBillingView } = require('../../lib/billingDomain');
+const { resolveScheduledPlanFromSub } = require('./billingOrchestrator');
 
 const IVA_RATE = 0.19;
 
@@ -173,14 +174,17 @@ async function getBillingOverview(organizationId, restaurantId) {
   const renewalScheduledSamePlan = isSamePlanRenewalScheduled(sub, scheduledSub);
   const renewalScheduledAt = renewalScheduledSamePlan ? scheduledSub.startDate.toISOString() : null;
 
-  let scheduledPlanOut = scheduledSub?.plan?.productSKU ?? null;
-  let scheduledPlanNameOut = scheduledSub?.plan?.name ?? null;
-  let scheduledDateOut = scheduledSub?.startDate?.toISOString() ?? null;
+  const dbScheduled = resolveScheduledPlanFromSub(sub, scheduledSub);
+  let scheduledPlanOut = dbScheduled.scheduledPlanSku ?? scheduledSub?.plan?.productSKU ?? null;
+  let scheduledPlanNameOut = dbScheduled.scheduledPlanName ?? scheduledSub?.plan?.name ?? null;
+  let scheduledDateOut = dbScheduled.scheduledDate ?? scheduledSub?.startDate?.toISOString() ?? null;
   if (renewalScheduledSamePlan) {
     scheduledPlanOut = null;
     scheduledPlanNameOut = null;
     scheduledDateOut = null;
   }
+
+  const billingView = sub ? subscriptionBillingView(sub) : null;
 
   const nextPaymentDate =
     sub?.status === 'active' && sub.currentPeriodEnd
@@ -202,7 +206,8 @@ async function getBillingOverview(organizationId, restaurantId) {
   }
 
   const paymentMethod = formatPaymentMethodForApi(sub);
-  const isCheckoutPro = sub?.paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO;
+  const isManual = billingView?.isManual ?? false;
+  const isAutomatic = billingView?.isAutomatic ?? false;
 
   const alerts = buildAlerts({
     status,
@@ -244,8 +249,9 @@ async function getBillingOverview(organizationId, restaurantId) {
       currency: 'CLP',
       date: nextPaymentDate,
       daysUntil: daysUntil(nextPaymentDate),
-      isAutomatic: !isCheckoutPro && sub?.paymentProvider === 'mercadopago_preapproval',
-      isManual: isCheckoutPro,
+      isAutomatic,
+      isManual,
+      collectionMethodLabel: billingView?.collectionMethodLabel ?? null,
       paymentMethod,
     },
     status,
@@ -275,7 +281,10 @@ async function getBillingOverview(organizationId, restaurantId) {
       receiptType: r.receiptType,
     })),
     billingEmail: org?.billingEmail ?? null,
-    paymentProvider: sub?.paymentProvider ?? null,
+    paymentProvider: billingView?.paymentProvider ?? sub?.paymentProvider ?? null,
+    billingStrategy: billingView?.billingStrategy ?? null,
+    collectionMethodLabel: billingView?.collectionMethodLabel ?? null,
+    legacyPaymentProviderId: billingView?.legacyPaymentProviderId ?? null,
   };
 }
 

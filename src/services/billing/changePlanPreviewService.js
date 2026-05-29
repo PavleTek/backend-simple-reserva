@@ -4,32 +4,22 @@ const prisma = require('../../lib/prisma');
 const { getActiveSubscription } = require('../subscriptionService');
 const { computePeriodEnd } = require('../../lib/billingPeriod');
 const { priceWithIva } = require('./billingOverviewService');
+const { resolvePlanChangeType } = require('../../lib/planDisplayOrder');
 const {
-  PAYMENT_PROVIDER_MP_PREAPPROVAL,
-  PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
-} = require('../../lib/billingProviders');
-
-const END_OF_PERIOD_REJECT_REASON =
-  'Para programar un cambio al fin del periodo necesitas débito automático Mercado Pago. Actualiza tu método de pago.';
+  PLAN_CHANGE_IMMEDIATE,
+  PLAN_CHANGE_END_OF_PERIOD,
+  BILLING_STRATEGY_MANUAL,
+  subscriptionBillingView,
+  collectionMethodLabel,
+  normalizePlanChangeWhen,
+} = require('../../lib/billingDomain');
+const { orgCanUsePlan } = require('./billingOrchestrator');
 
 function formatEffectDate(isoDate) {
   if (!isoDate) return '';
   const d = new Date(isoDate);
   if (Number.isNaN(d.getTime())) return String(isoDate).slice(0, 10);
   return d.toLocaleDateString('es-CL', { day: 'numeric', month: 'long', year: 'numeric' });
-}
-
-async function orgCanUsePlan(organizationId, plan) {
-  if (plan.isDefault) return true;
-  const org = await prisma.restaurantOrganization.findUnique({
-    where: { id: organizationId },
-    select: { customPlanId: true },
-  });
-  if (org?.customPlanId === plan.id) return true;
-  const offer = await prisma.customPlanOffer.findUnique({
-    where: { planId_organizationId: { planId: plan.id, organizationId } },
-  });
-  return !!offer;
 }
 
 function planFeaturesSummary(plan) {
@@ -51,14 +41,92 @@ function diffFeatures(currentPlan, newPlan) {
   return { gained, lost };
 }
 
+function buildPreviewForWhen({
+  when,
+  periodEndIso,
+  effectiveDate,
+  currentPlan,
+  newPlan,
+  currentPrice,
+  newPrice,
+  tierChange,
+  billingStrategy,
+}) {
+  const isUpgrade = tierChange === 'upgrade';
+  const { gained, lost } = diffFeatures(currentPlan, newPlan);
+
+  if (when === PLAN_CHANGE_IMMEDIATE) {
+    const chargeNow = newPrice.withIva;
+    return {
+      currentPlan: {
+        name: currentPlan?.name,
+        sku: currentPlan?.productSKU,
+        price: currentPrice.base,
+        priceWithIVA: currentPrice.withIva,
+      },
+      newPlan: {
+        name: newPlan.name,
+        sku: newPlan.productSKU,
+        price: newPrice.base,
+        priceWithIVA: newPrice.withIva,
+      },
+      chargeNow,
+      chargeDate: effectiveDate,
+      nextCharge: {
+        amount: newPrice.withIva,
+        date: effectiveDate,
+      },
+      noProration: true,
+      fullMonthCharge: true,
+      gainedFeatures: gained,
+      lostFeatures: lost,
+      isUpgrade,
+      appliesNow: `Se cobrará el mes completo del plan ${newPlan.name} (${chargeNow.toLocaleString('es-CL')} CLP con IVA) y tu ciclo reinicia desde hoy.`,
+      appliesLater: null,
+      billingStrategy,
+      collectionMethodLabel: collectionMethodLabel(billingStrategy),
+    };
+  }
+
+  return {
+    currentPlan: {
+      name: currentPlan?.name,
+      sku: currentPlan?.productSKU,
+      price: currentPrice.base,
+      priceWithIVA: currentPrice.withIva,
+    },
+    newPlan: {
+      name: newPlan.name,
+      sku: newPlan.productSKU,
+      price: newPrice.base,
+      priceWithIVA: newPrice.withIva,
+    },
+    chargeNow: 0,
+    chargeDate: effectiveDate,
+    nextCharge: {
+      amount: newPrice.withIva,
+      date: effectiveDate,
+    },
+    noProration: true,
+    previousPlanCancelledAt: effectiveDate,
+    previousPlanRefund: 0,
+    gainedFeatures: gained,
+    lostFeatures: lost,
+    isUpgrade,
+    appliesNow: 'Sigues con tu plan actual hasta esa fecha.',
+    appliesLater: `El ${formatEffectDate(periodEndIso)} cambias a ${newPlan.name}.`,
+    billingStrategy,
+    collectionMethodLabel: collectionMethodLabel(billingStrategy),
+  };
+}
+
 /**
  * @param {object} params
  * @param {string} params.organizationId
  * @param {string} params.planSKU
- * @param {string} [params.when] end_of_period (único permitido para cambios activos)
- * @param {string} [params.paymentProvider]
+ * @param {string} [params.when] immediate | end_of_period
  */
-async function previewChangePlan({ organizationId, planSKU, when = 'end_of_period', paymentProvider }) {
+async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
   const sub = await getActiveSubscription(organizationId);
   if (!sub || sub.status !== 'active') {
     return {
@@ -86,81 +154,89 @@ async function previewChangePlan({ organizationId, planSKU, when = 'end_of_perio
     (await prisma.plan.findUnique({ where: { id: sub.planId } }));
   const currentPrice = priceWithIva(currentPlan?.priceCLP ?? 0);
   const newPrice = priceWithIva(newPlan.priceCLP);
-  const periodEnd = sub.currentPeriodEnd ?? computePeriodEnd(sub.startDate, currentPlan);
+
+  let periodEnd = sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
+  if (!periodEnd || Number.isNaN(periodEnd.getTime())) {
+    periodEnd = computePeriodEnd(sub.startDate, currentPlan);
+  }
+  if (!periodEnd || Number.isNaN(periodEnd.getTime())) {
+    return {
+      allowed: false,
+      error:
+        'No pudimos calcular la fecha de fin de tu periodo actual. Si el problema continúa, contacta a soporte.',
+    };
+  }
+
   const periodEndIso = periodEnd.toISOString();
   const effectiveDate = periodEndIso.slice(0, 10);
+  const todayIso = new Date().toISOString().slice(0, 10);
 
-  const rejectedWhen = [];
-  if (when === 'now') {
-    rejectedWhen.push({
-      when: 'now',
-      reason: 'Los cambios de plan se programan al fin del periodo actual.',
-    });
-  }
+  const billingView = subscriptionBillingView(sub);
+  const billingStrategy = billingView.billingStrategy;
+  const tierChange = resolvePlanChangeType(currentPlan?.productSKU, newPlan.productSKU);
+  const recommendedWhen =
+    tierChange === 'upgrade' ? PLAN_CHANGE_IMMEDIATE : PLAN_CHANGE_END_OF_PERIOD;
 
-  if (paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO) {
-    rejectedWhen.push({
-      when: 'end_of_period',
-      reason: END_OF_PERIOD_REJECT_REASON,
-    });
-  }
+  const when = rawWhen ? normalizePlanChangeWhen(rawWhen) : recommendedWhen;
 
-  const isUpgrade = Number(newPlan.priceCLP) > Number(currentPlan?.priceCLP ?? 0);
-  const changeType = isUpgrade ? 'upgrade' : 'downgrade';
-  const { gained, lost } = diffFeatures(currentPlan, newPlan);
+  const previewImmediate = buildPreviewForWhen({
+    when: PLAN_CHANGE_IMMEDIATE,
+    periodEndIso: todayIso,
+    effectiveDate: todayIso,
+    currentPlan,
+    newPlan,
+    currentPrice,
+    newPrice,
+    tierChange,
+    billingStrategy,
+  });
 
-  const previewEndOfPeriod = {
-    currentPlan: {
-      name: currentPlan?.name,
-      sku: currentPlan?.productSKU,
-      price: currentPrice.base,
-      priceWithIVA: currentPrice.withIva,
-    },
-    newPlan: {
-      name: newPlan.name,
-      sku: newPlan.productSKU,
-      price: newPrice.base,
-      priceWithIVA: newPrice.withIva,
-    },
-    chargeNow: 0,
-    chargeDate: effectiveDate,
-    nextCharge: {
-      amount: newPrice.withIva,
-      date: effectiveDate,
-    },
-    noProration: true,
-    previousPlanCancelledAt: effectiveDate,
-    previousPlanRefund: 0,
-    gainedFeatures: gained,
-    lostFeatures: lost,
-    isUpgrade,
-    appliesNow: 'Sigues con tu plan actual hasta esa fecha.',
-    appliesLater: `El ${effectiveDate} cambias a ${newPlan.name}.`,
-  };
+  const previewEndOfPeriod = buildPreviewForWhen({
+    when: PLAN_CHANGE_END_OF_PERIOD,
+    periodEndIso,
+    effectiveDate,
+    currentPlan,
+    newPlan,
+    currentPrice,
+    newPrice,
+    tierChange,
+    billingStrategy,
+  });
 
-  const effectMessage = `Los cambios aplican el ${formatEffectDate(periodEndIso)}. Mantienes acceso completo a tu plan actual hasta entonces.`;
+  const effectMessage =
+    when === PLAN_CHANGE_IMMEDIATE
+      ? previewImmediate.appliesNow
+      : `Los cambios aplican el ${formatEffectDate(periodEndIso)}. Mantienes acceso completo a tu plan actual hasta entonces.`;
 
-  const blockedEndOfPeriod = paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO;
-  const allowed = !blockedEndOfPeriod;
+  const activePreview = when === PLAN_CHANGE_IMMEDIATE ? previewImmediate : previewEndOfPeriod;
 
   return {
-    allowed,
-    allowedWhen: ['end_of_period'],
-    rejectedWhen,
-    changeType,
-    effectiveDate: periodEndIso,
+    allowed: true,
+    allowedWhen: [PLAN_CHANGE_IMMEDIATE, PLAN_CHANGE_END_OF_PERIOD],
+    rejectedWhen: [],
+    changeType: tierChange,
+    effectiveDate: when === PLAN_CHANGE_IMMEDIATE ? new Date().toISOString() : periodEndIso,
     effectMessage,
-    preview: previewEndOfPeriod,
+    preview: activePreview,
     previews: {
+      immediate: previewImmediate,
       end_of_period: previewEndOfPeriod,
     },
-    recommendedWhen: 'end_of_period',
-    requiresPreapprovalForScheduled: true,
-    error: !allowed && rejectedWhen.length > 0 ? rejectedWhen[0].reason : undefined,
+    recommendedWhen,
+    requiresCheckout: true,
+    requiresCheckoutForWhen: {
+      immediate: true,
+      end_of_period: billingStrategy === BILLING_STRATEGY_AUTOMATIC,
+    },
+    schedulesInDbOnly:
+      when === PLAN_CHANGE_END_OF_PERIOD && billingStrategy === BILLING_STRATEGY_MANUAL,
+    billingStrategy,
+    collectionMethodLabel: billingView.collectionMethodLabel,
+    paymentProvider: billingView.paymentProvider,
+    legacyPaymentProviderId: billingView.legacyPaymentProviderId,
   };
 }
 
 module.exports = {
   previewChangePlan,
-  END_OF_PERIOD_REJECT_REASON,
 };

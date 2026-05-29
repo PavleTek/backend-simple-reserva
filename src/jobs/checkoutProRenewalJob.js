@@ -8,7 +8,7 @@ const prisma = require('../lib/prisma');
 const logger = require('../lib/logger');
 const { sendEmail } = require('../services/emailService');
 const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutProService');
-const { PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
+const { BILLING_STRATEGY_MANUAL } = require('../lib/billingDomain');
 
 const RESTAURANT_PORTAL_URL = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || 'http://localhost:5175').replace(/\/$/, '');
 const REMINDER_DAYS_BEFORE = Number(process.env.CHECKOUT_PRO_RENEWAL_DAYS_BEFORE || 3);
@@ -37,7 +37,7 @@ async function runCheckoutProRenewalReminders() {
     where: {
       status: 'active',
       isActiveSubscription: true,
-      paymentProvider: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
+      billingStrategy: BILLING_STRATEGY_MANUAL,
       currentPeriodEnd: { not: null },
     },
     include: {

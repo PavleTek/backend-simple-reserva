@@ -11,6 +11,7 @@ const {
   normalizePaymentProvider,
   isProviderEnabled,
 } = require('../lib/billingProviders');
+const { checkoutSessionBillingData } = require('../lib/billingDomain');
 
 function checkoutProSupportsWhen(when) {
   return when === 'now';
@@ -54,6 +55,12 @@ async function createBillingCheckout({
     throw err;
   }
 
+  const billingFields = checkoutSessionBillingData({
+    billingStrategy:
+      paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO ? 'manual_monthly' : 'automatic_recurring',
+    paymentProvider: 'mercadopago',
+  });
+
   const checkoutSession = await prisma.checkoutSession.create({
     data: {
       organizationId,
@@ -61,7 +68,9 @@ async function createBillingCheckout({
       planId: plan.id,
       status: 'pending',
       expiresAt,
-      paymentProvider,
+      paymentProvider: billingFields.paymentProvider,
+      billingStrategy: billingFields.billingStrategy,
+      providerImplementation: billingFields.providerImplementation,
     },
   });
 
@@ -137,14 +146,6 @@ async function createBillingCheckoutWithPendingChange({
 }) {
   const paymentProvider = normalizePaymentProvider(rawProvider);
 
-  if (paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO && when !== 'now') {
-    const err = new Error(
-      'Cambio de plan al vencer el periodo requiere débito automático Mercado Pago. Usa activación inmediata con tarjeta o el método automático.',
-    );
-    err.statusCode = 400;
-    throw err;
-  }
-
   const plan = await prisma.plan.findUnique({ where: { productSKU: planSKU } });
   if (!plan) {
     const err = new Error('Plan no encontrado.');
@@ -154,6 +155,12 @@ async function createBillingCheckoutWithPendingChange({
   const expiresAt = new Date();
   expiresAt.setHours(expiresAt.getHours() + 24);
 
+  const billingFields = checkoutSessionBillingData({
+    billingStrategy:
+      paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO ? 'manual_monthly' : 'automatic_recurring',
+    paymentProvider: 'mercadopago',
+  });
+
   const checkoutSession = await prisma.checkoutSession.create({
     data: {
       organizationId,
@@ -161,7 +168,9 @@ async function createBillingCheckoutWithPendingChange({
       planId: plan.id,
       status: 'pending',
       expiresAt,
-      paymentProvider,
+      paymentProvider: billingFields.paymentProvider,
+      billingStrategy: billingFields.billingStrategy,
+      providerImplementation: billingFields.providerImplementation,
       pendingChangeFromSubscriptionId: pendingChangeFromSubscriptionId || null,
     },
   });
