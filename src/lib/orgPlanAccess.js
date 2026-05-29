@@ -4,7 +4,7 @@ const prisma = require('./prisma');
 
 /**
  * IDs de planes que la organización puede contratar o ver en billing.
- * Misma regla que GET /subscription (públicos + customPlan legacy + CustomPlanOffer + sub activa).
+ * Misma regla que GET /subscription (públicos + CustomPlanOffer + customPlanId legacy + sub activa).
  */
 async function listPlanIdsAvailableToOrganization(organizationId) {
   const [org, publicPlans, planOffers, activeSub] = await Promise.all([
@@ -25,8 +25,9 @@ async function listPlanIdsAvailableToOrganization(organizationId) {
   ]);
 
   const ids = new Set(publicPlans.map((p) => p.id));
-  if (org?.customPlanId) ids.add(org.customPlanId);
   for (const offer of planOffers) ids.add(offer.planId);
+  /** @deprecated fallback hasta completar backfill customPlanId → CustomPlanOffer */
+  if (org?.customPlanId) ids.add(org.customPlanId);
   if (activeSub?.planId) ids.add(activeSub.planId);
 
   return ids;

@@ -74,7 +74,7 @@ function formatPaymentMethodForApi(sub) {
       kind: 'manual',
       brand: null,
       lastFour: null,
-      label: 'Pago manual con link mensual',
+      label: null,
       isManual: true,
       updatedAt: sub.lastPaymentAt?.toISOString?.() ?? null,
     };
@@ -84,10 +84,7 @@ function formatPaymentMethodForApi(sub) {
       kind: sub.paymentProvider === 'mercadopago_preapproval' ? 'auto' : 'manual',
       brand: null,
       lastFour: null,
-      label:
-        sub.paymentProvider === 'mercadopago_preapproval'
-          ? 'Débito automático Mercado Pago'
-          : 'Se definirá al primer cobro',
+      label: null,
       isManual: sub.paymentProvider === 'mp_checkout_pro',
       updatedAt: null,
     };

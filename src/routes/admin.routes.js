@@ -579,9 +579,10 @@ router.get('/organizations/:organizationId/custom-plan', async (req, res, next) 
 
 /**
  * POST /admin/organizations/:organizationId/assign-plan
- * Asigna un plan personalizado (no público) a una organización.
+ * Asigna un plan personalizado vía CustomPlanOffer (preferido).
  * Body: { planId: string } — ID del Plan en DB.
- *       { planId: null }   — elimina el plan personalizado.
+ *       { planId: null }   — elimina ofertas personalizadas de la org.
+ * @deprecated customPlanId en organización — usar PUT /admin/plans/:id/offers
  */
 router.post('/organizations/:organizationId/assign-plan', async (req, res, next) => {
   try {
@@ -594,16 +595,44 @@ router.post('/organizations/:organizationId/assign-plan', async (req, res, next)
     if (planId !== null && planId !== undefined) {
       const plan = await prisma.plan.findUnique({ where: { id: planId } });
       if (!plan) throw new NotFoundError('Plan no encontrado');
+
+      await prisma.customPlanOffer.upsert({
+        where: {
+          planId_organizationId: { planId, organizationId },
+        },
+        create: {
+          planId,
+          organizationId,
+          offeredById: req.user?.id ?? null,
+          selfServicePlanChanges: true,
+          selfServiceBillingStrategyChanges: true,
+        },
+        update: {
+          offeredById: req.user?.id ?? undefined,
+        },
+      });
+
+      await prisma.restaurantOrganization.update({
+        where: { id: organizationId },
+        data: { customPlanId: null },
+      });
+    } else {
+      await prisma.customPlanOffer.deleteMany({ where: { organizationId } });
+      await prisma.restaurantOrganization.update({
+        where: { id: organizationId },
+        data: { customPlanId: null },
+      });
     }
 
-    const updated = await prisma.restaurantOrganization.update({
-      where: { id: organizationId },
-      data: { customPlanId: planId ?? null },
-      include: { customPlan: true },
-    });
+    const offer = planId
+      ? await prisma.customPlanOffer.findFirst({
+          where: { organizationId, planId },
+          include: { plan: true },
+        })
+      : null;
 
     planService.invalidateCache(organizationId);
-    res.json({ customPlan: updated.customPlan ?? null });
+    res.json({ customPlan: offer?.plan ?? null, offer: offer ?? null });
   } catch (error) {
     next(error);
   }

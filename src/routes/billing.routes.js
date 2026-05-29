@@ -292,7 +292,7 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
     // Restaurantes activos de la organización (para saber si puede agregar más)
     const restaurantCount = await prisma.restaurant.count({ where: { organizationId, isDeleted: false } });
 
-    // Planes disponibles para el owner: públicos + plan personalizado (legacy) + planes ofrecidos
+    // Planes disponibles: públicos + CustomPlanOffer (+ legacy customPlanId si aún no migrado)
     const [orgWithCustomPlan, publicPlans, planOffers] = await Promise.all([
       prisma.restaurantOrganization.findUnique({
         where: { id: organizationId },
@@ -304,19 +304,25 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
         include: { plan: true },
       }),
     ]);
-    const customPlan = orgWithCustomPlan?.customPlan ?? null;
+    const legacyCustomPlan = orgWithCustomPlan?.customPlan ?? null;
 
-    // Si tiene plan personalizado (legacy) y no está ya en la lista pública, agregarlo
     let allPlansForOrg = [...publicPlans];
-    if (customPlan && !publicPlans.some((p) => p.id === customPlan.id)) {
-      allPlansForOrg = [...allPlansForOrg, customPlan];
+    const allPlanIds = new Set(allPlansForOrg.map((p) => p.id));
+    for (const offer of planOffers) {
+      if (offer.plan && !allPlanIds.has(offer.plan.id)) {
+        allPlansForOrg.push(offer.plan);
+        allPlanIds.add(offer.plan.id);
+      }
+    }
+    if (legacyCustomPlan && !allPlanIds.has(legacyCustomPlan.id)) {
+      allPlansForOrg = [...allPlansForOrg, legacyCustomPlan];
+      allPlanIds.add(legacyCustomPlan.id);
     }
 
-    // Planes ofrecidos explícitamente via CustomPlanOffer (excluir duplicados ya en allPlans)
-    const allPlanIds = new Set(allPlansForOrg.map((p) => p.id));
     const offeredPlans = sortPlansByDisplayOrder(
-      planOffers.map((o) => o.plan).filter((p) => !allPlanIds.has(p.id))
+      planOffers.map((o) => o.plan).filter((p) => p && !publicPlans.some((pub) => pub.id === p.id))
     );
+    const customPlan = planOffers[0]?.plan ?? legacyCustomPlan;
 
     const trialSubForDates = trialing
       ? await prisma.subscription.findFirst({

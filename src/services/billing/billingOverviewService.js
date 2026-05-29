@@ -71,7 +71,6 @@ function buildAlerts(ctx) {
     alerts.push({
       type: 'grace',
       severity: 'warning',
-      message: `Cobro fallido. Tienes hasta el ${gracePeriodEndsAt?.slice(0, 10) ?? '—'} para regularizar${daysLeft != null ? ` (${daysLeft} día${daysLeft === 1 ? '' : 's'})` : ''}.`,
       gracePeriodEndsAt,
       mpNextRetryAt,
       daysLeft,
@@ -81,7 +80,6 @@ function buildAlerts(ctx) {
     alerts.push({
       type: 'renewal_scheduled',
       severity: 'info',
-      message: `Renovación automática programada para el ${renewalScheduledAt.slice(0, 10)}.`,
       scheduledDate: renewalScheduledAt,
     });
   }
@@ -89,7 +87,6 @@ function buildAlerts(ctx) {
     alerts.push({
       type: 'scheduled_change',
       severity: 'info',
-      message: `Cambio al plan ${scheduledPlanName} programado para el ${scheduledDate.slice(0, 10)}.`,
       scheduledPlanName,
       scheduledDate,
     });
@@ -98,7 +95,6 @@ function buildAlerts(ctx) {
     alerts.push({
       type: 'cancel_at_end',
       severity: 'info',
-      message: `Tu suscripción se cancelará el ${cancelAtEndDate.slice(0, 10)}. Mantienes acceso hasta esa fecha.`,
       cancelAtEndDate,
     });
   }
@@ -108,8 +104,8 @@ function buildAlerts(ctx) {
       alerts.push({
         type: 'trial_ending_soon',
         severity: 'warning',
-        message: `Tu prueba termina en ${trialDays} día${trialDays === 1 ? '' : 's'}. Activa un plan para no perder el acceso.`,
         trialEndsAt: ctx.trialEndsAt,
+        daysLeft: trialDays,
       });
     }
   }

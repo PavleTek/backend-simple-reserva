@@ -21,6 +21,7 @@ const {
 } = require('./collectionMethodSwitchService');
 const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
 const { canSelfServeBillingOrThrow } = require('../../lib/canSelfServeBilling');
+const { resolvePlanOfferFlags } = require('../../lib/planSource');
 const { getActiveSubscription } = require('../subscriptionService');
 
 /**
@@ -115,6 +116,16 @@ async function executePlanChange({
     throw err;
   }
 
+  const offerFlags = await resolvePlanOfferFlags(organizationId, currentSubFull.plan.id);
+  if (!offerFlags.selfServicePlanChanges) {
+    const err = new Error(
+      'Los cambios de plan de tu cuenta están gestionados por SimpleReserva. Contacta a soporte.',
+    );
+    err.statusCode = 403;
+    err.code = 'plan_changes_managed';
+    throw err;
+  }
+
   const billing = subscriptionBillingView(currentSubFull);
   const billingStrategy = billing.billingStrategy;
 
@@ -198,6 +209,18 @@ async function updateCollectionMethod({
     where: { id: currentSub.id },
     include: { plan: true },
   });
+
+  if (currentSubFull?.plan?.id) {
+    const flags = await resolvePlanOfferFlags(organizationId, currentSubFull.plan.id);
+    if (!flags.selfServiceBillingStrategyChanges) {
+      const err = new Error(
+        'El método de cobro de tu plan está gestionado por SimpleReserva. Contacta a soporte.',
+      );
+      err.statusCode = 403;
+      err.code = 'billing_strategy_managed';
+      throw err;
+    }
+  }
 
   const sku = planSKU || currentSubFull?.plan?.productSKU || 'plan-profesional';
   const change = resolveCollectionMethodChange(currentSubFull, billingStrategy);

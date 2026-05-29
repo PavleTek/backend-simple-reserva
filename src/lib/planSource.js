@@ -25,8 +25,8 @@ async function resolvePlanSourceForOrganization(organizationId, plan) {
     }),
   ]);
 
-  if (org?.customPlanId === plan.id) return 'legacy_assigned';
   if (offer) return 'offer';
+  if (org?.customPlanId === plan.id) return 'legacy_assigned';
   if (activeSub) return 'active_entitlement';
   return 'offer';
 }

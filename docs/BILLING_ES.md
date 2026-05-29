@@ -29,10 +29,21 @@ El campo `status` es **informativo** (UI, emails, jobs). No debe usarse como ún
 
 ### Ofertas personalizadas
 
-En **Admin → Planes → Ofrecer a organizaciones**:
+En **Admin → Planes → Ofrecer a organizaciones** (`CustomPlanOffer`):
 
 - `selfServicePlanChanges` — si el restaurante puede cambiar de plan solo
 - `selfServiceBillingStrategyChanges` — si puede cambiar débito automático / pago manual
+
+**Migración legacy:** `RestaurantOrganization.customPlanId` queda deprecado. Usar ofertas en admin o `POST /admin/organizations/:id/assign-plan` (ahora crea `CustomPlanOffer`). Para orgs existentes:
+
+```bash
+node scripts/backfill-custom-plan-offers.js        # dry-run
+node scripts/backfill-custom-plan-offers.js --apply
+```
+
+### Alertas en facturación (UI)
+
+`GET /billing/overview` expone `alerts[]` con `type` y fechas ISO. El portal compone el texto en español chileno (`billingAlertCopy.ts`); no duplicar banners en la pestaña Plan.
 
 ## Métodos de cobro
 
@@ -93,6 +104,7 @@ Permitido con acceso activo y `status` en `active` o `trial` (checkout). Bloquea
 3. Contrato API `pendingChange` / `capabilities`
 4. UX restaurante (copy es-CL, confirmación método de cobro)
 5. Admin: flags en ofertas
-6. `billingStateService` como único dispatcher de eventos
+6. Backfill `customPlanId` → `CustomPlanOffer` (`scripts/backfill-custom-plan-offers.js`)
+7. `billingStateService` como único dispatcher de eventos
 
 Ver también [BILLING_ARCHITECTURE.md](./BILLING_ARCHITECTURE.md) (referencia técnica en inglés).
