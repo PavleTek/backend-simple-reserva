@@ -6,6 +6,7 @@ const planService = require('../services/planService');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const { computePeriodEnd, estimateNextPaymentDate } = require('../lib/billingPeriod');
 const referralService = require('../services/referralService');
+const { getMercadoPagoCheckoutHints } = require('../services/mercadopagoService');
 
 async function applyReferralCreditsToCheckoutOptions(organizationId, createSubscriptionOptions, checkoutSessionId) {
   const creditResult = await referralService.applyAvailableCreditsOnNextCheckout(
@@ -17,6 +18,68 @@ async function applyReferralCreditsToCheckoutOptions(organizationId, createSubsc
     createSubscriptionOptions.startDate = creditResult.startDate;
   }
   return creditResult;
+}
+
+function isValidPayerEmail(email) {
+  const e = (email || '').trim();
+  return e.length > 3 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+/**
+ * Guarda billingEmail (correo MP Chile) y devuelve el payer_email para la API.
+ * @throws {Error} statusCode 400 si falta o es inválido el correo
+ */
+async function persistMercadoPagoPayerEmail(organizationId, bodyEmail, loginEmail) {
+  const fromBody = (bodyEmail || '').trim();
+  if (fromBody) {
+    if (!isValidPayerEmail(fromBody)) {
+      const err = new Error('Indica un correo electrónico válido para Mercado Pago Chile.');
+      err.statusCode = 400;
+      throw err;
+    }
+    const normalized = fromBody.toLowerCase();
+    await prisma.restaurantOrganization.update({
+      where: { id: organizationId },
+      data: { billingEmail: normalized },
+    });
+    return normalized;
+  }
+
+  const org = await prisma.restaurantOrganization.findUnique({
+    where: { id: organizationId },
+    select: { billingEmail: true },
+  });
+  const stored = (org?.billingEmail || '').trim();
+  if (stored && isValidPayerEmail(stored)) return stored.toLowerCase();
+
+  const login = (loginEmail || '').trim();
+  if (login && isValidPayerEmail(login)) return login.toLowerCase();
+
+  const err = new Error(
+    'Indica el correo de tu cuenta Mercado Pago Chile (mercadopagoPayerEmail). Debe ser el mismo que usarás al pagar.',
+  );
+  err.statusCode = 400;
+  throw err;
+}
+
+function sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail) {
+  res.json({
+    checkoutUrl,
+    mercadopagoPayerEmail: mercadopagoPayerEmail || null,
+    checkoutHints: getMercadoPagoCheckoutHints(mercadopagoPayerEmail),
+  });
+}
+
+function handleBillingRouteError(error, res, next, respondMp) {
+  if (error.statusCode === 400) {
+    res.status(400).json({ error: error.message });
+    return;
+  }
+  if (error.message?.includes('BACKEND_PUBLIC_URL') || error.message?.includes('MP_TEST_PAYER')) {
+    res.status(400).json({ error: error.message });
+    return;
+  }
+  respondMp(error, res, next);
 }
 
 /**
@@ -56,6 +119,34 @@ function isSamePlanRenewalScheduled(sub, scheduledSub) {
   );
   // Reactivate / MP usan la misma fecha límite; tolerancia por zona horaria o redondeo
   return driftMs <= 48 * 60 * 60 * 1000;
+}
+
+/** Respuesta HTTP para fallos al crear preapproval en MP (checkout / change-plan / reactivate). */
+function respondMercadoPagoCheckoutError(error, res, next) {
+  if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
+    res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
+    return;
+  }
+  if (error.mpPolicyBlocked) {
+    res.status(502).json({
+      error: 'checkout_mp_policy_blocked',
+      message:
+        'Mercado Pago rechazó crear la suscripción. Revisa que tu aplicación en developers.mercadopago.cl tenga Suscripciones activo.',
+    });
+    return;
+  }
+  if (error.mpPayerCountryMismatch) {
+    res.status(400).json({
+      error: 'checkout_mp_payer_country',
+      message: error.message,
+    });
+    return;
+  }
+  if (error.message?.includes('MercadoPago') || error.message?.includes('temporalmente no disponible')) {
+    res.status(502).json({ error: error.message });
+    return;
+  }
+  next(error);
 }
 
 const router = express.Router({ mergeParams: true });
@@ -267,6 +358,7 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
       } : null,
       allPlans: sortPlansByDisplayOrder(allPlansForOrg),
       offeredPlans,
+      billingEmail: orgWithCustomPlan?.billingEmail ?? null,
     });
   } catch (error) {
     next(error);
@@ -345,7 +437,11 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
     });
     if (pendingSession) {
       if (pendingSession.checkoutUrl) {
-        return res.json({ checkoutUrl: pendingSession.checkoutUrl });
+        const orgBilling = await prisma.restaurantOrganization.findUnique({
+          where: { id: organizationId },
+          select: { billingEmail: true },
+        });
+        return sendCheckoutJson(res, pendingSession.checkoutUrl, orgBilling?.billingEmail);
       }
       // Sin URL (fallo la creacion anterior): expirar y seguir
       await prisma.checkoutSession.update({
@@ -394,6 +490,12 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       select: { email: true },
     });
 
+    const mercadopagoPayerEmail = await persistMercadoPagoPayerEmail(
+      organizationId,
+      req.body?.mercadopagoPayerEmail,
+      user?.email,
+    );
+
     const result = await mercadopagoService.createSubscription(
       organizationId,
       req.user.id,
@@ -415,21 +517,9 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       },
     });
 
-    res.json({ checkoutUrl });
+    sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail);
   } catch (error) {
-    if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
-      res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
-      return;
-    }
-    if (error.message?.includes('BACKEND_PUBLIC_URL') || error.message?.includes('MP_TEST_PAYER')) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    if (error.message?.includes('MercadoPago') || error.message?.includes('temporalmente no disponible')) {
-      res.status(502).json({ error: error.message });
-      return;
-    }
-    next(error);
+    handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }
 });
 
@@ -665,6 +755,12 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
       select: { email: true },
     });
 
+    const mercadopagoPayerEmail = await persistMercadoPagoPayerEmail(
+      organizationId,
+      req.body?.mercadopagoPayerEmail,
+      user?.email,
+    );
+
     // end_of_period: primer cobro al vencer el periodo ya pagado. now: cobro desde inmediato (createSubscription usa +2 min si no hay fecha futura).
     const createOpts = when === 'end_of_period' ? { startDate: cancelledSub.endDate } : {};
     await applyReferralCreditsToCheckoutOptions(organizationId, createOpts, checkoutSession.id);
@@ -685,15 +781,9 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
       data: { mercadopagoPreapprovalId: preapprovalId, checkoutUrl },
     });
 
-    res.json({ checkoutUrl });
+    sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail);
   } catch (error) {
-    if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
-      return res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
-    }
-    if (error.message?.includes('MercadoPago') || error.message?.includes('temporalmente no disponible')) {
-      return res.status(502).json({ error: error.message });
-    }
-    next(error);
+    handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }
 });
 
@@ -794,6 +884,12 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     const changePlanOpts = checkoutStartDateOpt ? { startDate: checkoutStartDateOpt } : {};
     await applyReferralCreditsToCheckoutOptions(organizationId, changePlanOpts, checkoutSession.id);
 
+    const mercadopagoPayerEmail = await persistMercadoPagoPayerEmail(
+      organizationId,
+      req.body?.mercadopagoPayerEmail,
+      user?.email,
+    );
+
     const result = await mercadopagoService.createSubscription(
       organizationId,
       req.user.id,
@@ -811,15 +907,9 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       data: { mercadopagoPreapprovalId: preapprovalId, checkoutUrl },
     });
 
-    res.json({ checkoutUrl });
+    sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail);
   } catch (error) {
-    if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
-      return res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
-    }
-    if (error.message?.includes('MercadoPago') || error.message?.includes('temporalmente no disponible')) {
-      return res.status(502).json({ error: error.message });
-    }
-    next(error);
+    handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }
 });
 

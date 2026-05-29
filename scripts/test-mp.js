@@ -22,6 +22,10 @@ if (!EMAIL) {
   process.exit(1);
 }
 
+const start = new Date(Date.now() + 3 * 60 * 1000);
+const end = new Date(start);
+end.setFullYear(end.getFullYear() + 10);
+
 const body = {
   reason: 'Test SimpleReserva',
   external_reference: 'test-' + Date.now(),
@@ -30,7 +34,8 @@ const body = {
   auto_recurring: {
     frequency: 1,
     frequency_type: 'months',
-    end_date: '2027-12-31T23:59:59.000Z',
+    start_date: start.toISOString(),
+    end_date: end.toISOString(),
     transaction_amount: 6000,
     currency_id: 'CLP',
   },

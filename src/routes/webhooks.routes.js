@@ -135,6 +135,16 @@ router.post('/mercadopago', express.json({
       return;
     }
 
+    // Simulador del panel MP (Tus integraciones → Webhooks → Simular): data.id fijo, no existe en API.
+    if (dataId === '123456') {
+      console.log('[Webhook] MercadoPago: evento de simulación (data.id=123456), sin llamada a API');
+      await prisma.webhookEvent.update({
+        where: { id: webhookEvent.id },
+        data: { processingStatus: 'skipped', errorMessage: 'MP webhook simulator (data.id=123456)' },
+      });
+      return;
+    }
+
     const accessToken = getMercadoPagoAccessToken();
     if (!accessToken) {
       console.error('[Webhook] MercadoPago: MERCADOPAGO_ACCESS_TOKEN not set');

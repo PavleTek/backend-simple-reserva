@@ -1015,11 +1015,65 @@ async function sendFeedbackRecoveryAlertEmail(options) {
   }
 }
 
+/**
+ * Envía resumen de periodo a destinatarios de la organización (admin).
+ * @param {Object} options
+ * @param {object} options.summary
+ * @param {Array<{ email: string, name: string }>} options.recipients
+ * @param {string} [options.personalNote]
+ */
+async function sendOrganizationPeriodSummaryEmails(options) {
+  const { summary, recipients, personalNote = '' } = options;
+  if (!recipients?.length || !summary) {
+    return { sent: 0, failed: 0, results: [] };
+  }
+
+  const { buildPeriodSummaryEmailPayload } = require('./organizationPeriodSummaryService');
+  const { sendEmail } = require('./emailService');
+
+  const fromEmail = await resolveTransactionalFromEmail();
+  const organizationId = summary.organizationId;
+
+  let sent = 0;
+  let failed = 0;
+  const results = [];
+  let subject = '';
+
+  for (const recipient of recipients) {
+    const payload = buildPeriodSummaryEmailPayload({
+      summary,
+      recipientName: recipient.name,
+      organizationId,
+      personalNote,
+    });
+    subject = payload.subject;
+    const html = payload.html;
+    try {
+      await sendEmail({
+        fromEmail,
+        toEmails: [recipient.email],
+        subject,
+        content: html,
+        isHtml: true,
+      });
+      sent += 1;
+      results.push({ email: recipient.email, ok: true });
+    } catch (err) {
+      failed += 1;
+      results.push({ email: recipient.email, ok: false, error: err.message });
+      console.error('[Notification] Period summary email error:', recipient.email, err.message);
+    }
+  }
+
+  return { sent, failed, results };
+}
+
 module.exports = {
   sendReservationConfirmation,
   sendReservationReminder,
   sendModificationAlertToCustomer,
   sendOrganizationOwnerWelcomeEmail,
+  sendOrganizationPeriodSummaryEmails,
   sendDailySummary,
   sendPaymentFailureNotification,
   sendReservationConfirmationEmail,

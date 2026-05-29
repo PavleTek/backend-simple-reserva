@@ -348,6 +348,155 @@ router.get('/organizations/:id', async (req, res, next) => {
 });
 
 /**
+ * GET /admin/organizations/:id/period-summary/recipients
+ * Destinatarios con correo de la organización (owner, equipo, facturación).
+ */
+router.get('/organizations/:id/period-summary/recipients', async (req, res, next) => {
+  try {
+    const { loadOrganizationEmailRecipients } = require('../services/organizationPeriodSummaryService');
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+    const recipients = await loadOrganizationEmailRecipients(req.params.id);
+    res.json({ recipients });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/organizations/:id/period-summary/preview?dateFrom=&dateTo=
+ * Estadísticas del periodo (prueba gratuita por defecto).
+ */
+router.get('/organizations/:id/period-summary/preview', async (req, res, next) => {
+  try {
+    const { computeOrganizationPeriodSummary } = require('../services/organizationPeriodSummaryService');
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+    const summary = await computeOrganizationPeriodSummary(req.params.id, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+    });
+    res.json({ summary });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/organizations/:id/period-summary/email-preview
+ * Vista previa HTML del correo (mismo contenido que se envía).
+ * Query: dateFrom, dateTo, personalNote, previewAs (nombre del destinatario de ejemplo)
+ */
+router.get('/organizations/:id/period-summary/email-preview', async (req, res, next) => {
+  try {
+    const {
+      computeOrganizationPeriodSummary,
+      buildPeriodSummaryEmailPayload,
+      loadOrganizationEmailRecipients,
+    } = require('../services/organizationPeriodSummaryService');
+
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const summary = await computeOrganizationPeriodSummary(req.params.id, {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+    });
+
+    let previewAs =
+      typeof req.query.previewAs === 'string' && req.query.previewAs.trim()
+        ? req.query.previewAs.trim()
+        : null;
+
+    if (!previewAs) {
+      const catalog = await loadOrganizationEmailRecipients(req.params.id);
+      const owner = catalog.find((r) => r.kind === 'owner' && r.name);
+      previewAs = owner?.name ?? 'equipo';
+    }
+
+    const personalNote =
+      typeof req.query.personalNote === 'string' ? req.query.personalNote : '';
+
+    const email = buildPeriodSummaryEmailPayload({
+      summary,
+      recipientName: previewAs,
+      organizationId: req.params.id,
+      personalNote,
+    });
+
+    res.json({
+      subject: email.subject,
+      preheader: email.preheader,
+      html: email.html,
+      summary,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /admin/organizations/:id/period-summary/send
+ * Body: { recipientKeys: string[], dateFrom?, dateTo?, personalNote? }
+ */
+router.post('/organizations/:id/period-summary/send', async (req, res, next) => {
+  try {
+    const {
+      loadOrganizationEmailRecipients,
+      resolveRecipientsByKeys,
+      computeOrganizationPeriodSummary,
+    } = require('../services/organizationPeriodSummaryService');
+    const { sendOrganizationPeriodSummaryEmails } = require('../services/notificationService');
+
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, name: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const { recipientKeys, dateFrom, dateTo, personalNote } = req.body ?? {};
+    if (!Array.isArray(recipientKeys) || recipientKeys.length === 0) {
+      throw new ValidationError('Selecciona al menos un destinatario');
+    }
+
+    const catalog = await loadOrganizationEmailRecipients(req.params.id);
+    const targets = resolveRecipientsByKeys(catalog, recipientKeys);
+    if (targets.length === 0) {
+      throw new ValidationError('Ningún destinatario válido con correo');
+    }
+
+    const summary = await computeOrganizationPeriodSummary(req.params.id, { dateFrom, dateTo });
+
+    const result = await sendOrganizationPeriodSummaryEmails({
+      summary,
+      recipients: targets,
+      personalNote: typeof personalNote === 'string' ? personalNote : '',
+    });
+
+    res.json({
+      sent: result.sent,
+      failed: result.failed,
+      summary: {
+        period: summary.period,
+        totals: summary.totals,
+      },
+      recipients: targets.map((t) => ({ email: t.email, name: t.name })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /admin/organizations/:id/feedback-overview
  * Resumen de Experiencia post-visita por local de la organización.
  */
@@ -531,6 +680,7 @@ router.post('/plans', async (req, res, next) => {
       'productSKU', 'name', 'description', 'type', 'isDefault',
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
+      'postVisitFeedback',
       'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
       'freeTrialLength', 'freeTrialLengthUnit',
       'comingSoon', 'comingSoonLabel'
@@ -576,6 +726,7 @@ router.patch('/plans/:id', async (req, res, next) => {
       'name', 'description', 'type', 'isDefault',
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
+      'postVisitFeedback',
       'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
       'freeTrialLength', 'freeTrialLengthUnit',
       'comingSoon', 'comingSoonLabel'

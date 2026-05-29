@@ -79,24 +79,55 @@ async function logMercadoPagoSellerContext(accessToken) {
   }
 }
 
+function isMercadoPagoDifferentCountriesError(err, errBody = null) {
+  const msg = String(errBody?.message ?? err?.message ?? '');
+  return msg.includes('different countries') || /cannot operate between.*countr/i.test(msg);
+}
+
+/** Texto para el front antes de redirigir a init_point (es-CL). */
+function getMercadoPagoCheckoutHints(mercadopagoPayerEmail) {
+  const emailHint = mercadopagoPayerEmail
+    ? `En Mercado Pago debes usar el correo: ${mercadopagoPayerEmail}`
+    : 'En Mercado Pago usa el mismo correo que confirmaste aquí.';
+  return {
+    title: 'Pago en Mercado Pago Chile',
+    lines: [
+      emailHint,
+      'El pago es en mercadopago.cl (pesos chilenos, CLP).',
+      'Puedes pagar con tarjeta o con una cuenta Mercado Pago creada en Chile.',
+      'Si ese correo está solo en Mercado Pago de otro país, elige otro correo con cuenta en mercadopago.cl.',
+    ],
+  };
+}
+
 /**
- * Resuelve el payer_email para el preapproval.
+ * Resuelve el payer_email para el preapproval (debe coincidir en el checkout MP — doc oficial).
  *
- * Regla de prioridad:
- * 1. MP_TEST_PAYER_EMAIL definido → úsalo (modo pruebas con vendedor test).
- * 2. organizationId disponible → email sintético único por org:
- *    sub-{orgId}@simplereserva.cl
- *    Evita el error "Cannot operate between different countries" cuando el
- *    dueño del restaurante tiene una cuenta MP registrada en otro país.
- *    El usuario completa su medio de pago real en el checkout de MP.
- * 3. Fallback → email del usuario logueado.
+ * Prioridad: MP_TEST_PAYER_EMAIL → billingEmail de la org → email del owner/login.
  */
-function resolvePayerEmailForPreapproval(loginEmail, organizationId) {
-  const fromLogin = (loginEmail || '').trim();
+/** Error 403 PolicyAgent: token OK pero producto Suscripciones no habilitado en la aplicación MP. */
+function isMercadoPagoPolicyBlockedError(err, errBody = null, status = null) {
+  const body = errBody ?? (typeof err === 'object' && err !== null ? err : {});
+  const code = body?.code ?? body?.cause?.[0]?.code;
+  const blockedBy = body?.blocked_by ?? body?.cause?.[0]?.blocked_by;
+  const msg = String(body?.message ?? err?.message ?? '');
+  const st = status ?? body?.status ?? body?.statusCode;
+  return (
+    st === 403 &&
+    (code === 'PA_UNAUTHORIZED_RESULT_FROM_POLICIES' ||
+      blockedBy === 'PolicyAgent' ||
+      msg.includes('UNAUTHORIZED') ||
+      msg.includes('PolicyAgent'))
+  );
+}
+
+function resolvePayerEmailForPreapproval(loginEmail, billingEmailFromOrg) {
+  const fromLogin = (loginEmail || '').trim().toLowerCase();
+  const fromBilling = (billingEmailFromOrg || '').trim().toLowerCase();
   const testBuyer = (process.env.MP_TEST_PAYER_EMAIL || '').trim();
 
   if (testBuyer.length > 0) {
-    if (fromLogin && fromLogin.toLowerCase() !== testBuyer.toLowerCase()) {
+    if (fromLogin && fromLogin !== testBuyer.toLowerCase()) {
       console.log('[MercadoPago] payer_email reemplazado por MP_TEST_PAYER_EMAIL (comprador de prueba):', {
         email_login: fromLogin,
         payer_email_enviado_a_MP: testBuyer,
@@ -105,20 +136,22 @@ function resolvePayerEmailForPreapproval(loginEmail, organizationId) {
     return testBuyer;
   }
 
-  if (organizationId) {
-    const syntheticEmail = `sub-${organizationId}@simplereserva.cl`;
-    console.log('[MercadoPago] payer_email sintético (evita conflicto con cuenta MP de otro país):', {
-      email_login: fromLogin || '(sin email)',
-      payer_email_enviado_a_MP: syntheticEmail,
+  if (fromBilling) {
+    console.log('[MercadoPago] payer_email desde billingEmail de la organización:', {
+      email_login: fromLogin || '(sin email login)',
+      payer_email_enviado_a_MP: fromBilling,
     });
-    return syntheticEmail;
+    return fromBilling;
   }
 
-  if (!fromLogin) {
-    console.warn('[MercadoPago] payer_email vacío: MP_TEST_PAYER_EMAIL no está definido y el usuario no tiene email.');
+  if (fromLogin) {
+    console.log('[MercadoPago] payer_email desde email del owner (sin billingEmail guardado):', {
+      payer_email_enviado_a_MP: fromLogin,
+    });
+    return fromLogin;
   }
 
-  return fromLogin;
+  return '';
 }
 
 function getClient() {
@@ -147,7 +180,7 @@ function getClient() {
 async function createSubscription(organizationId, ownerId, payerEmail, planSKU = 'plan-profesional', restaurantId, options = {}) {
   const organization = await prisma.restaurantOrganization.findUnique({
     where: { id: organizationId },
-    select: { name: true },
+    select: { name: true, billingEmail: true },
   });
   if (!organization) throw new Error('Organización no encontrada');
 
@@ -191,37 +224,37 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
       ? new Date(options.startDate)
       : minFuture;
 
+  // MP: start_date solo es válido si también envías end_date (docs Suscripciones).
+  const endDate = new Date(startDate);
+  endDate.setFullYear(endDate.getFullYear() + 10);
+
   const autoRecurring = {
     frequency: mpFreq.frequency,
     frequency_type: mpFreq.frequency_type,
     transaction_amount: amount,
     currency_id: CURRENCY,
     start_date: startDate.toISOString(),
+    end_date: endDate.toISOString(),
   };
 
-  const resolvedEmail = resolvePayerEmailForPreapproval(payerEmail, organizationId);
-  // payer_email OBLIGATORIO para la API de preapproval.
-  // En producción se usa un email sintético por org para evitar conflictos
-  // con cuentas MP del pagador en otros países.
-  const payerEmailForBody = resolvedEmail;
+  const payerEmailForBody = resolvePayerEmailForPreapproval(payerEmail, organization.billingEmail);
 
   if (!payerEmailForBody) {
     throw new Error(
-      'payer_email es requerido por Mercado Pago. ' +
-      'Define MP_TEST_PAYER_EMAIL en .env con el email del comprador de prueba. ' +
-      'Crea las cuentas con: node scripts/create-test-users.js',
+      'Indica el correo de tu cuenta Mercado Pago Chile. ' +
+      'En desarrollo puedes definir MP_TEST_PAYER_EMAIL en .env (comprador de prueba).',
     );
   }
 
-  const body = {
+  const buildBody = (email) => ({
     reason: `SimpleReserva ${config.name} - ${organization.name}`,
     external_reference: externalRef,
-    payer_email: payerEmailForBody,
+    payer_email: email,
     status: 'pending',
     auto_recurring: autoRecurring,
     back_url: effectiveBackUrl,
     notification_url: notificationUrl,
-  };
+  });
 
   const hints = mercadoPagoCredentialHints();
   console.log('[MercadoPago] Credenciales (solo pistas):', {
@@ -242,6 +275,7 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
     back_url: effectiveBackUrl,
     notification_url: notificationUrl,
     start_date: startDate.toISOString(),
+    end_date: endDate.toISOString(),
   });
   console.log('[MercadoPago] Full notification_url being sent to MP:', notificationUrl);
   console.log('[MercadoPago] Start date for subscription:', startDate.toISOString());
@@ -252,38 +286,60 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
     await logMercadoPagoSellerContext(accessToken);
   }
 
-  try {
-    const { preApprovalClient } = getClient();
-    const result = await preApprovalClient.create({ body });
-    return result;
-  } catch (err) {
-    const errBody = typeof err === 'object' && err !== null ? err : {};
-    const msg = errBody?.message ?? err?.error ?? err?.message ?? 'Error MercadoPago';
-    const status = errBody?.status ?? errBody?.statusCode;
+  const { preApprovalClient } = getClient();
+  let body = buildBody(payerEmailForBody);
 
-    console.error('[MercadoPago]', msg);
-    console.error('[MercadoPago] Response:', JSON.stringify(errBody, null, 2));
+  const tryCreate = async (requestBody) => preApprovalClient.create({ body: requestBody });
+
+  try {
+    return await tryCreate(body);
+  } catch (err) {
+    const finalBody = typeof err === 'object' && err !== null ? err : {};
+    const finalMsg = finalBody?.message ?? err?.error ?? err?.message ?? 'Error MercadoPago';
+    const finalStatus = finalBody?.status ?? finalBody?.statusCode;
+
+    console.error('[MercadoPago]', finalMsg);
+    console.error('[MercadoPago] Response:', JSON.stringify(finalBody, null, 2));
     if (err?.cause) console.error('[MercadoPago] err.cause:', err.cause);
-    const apiErr = errBody?.cause ?? err?.cause;
+    const apiErr = finalBody?.cause ?? err?.cause;
     if (apiErr && typeof apiErr === 'object') {
       console.error('[MercadoPago] Detalle cause:', JSON.stringify(apiErr, null, 2));
     }
 
-    if (String(msg).includes('different countries') || String(msg).includes('countries')) {
+    if (isMercadoPagoDifferentCountriesError(err, finalBody)) {
       console.error(
-        '[MercadoPago] Diagnóstico "different countries": (1) site_id del vendedor ≠ MLC, o (2) con token TEST- el payer_email',
-        'no es el comprador de prueba Chile (define MP_TEST_PAYER_EMAIL = usuario test_user_...@testuser.com del panel).',
-        'Checkout Bricks es otro producto; aquí usamos PreApproval/suscripciones.',
+        '[MercadoPago] Diagnóstico "different countries":',
+        payerEmailForBody,
+        'está en Mercado Pago de otro país. El vendedor es Chile (MLC). Usa un correo con cuenta en mercadopago.cl.',
       );
     }
 
-    let userMsg = msg;
-    if (status === 500 || String(msg).toLowerCase().includes('internal')) {
+    const policyBlocked = isMercadoPagoPolicyBlockedError(err, finalBody, finalStatus);
+    if (policyBlocked) {
+      console.error(
+        '[MercadoPago] Diagnóstico PolicyAgent (403): el Access Token es válido pero la app/cuenta no tiene permiso para Suscripciones.',
+        'Revisa en https://www.mercadopago.cl/developers/panel/app que el producto "Suscripciones" esté activo',
+        'y usa el Access Token de Producción de ESA aplicación (no solo credenciales genéricas de Tu negocio).',
+        'Si ya está activo, abre ticket en Soporte MP con este body y hora exacta.',
+      );
+    }
+
+    let userMsg = finalMsg;
+    const payerCountryMismatch = isMercadoPagoDifferentCountriesError(err, finalBody);
+    if (policyBlocked) {
+      userMsg = 'Mercado Pago no autorizó crear la suscripción (configuración de cuenta). Contacta a soporte.';
+    } else if (payerCountryMismatch) {
+      userMsg =
+        `El correo ${payerEmailForBody} está asociado a Mercado Pago de otro país. ` +
+        'Indica otro correo con cuenta en mercadopago.cl (Chile) e intenta de nuevo.';
+    } else if (finalStatus === 500 || String(finalMsg).toLowerCase().includes('internal')) {
       userMsg = 'MercadoPago no disponible. Verifica MERCADOPAGO_ACCESS_TOKEN.';
     }
 
     const e = new Error(userMsg);
     e.cause = err;
+    e.mpPolicyBlocked = policyBlocked;
+    e.mpPayerCountryMismatch = payerCountryMismatch;
     throw e;
   }
 }
@@ -693,6 +749,8 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
 }
 
 module.exports = {
+  getMercadoPagoCheckoutHints,
+  isMercadoPagoPolicyBlockedError,
   createSubscription,
   cancelSubscription,
   activateOrganizationSubscription,
