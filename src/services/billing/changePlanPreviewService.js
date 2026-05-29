@@ -8,6 +8,7 @@ const { resolvePlanChangeType } = require('../../lib/planDisplayOrder');
 const {
   PLAN_CHANGE_IMMEDIATE,
   PLAN_CHANGE_END_OF_PERIOD,
+  BILLING_STRATEGY_AUTOMATIC,
   BILLING_STRATEGY_MANUAL,
   subscriptionBillingView,
   collectionMethodLabel,
