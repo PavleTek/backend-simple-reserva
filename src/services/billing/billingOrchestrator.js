@@ -252,6 +252,80 @@ async function updateCollectionMethod({
   });
 }
 
+/**
+ * Cancela un cambio programado: campos DB en la sub activa o fila MP status=scheduled.
+ * @returns {Promise<{ kind: string, message: string } | null>}
+ */
+async function cancelPendingScheduledChange(organizationId) {
+  const activeSub = await getActiveSubscription(organizationId);
+
+  if (activeSub?.scheduledPlanId && activeSub?.scheduledChangeAt) {
+    const scheduledPlan = await prisma.plan.findUnique({
+      where: { id: activeSub.scheduledPlanId },
+      select: { name: true },
+    });
+
+    await prisma.subscription.update({
+      where: { id: activeSub.id },
+      data: {
+        scheduledPlanId: null,
+        scheduledChangeAt: null,
+        planChangeWhen: null,
+      },
+    });
+
+    await prisma.checkoutSession.updateMany({
+      where: {
+        organizationId,
+        status: 'pending',
+        pendingChangeFromSubscriptionId: activeSub.id,
+      },
+      data: { status: 'expired' },
+    });
+
+    planService.invalidateCache(organizationId);
+
+    const planName = scheduledPlan?.name ?? 'programado';
+    return {
+      kind: 'db_plan_change',
+      message: `Cambio al plan ${planName} cancelado.`,
+    };
+  }
+
+  const scheduledSub = await prisma.subscription.findFirst({
+    where: { organizationId, status: 'scheduled' },
+    orderBy: { startDate: 'desc' },
+    include: { plan: true },
+  });
+
+  if (!scheduledSub) return null;
+
+  if (scheduledSub.mercadopagoPreapprovalId) {
+    try {
+      const mercadopagoService = require('../mercadopagoService');
+      await mercadopagoService.cancelSubscription(scheduledSub.mercadopagoPreapprovalId);
+    } catch (err) {
+      console.error(
+        '[billing] cancelPendingScheduledChange: error cancelando preapproval en MP:',
+        err?.message,
+      );
+    }
+  }
+
+  await prisma.subscription.update({
+    where: { id: scheduledSub.id },
+    data: { status: 'cancelled', isActiveSubscription: false },
+  });
+
+  planService.invalidateCache(organizationId);
+
+  const planLabel = scheduledSub.plan?.name ? ` (${scheduledSub.plan.name})` : '';
+  return {
+    kind: 'mp_scheduled',
+    message: `Suscripción programada${planLabel} cancelada.`,
+  };
+}
+
 async function resolveScheduledPlanFromSub(activeSub, scheduledMpSub) {
   if (activeSub?.scheduledPlanId && activeSub?.scheduledChangeAt) {
     const scheduledPlan = await prisma.plan.findUnique({
@@ -280,6 +354,7 @@ module.exports = {
   executePlanChange,
   schedulePlanChangeInDb,
   updateCollectionMethod,
+  cancelPendingScheduledChange,
   resolveScheduledPlanFromSub,
   orgCanUsePlan,
   PLAN_CHANGE_IMMEDIATE,

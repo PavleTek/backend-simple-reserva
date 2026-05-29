@@ -977,9 +977,7 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
 
 /**
  * POST /billing/cancel-scheduled
- * Cancela una suscripción programada (status='scheduled').
- * Cancela el preapproval en MP y elimina el registro local.
- * Si había una sub cancelled-in-period, el usuario vuelve a poder reactivar.
+ * Cancela un cambio programado: campos DB en sub activa (manual EOP) o fila MP status=scheduled.
  */
 router.post('/billing/cancel-scheduled', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
@@ -991,33 +989,14 @@ router.post('/billing/cancel-scheduled', authenticateRestaurantRoles(['restauran
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const organizationId = restaurant.organizationId;
 
-    const scheduledSub = await prisma.subscription.findFirst({
-      where: { organizationId, status: 'scheduled' },
-      orderBy: { startDate: 'desc' },
-    });
+    const { cancelPendingScheduledChange } = require('../services/billing/billingOrchestrator');
+    const result = await cancelPendingScheduledChange(organizationId);
 
-    if (!scheduledSub) {
-      return res.status(400).json({ error: 'No hay suscripción programada para cancelar.' });
+    if (!result) {
+      return res.status(400).json({ error: 'No hay cambio programado para cancelar.' });
     }
 
-    // Cancelar preapproval en MP
-    if (scheduledSub.mercadopagoPreapprovalId) {
-      try {
-        const mercadopagoService = require('../services/mercadopagoService');
-        await mercadopagoService.cancelSubscription(scheduledSub.mercadopagoPreapprovalId);
-      } catch (err) {
-        console.error('[billing/cancel-scheduled] Error cancelando preapproval en MP:', err?.message);
-      }
-    }
-
-    await prisma.subscription.update({
-      where: { id: scheduledSub.id },
-      data: { status: 'cancelled', isActiveSubscription: false },
-    });
-
-    planService.invalidateCache(organizationId);
-
-    res.json({ message: 'Suscripción programada cancelada.' });
+    res.json({ message: result.message, kind: result.kind });
   } catch (error) {
     if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
       return res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta soporte.' });

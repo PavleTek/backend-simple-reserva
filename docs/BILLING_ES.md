@@ -89,6 +89,7 @@ Permitido con acceso activo y `status` en `active` o `trial` (checkout). Bloquea
 | POST | `/billing/change-plan` | Ejecutar |
 | POST | `/billing/payment-method/update` | Cambiar método de cobro |
 | POST | `/billing/reactivate` | Cancelada con acceso vigente |
+| POST | `/billing/cancel-scheduled` | Cancela cambio programado (DB en sub activa o MP `scheduled`) |
 
 ## Variables de entorno
 
