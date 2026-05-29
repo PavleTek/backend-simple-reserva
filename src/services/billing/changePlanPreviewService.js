@@ -17,6 +17,7 @@ const {
 const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
 const { canSelfServeBilling } = require('../../lib/canSelfServeBilling');
 const { resolvePlanOfferFlags } = require('../../lib/planSource');
+const { resolvePlanChangePreviewFlags } = require('../../lib/billingFlowMatrix');
 
 function formatEffectDate(isoDate) {
   if (!isoDate) return '';
@@ -239,6 +240,7 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
       : `Los cambios aplican el ${formatEffectDate(periodEndIso)}. Mantienes acceso completo a tu plan actual hasta entonces.`;
 
   const activePreview = when === PLAN_CHANGE_IMMEDIATE ? previewImmediate : previewEndOfPeriod;
+  const previewFlags = resolvePlanChangePreviewFlags({ billingStrategy, when });
 
   return {
     allowed: true,
@@ -253,15 +255,9 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
       end_of_period: previewEndOfPeriod,
     },
     recommendedWhen,
-    requiresCheckout:
-      when === PLAN_CHANGE_IMMEDIATE ||
-      (when === PLAN_CHANGE_END_OF_PERIOD && billingStrategy === BILLING_STRATEGY_AUTOMATIC),
-    requiresCheckoutForWhen: {
-      immediate: true,
-      end_of_period: billingStrategy === BILLING_STRATEGY_AUTOMATIC,
-    },
-    schedulesInDbOnly:
-      when === PLAN_CHANGE_END_OF_PERIOD && billingStrategy === BILLING_STRATEGY_MANUAL,
+    requiresCheckout: previewFlags.requiresCheckout,
+    requiresCheckoutForWhen: previewFlags.requiresCheckoutForWhen,
+    schedulesInDbOnly: previewFlags.schedulesInDbOnly,
     billingStrategy,
     collectionMethodLabel: billingView.collectionMethodLabel,
     paymentProvider: billingView.paymentProvider,

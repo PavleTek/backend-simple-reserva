@@ -98,6 +98,16 @@ Permitido con acceso activo y `status` en `active` o `trial` (checkout). Bloquea
 - `CHECKOUT_PRO_RENEWAL_CRON` / `CHECKOUT_PRO_RENEWAL_DAYS_BEFORE`
 - `MP_WEBHOOK_SECRET` o `MP_WEBHOOK_SECRET_*`
 
+## Tests unitarios de flujos
+
+Matriz de decisiones pura: `src/lib/billingFlowMatrix.js` (activación, cambio de plan, método de cobro, reactivación, cancelar programado).
+
+```bash
+node --test src/lib/billingFlowMatrix.test.js
+```
+
+Incluye ~45 casos nombrados + tests de `canSelfServeBilling`, `collectionMethodSwitch` y `cancel-scheduled`. No reemplazan E2E con Mercado Pago ni Prisma real.
+
 ## Migración segura (orden)
 
 1. Hotfix webhook cancelled/expired
