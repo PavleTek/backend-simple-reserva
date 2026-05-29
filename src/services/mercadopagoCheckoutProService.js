@@ -388,24 +388,41 @@ async function processCheckoutProPayment(mpPayment) {
  */
 async function confirmPaymentFromMercadoPago(organizationId, paymentId) {
   const { paymentClient: pay } = getClients();
-  const mpPayment = await pay.get({ id: paymentId });
+  let mpPayment;
+  try {
+    mpPayment = await pay.get({ id: paymentId });
+  } catch (err) {
+    const e = new Error(
+      'No pudimos verificar el pago en Mercado Pago. Si no completaste el cobro, tu plan no cambió.',
+    );
+    e.statusCode = 400;
+    throw e;
+  }
 
   const parsed = parseCheckoutProRef(mpPayment?.external_reference);
   if (!parsed || parsed.organizationId !== organizationId) {
-    throw new Error('El pago no corresponde a esta organización.');
+    const e = new Error('El pago no corresponde a esta organización.');
+    e.statusCode = 400;
+    throw e;
   }
 
-  if (parsed.kind === 'checkout_pro') {
-    const result = await processCheckoutProPayment(mpPayment);
-    return {
-      ok: true,
-      activated: !!result.activated,
-      status: mpPayment.status,
-      planSKU: parsed.planSKU,
-    };
+  if (parsed.kind !== 'checkout_pro' && parsed.provider !== 'mp_checkout_pro') {
+    return { ok: false, activated: false, message: 'Pago no es Checkout Pro' };
   }
 
-  return { ok: false, message: 'Pago no es Checkout Pro' };
+  const result = await processCheckoutProPayment(mpPayment);
+  const activated = !!result.activated;
+  return {
+    ok: true,
+    activated,
+    status: mpPayment.status,
+    planSKU: parsed.planSKU,
+    message: activated
+      ? undefined
+      : mpPayment.status === 'approved'
+        ? 'Pago registrado sin cambios en la suscripción.'
+        : 'Pago aún no aprobado. Si cancelaste en Mercado Pago, tu plan no cambió.',
+  };
 }
 
 /**

@@ -122,8 +122,10 @@ app.get("/", (req, res) => {
 app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
   const restaurantId = req.params.restaurantId;
   const preapprovalId = req.query.preapproval_id;
-  const paymentId = req.query.payment_id || req.query.collection_id;
   const paymentStatus = req.query.status || req.query.collection_status;
+  const paymentId =
+    req.query.payment_id ||
+    (String(paymentStatus || "").toLowerCase() === "approved" ? req.query.collection_id : null);
   const appUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || "http://localhost:5175").replace(/\/$/, "");
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
@@ -139,8 +141,10 @@ app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
 app.get("/api/redirect-to-billing", (req, res) => {
   let restaurantId = req.query.restaurantId;
   let preapprovalId = req.query.preapproval_id;
-  const paymentId = req.query.payment_id || req.query.collection_id;
   const paymentStatus = req.query.status || req.query.collection_status;
+  const paymentId =
+    req.query.payment_id ||
+    (String(paymentStatus || "").toLowerCase() === "approved" ? req.query.collection_id : null);
   if (restaurantId && typeof restaurantId === "string") {
     const match = restaurantId.match(/^([^?&]+)\?preapproval_id=([^&]+)$/);
     if (match) {

@@ -9,7 +9,7 @@ const prisma = require('../lib/prisma');
 async function getOrganizationWithTrial(organizationId) {
   return prisma.restaurantOrganization.findUnique({
     where: { id: organizationId },
-    select: { trialEndsAt: true },
+    select: { trialEndsAt: true, billingEmail: true },
   });
 }
 
