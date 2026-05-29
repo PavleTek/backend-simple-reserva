@@ -799,6 +799,7 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
 module.exports = {
   getMercadoPagoCheckoutHints,
   isMercadoPagoPolicyBlockedError,
+  isPreapprovalAlreadyCancelledError,
   createSubscription,
   cancelSubscription,
   activateOrganizationSubscription,

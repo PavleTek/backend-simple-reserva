@@ -21,7 +21,7 @@ const PLAN_CHANGE_IMMEDIATE = 'immediate';
 const PLAN_CHANGE_END_OF_PERIOD = 'end_of_period';
 
 const COLLECTION_METHOD_LABELS = {
-  [BILLING_STRATEGY_AUTOMATIC]: 'Débito automático Mercado Pago',
+  [BILLING_STRATEGY_AUTOMATIC]: 'Débito automático',
   [BILLING_STRATEGY_MANUAL]: 'Pago mensual manual',
 };
 

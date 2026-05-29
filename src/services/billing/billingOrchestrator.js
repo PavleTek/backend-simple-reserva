@@ -15,6 +15,10 @@ const {
 } = require('../../lib/billingDomain');
 const { normalizeBillingInput, getDefaultBillingStrategy } = require('../../lib/billingProviders');
 const mercadopagoAdapter = require('./adapters/mercadopagoBillingAdapter');
+const {
+  switchAutomaticToManualMonthly,
+  resolveCollectionMethodChange,
+} = require('./collectionMethodSwitchService');
 const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
 const { canSelfServeBillingOrThrow } = require('../../lib/canSelfServeBilling');
 const { getActiveSubscription } = require('../subscriptionService');
@@ -196,7 +200,22 @@ async function updateCollectionMethod({
   });
 
   const sku = planSKU || currentSubFull?.plan?.productSKU || 'plan-profesional';
+  const change = resolveCollectionMethodChange(currentSubFull, billingStrategy);
 
+  if (change.kind === 'noop') {
+    const err = new Error('Ya tienes este método de cobro activo.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (change.kind === 'automatic_to_manual') {
+    return switchAutomaticToManualMonthly({
+      organizationId,
+      subscriptionId: currentSubFull.id,
+    });
+  }
+
+  // manual → automatic (y demás): autorización en Mercado Pago vía preapproval
   return mercadopagoAdapter.createCheckout({
     organizationId,
     userId,

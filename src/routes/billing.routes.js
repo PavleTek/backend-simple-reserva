@@ -622,6 +622,20 @@ async function handleCollectionMethodUpdate(req, res, next) {
       billingStrategy: billing.billingStrategy,
       paymentProviderPsp: billing.paymentProvider,
     });
+
+    if (result.updated && !result.checkoutUrl) {
+      planService.invalidateCache(restaurant.organizationId);
+      return res.json({
+        updated: true,
+        requiresCheckout: false,
+        message: result.message,
+        billingStrategy: result.billingStrategy,
+        collectionMethodLabel: require('../lib/billingDomain').collectionMethodLabel(
+          result.billingStrategy,
+        ),
+      });
+    }
+
     sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
       paymentProvider: result.providerId,
       billingStrategy: billing.billingStrategy,
