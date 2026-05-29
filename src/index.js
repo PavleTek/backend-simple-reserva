@@ -37,6 +37,9 @@ const { startReservationHoldCleanupJob } = require("./jobs/reservationHoldCleanu
 const { startPostVisitFeedbackJob } = require("./jobs/postVisitFeedbackJob");
 const { startReferralEvaluationJob } = require("./jobs/referralEvaluationJob");
 const referralService = require("./services/referralService");
+const { startCheckoutProRenewalJob } = require("./jobs/checkoutProRenewalJob");
+const { startLastChanceLinkJob } = require("./jobs/lastChanceLinkJob");
+const { assertMpEnvSafety } = require("./lib/mercadopagoEnv");
 const { publicRouter: feedbackPublicRouter, restaurantRouter: feedbackRestaurantRouter } = require("./routes/feedback.routes");
 const { publicRestaurantRouter: holdRestaurantRouter, publicHoldRouter, staffRouter: holdStaffRouter } = require("./routes/reservationHold.routes");
 const restaurantReferralsRouter = require("./routes/restaurantReferrals.routes");
@@ -113,15 +116,19 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "SimpleReserva API" });
 });
 
-// Redirect after MercadoPago checkout (back_url). MP añade ?preapproval_id=xxx a la URL.
-// Usamos path /:restaurantId para evitar que MP corrompa el query.
+// Redirect after MercadoPago checkout (back_url).
+// Preapproval: ?preapproval_id=xxx | Checkout Pro: ?payment_id= o ?collection_id= y ?status=
 app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
   const restaurantId = req.params.restaurantId;
-  const preapprovalId = req.query.preapproval_id; // MP añade &preapproval_id=xxx (o ? si es la primera param)
+  const preapprovalId = req.query.preapproval_id;
+  const paymentId = req.query.payment_id || req.query.collection_id;
+  const paymentStatus = req.query.status || req.query.collection_status;
   const appUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || "http://localhost:5175").replace(/\/$/, "");
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
   if (preapprovalId) params.set("preapprovalId", String(preapprovalId));
+  if (paymentId) params.set("paymentId", String(paymentId));
+  if (paymentStatus) params.set("paymentStatus", String(paymentStatus));
   params.set("returnFromCheckout", "1");
   const target = `${appUrl}/billing?${params.toString()}`;
   res.redirect(302, target);
@@ -131,6 +138,8 @@ app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
 app.get("/api/redirect-to-billing", (req, res) => {
   let restaurantId = req.query.restaurantId;
   let preapprovalId = req.query.preapproval_id;
+  const paymentId = req.query.payment_id || req.query.collection_id;
+  const paymentStatus = req.query.status || req.query.collection_status;
   if (restaurantId && typeof restaurantId === "string") {
     const match = restaurantId.match(/^([^?&]+)\?preapproval_id=([^&]+)$/);
     if (match) {
@@ -144,6 +153,8 @@ app.get("/api/redirect-to-billing", (req, res) => {
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
   if (preapprovalId) params.set("preapprovalId", String(preapprovalId));
+  if (paymentId) params.set("paymentId", String(paymentId));
+  if (paymentStatus) params.set("paymentStatus", String(paymentStatus));
   params.set("returnFromCheckout", "1");
   res.redirect(302, `${appUrl}/billing?${params.toString()}`);
 });
@@ -248,6 +259,11 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   logger.info({ port: PORT }, "SimpleReserva API running");
+  try {
+    assertMpEnvSafety();
+  } catch (e) {
+    logger.warn({ err: e.message }, "MercadoPago env safety check");
+  }
   startReminderJob();
   startDailySummaryJob();
   startTrialReminderJob();
@@ -257,4 +273,6 @@ app.listen(PORT, "0.0.0.0", () => {
   startReservationHoldCleanupJob();
   startPostVisitFeedbackJob();
   startReferralEvaluationJob();
+  startCheckoutProRenewalJob();
+  startLastChanceLinkJob();
 });

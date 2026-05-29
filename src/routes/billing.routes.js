@@ -62,12 +62,39 @@ async function persistMercadoPagoPayerEmail(organizationId, bodyEmail, loginEmai
   throw err;
 }
 
-function sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail) {
+function sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail, checkoutHints) {
   res.json({
     checkoutUrl,
     mercadopagoPayerEmail: mercadopagoPayerEmail || null,
-    checkoutHints: getMercadoPagoCheckoutHints(mercadopagoPayerEmail),
+    paymentProvider: checkoutHints?.paymentProvider ?? null,
+    checkoutHints: checkoutHints?.hints ?? getMercadoPagoCheckoutHints(mercadopagoPayerEmail),
   });
+}
+
+/** Correo para checkout: obligatorio en preapproval; opcional en Checkout Pro. */
+async function resolvePayerEmailForCheckout(organizationId, bodyEmail, loginEmail, paymentProvider) {
+  const { PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
+  if (paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO) {
+    const fromBody = (bodyEmail || '').trim();
+    if (fromBody && isValidPayerEmail(fromBody)) {
+      const normalized = fromBody.toLowerCase();
+      await prisma.restaurantOrganization.update({
+        where: { id: organizationId },
+        data: { billingEmail: normalized },
+      });
+      return normalized;
+    }
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: organizationId },
+      select: { billingEmail: true },
+    });
+    const stored = (org?.billingEmail || '').trim();
+    if (stored && isValidPayerEmail(stored)) return stored.toLowerCase();
+    const login = (loginEmail || '').trim();
+    if (login && isValidPayerEmail(login)) return login.toLowerCase();
+    return null;
+  }
+  return persistMercadoPagoPayerEmail(organizationId, bodyEmail, loginEmail);
 }
 
 function handleBillingRouteError(error, res, next, respondMp) {
@@ -123,6 +150,7 @@ function isSamePlanRenewalScheduled(sub, scheduledSub) {
 
 /** Respuesta HTTP para fallos al crear preapproval en MP (checkout / change-plan / reactivate). */
 function respondMercadoPagoCheckoutError(error, res, next) {
+  const { PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
   if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
     res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
     return;
@@ -132,6 +160,7 @@ function respondMercadoPagoCheckoutError(error, res, next) {
       error: 'checkout_mp_policy_blocked',
       message:
         'Mercado Pago rechazó crear la suscripción. Revisa que tu aplicación en developers.mercadopago.cl tenga Suscripciones activo.',
+      alternatePaymentProvider: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
     });
     return;
   }
@@ -139,6 +168,7 @@ function respondMercadoPagoCheckoutError(error, res, next) {
     res.status(400).json({
       error: 'checkout_mp_payer_country',
       message: error.message,
+      alternatePaymentProvider: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
     });
     return;
   }
@@ -156,6 +186,39 @@ router.use(authorizeRestaurant);
 
 /** Facturación completa: solo propietario y gerente (anfitriones usan GET /access-status). */
 const ROLES_BILLING = ['restaurant_owner', 'restaurant_manager'];
+
+router.get('/billing/providers', authenticateRestaurantRoles(ROLES_BILLING), async (req, res) => {
+  const { listBillingProvidersForApi, getDefaultPaymentProvider } = require('../lib/billingProviders');
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: req.activeRestaurant.restaurantId },
+    select: { organizationId: true },
+  });
+  const org = restaurant
+    ? await prisma.restaurantOrganization.findUnique({
+        where: { id: restaurant.organizationId },
+        select: { billingCountry: true, owner: { select: { country: true } } },
+      })
+    : null;
+  res.json({
+    providers: listBillingProvidersForApi(org),
+    defaultProvider: getDefaultPaymentProvider(org),
+    billingCountry: org?.billingCountry ?? org?.owner?.country ?? 'CL',
+  });
+});
+
+/** Logos oficiales MP (marca + medios de pago vía API /v1/payment_methods). */
+router.get('/billing/payment-assets', authenticateRestaurantRoles(ROLES_BILLING), async (req, res, next) => {
+  try {
+    const mercadopagoPaymentMethodsService = require('../services/mercadopagoPaymentMethodsService');
+    const assets = await mercadopagoPaymentMethodsService.getPaymentMethodAssets();
+    res.json(assets);
+  } catch (error) {
+    if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
+      return res.status(503).json({ error: 'Configuración de pagos no disponible.' });
+    }
+    next(error);
+  }
+});
 
 router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (req, res, next) => {
   try {
@@ -374,12 +437,20 @@ router.get('/billing/payments', authenticateRestaurantRoles(['restaurant_owner']
     });
     if (!restaurant) throw new Error('Restaurante no encontrado');
 
-    const receipts = await prisma.paymentReceipt.findMany({
-      where: { organizationId: restaurant.organizationId },
-      orderBy: { paymentDate: 'desc' },
-      take: 20,
-      include: { plan: { select: { name: true } } },
-    });
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const skip = (page - 1) * limit;
+
+    const [receipts, total] = await Promise.all([
+      prisma.paymentReceipt.findMany({
+        where: { organizationId: restaurant.organizationId },
+        orderBy: { paymentDate: 'desc' },
+        skip,
+        take: limit,
+        include: { plan: { select: { name: true } } },
+      }),
+      prisma.paymentReceipt.count({ where: { organizationId: restaurant.organizationId } }),
+    ]);
 
     const payments = receipts.map((r) => ({
       id: r.id,
@@ -391,7 +462,157 @@ router.get('/billing/payments', authenticateRestaurantRoles(['restaurant_owner']
       receiptType: r.receiptType,
     }));
 
-    res.json({ payments });
+    res.json({ payments, page, limit, total, totalPages: Math.ceil(total / limit) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/billing/overview', authenticateRestaurantRoles(ROLES_BILLING), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const { getBillingOverview } = require('../services/billing/billingOverviewService');
+    const overview = await getBillingOverview(restaurant.organizationId, restaurantId);
+    res.json(overview);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/billing/change-plan/preview', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: req.activeRestaurant.restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const { normalizePaymentProvider } = require('../lib/billingProviders');
+    const { previewChangePlan } = require('../services/billing/changePlanPreviewService');
+    const result = await previewChangePlan({
+      organizationId: restaurant.organizationId,
+      planSKU: req.body?.plan?.trim(),
+      when: 'end_of_period',
+      paymentProvider: normalizePaymentProvider(req.body?.paymentProvider),
+    });
+    if (!result.allowed) {
+      return res.status(400).json(result);
+    }
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/billing/recovery/create-link', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const { createRecoveryPaymentLink } = require('../services/billing/recoveryLinkService');
+    const result = await createRecoveryPaymentLink({
+      organizationId: restaurant.organizationId,
+      userId: req.user.id,
+      restaurantId,
+    });
+    res.json(result);
+  } catch (error) {
+    if (error.statusCode === 400) return res.status(400).json({ error: error.message });
+    next(error);
+  }
+});
+
+router.post('/billing/payment-method/update', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const { normalizePaymentProvider } = require('../lib/billingProviders');
+    const { updatePaymentMethod } = require('../services/billing/paymentMethodUpdateService');
+    const user = await prisma.user.findUnique({ where: { id: req.user.id }, select: { email: true } });
+    const paymentProvider = normalizePaymentProvider(req.body?.paymentProvider);
+    const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
+      restaurant.organizationId,
+      req.body?.mercadopagoPayerEmail,
+      user?.email,
+      paymentProvider,
+    );
+    const result = await updatePaymentMethod({
+      organizationId: restaurant.organizationId,
+      userId: req.user.id,
+      restaurantId,
+      paymentProvider,
+      payerEmail: mercadopagoPayerEmail,
+      loginEmail: user?.email,
+    });
+    sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
+      paymentProvider: result.providerId,
+      hints: result.checkoutHints,
+    });
+  } catch (error) {
+    handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
+  }
+});
+
+router.get('/billing/invoices/:invoiceId/pdf', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: req.activeRestaurant.restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+
+    const receipt = await prisma.paymentReceipt.findFirst({
+      where: { id: req.params.invoiceId, organizationId: restaurant.organizationId },
+      include: { plan: true, organization: true },
+    });
+    if (!receipt) return res.status(404).json({ error: 'Recibo no encontrado' });
+
+    const format = (req.query.format || 'pdf').toString();
+    const { generateReceiptPdf, generateReceiptHtml } = require('../services/billing/receiptPdfGenerator');
+
+    if (format === 'html') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.send(generateReceiptHtml(receipt, receipt.organization, receipt.plan));
+    }
+
+    const pdf = await generateReceiptPdf(receipt, receipt.organization, receipt.plan);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="recibo-${receipt.id}.pdf"`);
+    res.send(pdf);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/billing/cancel/analytics', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: req.activeRestaurant.restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+
+    await prisma.subscriptionCancellation.create({
+      data: {
+        organizationId: restaurant.organizationId,
+        reason: req.body?.reason || null,
+        reasonDetail: req.body?.reasonDetail || null,
+        offeredDowngrade: !!req.body?.offeredDowngrade,
+        acceptedRetention: !!req.body?.acceptedRetention,
+      },
+    });
+    res.json({ ok: true });
   } catch (error) {
     next(error);
   }
@@ -408,7 +629,12 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
     const organizationId = restaurant.organizationId;
 
     const planSKU = req.body?.plan || 'plan-profesional';
-    const when = req.body?.when === 'end_of_trial' ? 'end_of_trial' : 'now';
+    if (req.body?.when === 'end_of_trial') {
+      return res.status(400).json({
+        error: 'La activación en periodo de prueba es inmediata. Elige activar ahora.',
+      });
+    }
+    const when = 'now';
 
     // Buscar el plan: puede ser público o personalizado para esta org
     const plan = await prisma.plan.findUnique({
@@ -450,22 +676,11 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       });
     }
 
-    // Create CheckoutSession
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24);
-
-    const checkoutSession = await prisma.checkoutSession.create({
-      data: {
-        organizationId,
-        userId: req.user.id,
-        planId: plan.id,
-        status: 'pending',
-        expiresAt,
-      },
-    });
-
-    const mercadopagoService = require('../services/mercadopagoService');
+    const billingCheckoutService = require('../services/billingCheckoutService');
     const { isTrialing } = require('../services/subscriptionService');
+    const { normalizePaymentProvider } = require('../lib/billingProviders');
+
+    const paymentProvider = normalizePaymentProvider(req.body?.paymentProvider);
 
     let createSubscriptionOptions = {};
     if (when === 'end_of_trial') {
@@ -483,41 +698,35 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       createSubscriptionOptions = { startDate: orgRow.trialEndsAt };
     }
 
-    await applyReferralCreditsToCheckoutOptions(organizationId, createSubscriptionOptions, checkoutSession.id);
+    await applyReferralCreditsToCheckoutOptions(organizationId, createSubscriptionOptions, null);
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true },
     });
 
-    const mercadopagoPayerEmail = await persistMercadoPagoPayerEmail(
+    const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
       organizationId,
       req.body?.mercadopagoPayerEmail,
       user?.email,
+      paymentProvider,
     );
 
-    const result = await mercadopagoService.createSubscription(
+    const result = await billingCheckoutService.createBillingCheckout({
       organizationId,
-      req.user.id,
-      user?.email,
+      userId: req.user.id,
+      payerEmail: mercadopagoPayerEmail || user?.email,
       planSKU,
       restaurantId,
-      createSubscriptionOptions
-    );
-
-    const checkoutUrl = result?.init_point ?? result?.initPoint ?? null;
-    const preapprovalId = result?.id ?? null;
-
-    // Update CheckoutSession with MP info
-    await prisma.checkoutSession.update({
-      where: { id: checkoutSession.id },
-      data: {
-        mercadopagoPreapprovalId: preapprovalId,
-        checkoutUrl,
-      },
+      when,
+      paymentProvider,
+      createSubscriptionOptions,
     });
 
-    sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail);
+    sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
+      paymentProvider: result.providerId,
+      hints: result.checkoutHints,
+    });
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }
@@ -580,6 +789,34 @@ router.post('/billing/confirm', authenticateRestaurantRoles(['restaurant_owner']
   }
 });
 
+/** Fallback cuando el webhook de Checkout Pro no llega: confirma por payment_id del retorno MP. */
+router.post('/billing/confirm-payment', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const organizationId = restaurant.organizationId;
+
+    const paymentId = req.body?.paymentId?.trim();
+    if (!paymentId) {
+      return res.status(400).json({ error: 'paymentId requerido' });
+    }
+
+    const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutProService');
+    const result = await mercadopagoCheckoutProService.confirmPaymentFromMercadoPago(organizationId, paymentId);
+    res.json(result);
+  } catch (error) {
+    if (error.statusCode === 400) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    next(error);
+  }
+});
+
 router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
@@ -616,6 +853,27 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
       where: { id: sub.id },
       data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd, gracePeriodEndsAt: periodEnd },
     });
+
+    if (req.body?.reason || req.body?.reasonDetail) {
+      await prisma.subscriptionCancellation.create({
+        data: {
+          organizationId,
+          subscriptionId: sub.id,
+          reason: req.body.reason || null,
+          reasonDetail: req.body.reasonDetail || null,
+          offeredDowngrade: !!req.body.offeredDowngrade,
+          acceptedRetention: !!req.body.acceptedRetention,
+        },
+      });
+    }
+
+    try {
+      const { sendSubscriptionCancelledEmail } = require('../services/billing/billingTransactionalEmailService');
+      await sendSubscriptionCancelledEmail({ organizationId, endDate: periodEnd });
+    } catch (emailErr) {
+      console.error('[billing/cancel] email error:', emailErr?.message);
+    }
+
     res.json({ message: 'Suscripción cancelada. Seguirás con acceso hasta el final del periodo actual.' });
   } catch (error) {
     if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
@@ -728,60 +986,67 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
       return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
     }
 
-    // Limpiar sesiones pendientes previas para esta organización
     await prisma.checkoutSession.updateMany({
       where: { organizationId, status: 'pending' },
       data: { status: 'expired' },
     });
 
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24);
+    const billingCheckoutService = require('../services/billingCheckoutService');
+    const { normalizePaymentProvider, PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
+    const paymentProvider = normalizePaymentProvider(req.body?.paymentProvider);
 
-    const checkoutSession = await prisma.checkoutSession.create({
-      data: {
-        organizationId,
-        userId: req.user.id,
-        planId: plan.id,
-        status: 'pending',
-        expiresAt,
-        // when=now: marcar como cambio inmediato para que confirmSubscriptionFromPreapproval active en vez de programar
-        pendingChangeFromSubscriptionId: when === 'now' ? cancelledSub.id : null,
-      },
-    });
+    if (when === 'end_of_period' && paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO) {
+      return res.status(400).json({
+        error:
+          'Para reactivar al vencer el periodo usa débito automático Mercado Pago. El pago con tarjeta solo permite activación inmediata.',
+      });
+    }
 
-    const mercadopagoService = require('../services/mercadopagoService');
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: { email: true },
     });
 
-    const mercadopagoPayerEmail = await persistMercadoPagoPayerEmail(
+    const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
       organizationId,
       req.body?.mercadopagoPayerEmail,
       user?.email,
+      paymentProvider,
     );
 
-    // end_of_period: primer cobro al vencer el periodo ya pagado. now: cobro desde inmediato (createSubscription usa +2 min si no hay fecha futura).
     const createOpts = when === 'end_of_period' ? { startDate: cancelledSub.endDate } : {};
-    await applyReferralCreditsToCheckoutOptions(organizationId, createOpts, checkoutSession.id);
-    const result = await mercadopagoService.createSubscription(
-      organizationId,
-      req.user.id,
-      user?.email,
-      planSKU,
-      restaurantId,
-      createOpts
-    );
+    await applyReferralCreditsToCheckoutOptions(organizationId, createOpts, null);
 
-    const checkoutUrl = result?.init_point ?? result?.initPoint ?? null;
-    const preapprovalId = result?.id ?? null;
+    let result;
+    if (when === 'now') {
+      result = await billingCheckoutService.createBillingCheckoutWithPendingChange({
+        organizationId,
+        userId: req.user.id,
+        payerEmail: mercadopagoPayerEmail || user?.email,
+        planSKU,
+        restaurantId,
+        when: 'now',
+        paymentProvider,
+        pendingChangeFromSubscriptionId: cancelledSub.id,
+        createSubscriptionOptions: createOpts,
+      });
+    } else {
+      result = await billingCheckoutService.createBillingCheckout({
+        organizationId,
+        userId: req.user.id,
+        payerEmail: mercadopagoPayerEmail || user?.email,
+        planSKU,
+        restaurantId,
+        when: 'end_of_period',
+        paymentProvider: 'mercadopago_preapproval',
+        createSubscriptionOptions: createOpts,
+      });
+    }
 
-    await prisma.checkoutSession.update({
-      where: { id: checkoutSession.id },
-      data: { mercadopagoPreapprovalId: preapprovalId, checkoutUrl },
+    sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
+      paymentProvider: result.providerId,
+      hints: result.checkoutHints,
     });
-
-    sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail);
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }
@@ -810,7 +1075,7 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     const newPlanSKU = req.body?.plan?.trim();
     if (!newPlanSKU) return res.status(400).json({ error: 'plan requerido' });
 
-    const when = req.body?.when === 'end_of_period' ? 'end_of_period' : 'now';
+    const when = 'end_of_period';
 
     const newPlan = await prisma.plan.findUnique({ where: { productSKU: newPlanSKU } });
     if (!newPlan) return res.status(400).json({ error: `Plan no encontrado: ${newPlanSKU}` });
@@ -835,8 +1100,6 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       return res.status(400).json({ error: 'Ya tienes este plan activo.' });
     }
 
-    const mercadopagoService = require('../services/mercadopagoService');
-
     let checkoutStartDateOpt = null;
 
     if (when === 'end_of_period') {
@@ -859,22 +1122,16 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       data: { status: 'expired' },
     });
 
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24);
+    const billingCheckoutService = require('../services/billingCheckoutService');
+    const { normalizePaymentProvider, PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
+    const paymentProvider = normalizePaymentProvider(req.body?.paymentProvider);
 
-    const checkoutSession = await prisma.checkoutSession.create({
-      data: {
-        organizationId,
-        userId: req.user.id,
-        planId: newPlan.id,
-        status: 'pending',
-        expiresAt,
-        // Guardado para ambos modos (now y end_of_period):
-        // permite cancelar el preapproval anterior en MP al autorizar el nuevo
-        // y reemplazar la sub activa al activar el nuevo plan.
-        pendingChangeFromSubscriptionId: currentSub.id,
-      },
-    });
+    if (when === 'end_of_period' && paymentProvider === PAYMENT_PROVIDER_MP_CHECKOUT_PRO) {
+      return res.status(400).json({
+        error:
+          'Para programar un cambio al fin del periodo necesitas débito automático Mercado Pago. Actualiza tu método de pago.',
+      });
+    }
 
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
@@ -882,32 +1139,31 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     });
 
     const changePlanOpts = checkoutStartDateOpt ? { startDate: checkoutStartDateOpt } : {};
-    await applyReferralCreditsToCheckoutOptions(organizationId, changePlanOpts, checkoutSession.id);
+    await applyReferralCreditsToCheckoutOptions(organizationId, changePlanOpts, null);
 
-    const mercadopagoPayerEmail = await persistMercadoPagoPayerEmail(
+    const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
       organizationId,
       req.body?.mercadopagoPayerEmail,
       user?.email,
+      when === 'end_of_period' ? 'mercadopago_preapproval' : paymentProvider,
     );
 
-    const result = await mercadopagoService.createSubscription(
+    const result = await billingCheckoutService.createBillingCheckoutWithPendingChange({
       organizationId,
-      req.user.id,
-      user?.email,
-      newPlanSKU,
+      userId: req.user.id,
+      payerEmail: mercadopagoPayerEmail || user?.email,
+      planSKU: newPlanSKU,
       restaurantId,
-      changePlanOpts
-    );
-
-    const checkoutUrl = result?.init_point ?? result?.initPoint ?? null;
-    const preapprovalId = result?.id ?? null;
-
-    await prisma.checkoutSession.update({
-      where: { id: checkoutSession.id },
-      data: { mercadopagoPreapprovalId: preapprovalId, checkoutUrl },
+      when: when === 'end_of_period' ? 'end_of_period' : 'now',
+      paymentProvider: when === 'end_of_period' ? 'mercadopago_preapproval' : paymentProvider,
+      pendingChangeFromSubscriptionId: currentSub.id,
+      createSubscriptionOptions: changePlanOpts,
     });
 
-    sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail);
+    sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
+      paymentProvider: result.providerId,
+      hints: result.checkoutHints,
+    });
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }

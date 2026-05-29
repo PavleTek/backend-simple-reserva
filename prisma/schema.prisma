@@ -75,6 +75,8 @@ model RestaurantOrganization {
   billingBusinessName String?   // Company/business name
   billingAddress      String?
   billingEmail        String?   // Billing-specific email
+  /// País para facturación / proveedor de pago (CL = preapproval + checkout pro; otro = solo checkout pro)
+  billingCountry      String    @default("CL")
 
   reservationNotifyScope        ReservationNotifyScope @default(restaurant)
   reservationNotifyAudience     ReservationNotifyAudience @default(owner)
@@ -599,10 +601,29 @@ model Subscription {
   currentPeriodEnd DateTime?
   /// Access deadline: 7 days after payment failure, OR set equal to endDate on manual cancellation
   gracePeriodEndsAt DateTime?
-  mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
+  mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid (preapproval)
+  /// mercadopago_preapproval | mp_checkout_pro
+  paymentProvider String @default("mercadopago_preapproval")
+  /// CheckoutSession id for mp_checkout_pro renewals / tracing
+  providerCheckoutSessionId String?
+  /// Snapshot del último método de pago exitoso (desde webhook payment)
+  lastPaymentMethodKind       String?
+  lastPaymentMethodBrand      String?
+  lastPaymentLastFour         String?
+  lastPaymentExpirationMonth  Int?
+  lastPaymentExpirationYear   Int?
+  lastPaymentAt               DateTime?
+  /// Próximo reintento automático de MP (preapproval)
+  mpNextRetryAt               DateTime?
+  /// Pausa de suscripción (feature flag BILLING_PAUSE_ENABLED)
+  isPaused                    Boolean   @default(false)
+  pausedAt                    DateTime?
+  pauseEndsAt                 DateTime?
   createdAt     DateTime  @default(now())
 
   paymentReceipts PaymentReceipt[]
+  addons          SubscriptionAddon[]
+  cancellationEvents SubscriptionCancellation[]
 
   @@unique([organizationId, mercadopagoPreapprovalId])
   @@index([organizationId])
@@ -810,6 +831,9 @@ model CheckoutSession {
 
   status                    String    @default("pending") // "pending" | "completed" | "expired" | "abandoned"
   mercadopagoPreapprovalId  String?
+  mercadopagoPreferenceId   String?
+  /// mercadopago_preapproval | mp_checkout_pro
+  paymentProvider           String    @default("mercadopago_preapproval")
   checkoutUrl               String?
   /// Si existe, al autorizar el nuevo preapproval se cancela esta suscripción en MP (cambio de plan inmediato sin perder acceso antes de pagar).
   pendingChangeFromSubscriptionId String?
@@ -897,8 +921,12 @@ model WebhookEvent {
   mpStatus         String?   // estado real consultado a MP API tras recibir el evento
   organizationId   String?   // extraído de external_reference (nullable si no se puede parsear)
   externalRef      String?   // external_reference completo del preapproval/payment
+  /// Evento normalizado de dominio (subscription.activated, payment.approved, etc.)
+  normalizedKind   String?
   processingStatus String    @default("received") // "received" | "processed" | "failed" | "skipped"
   errorMessage     String?   // mensaje de error truncado si processingStatus = "failed"
+  retryCount       Int       @default(0)
+  permanentlyFailed Boolean  @default(false)
   rawHeaders       Json?     // metadata de headers: x-request-id, presencia de x-signature
   processedAt      DateTime?
   createdAt        DateTime  @default(now())
@@ -907,6 +935,42 @@ model WebhookEvent {
   @@index([organizationId])
   @@index([createdAt])
   @@index([processingStatus])
+  @@index([normalizedKind])
+}
+
+/// Razones de cancelación (analytics P2.8)
+model SubscriptionCancellation {
+  id                 String    @id @default(cuid())
+  organizationId     String
+  subscriptionId     String?
+  subscription       Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  reason             String?   // too_expensive, not_using, switched, closed_temporarily, other
+  reasonDetail       String?
+  offeredDowngrade   Boolean   @default(false)
+  acceptedRetention  Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+
+  @@index([organizationId])
+  @@index([reason])
+  @@index([createdAt])
+}
+
+/// Add-ons de suscripción (locales extra, módulos)
+model SubscriptionAddon {
+  id             String    @id @default(cuid())
+  organizationId String
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  addonType      String    // extra_location, module_marketing, etc.
+  quantity       Int       @default(1)
+  priceCLP       Decimal   @db.Decimal(10, 2)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([organizationId])
+  @@index([subscriptionId])
+  @@index([addonType])
 }
 
 model AuditLog {

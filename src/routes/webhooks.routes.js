@@ -12,7 +12,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const prisma = require('../lib/prisma');
-const { getMercadoPagoAccessToken, getMercadoPagoWebhookSecret } = require('../lib/mercadopagoEnv');
+const { getMercadoPagoAccessToken, getMercadoPagoWebhookSecrets } = require('../lib/mercadopagoEnv');
 const {
   activateOrganizationSubscription,
   scheduleOrganizationSubscription,
@@ -23,6 +23,11 @@ const {
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const referralService = require('../services/referralService');
+const { parseExternalReference } = require('../lib/billingProviders');
+const { parseExternalReferenceV2 } = require('../lib/externalReferenceV2');
+const { normalizeMercadoPagoWebhook } = require('../services/billing/webhooks/normalizer');
+const { persistPaymentMethodSnapshot } = require('../services/billing/paymentMethodSnapshot');
+const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutProService');
 
 const router = express.Router();
 
@@ -33,13 +38,13 @@ router.get('/mercadopago', (req, res) => {
 });
 
 function validateMPSignature(req, dataId) {
-  const secret = getMercadoPagoWebhookSecret();
-  if (!secret || secret === '') {
+  const secrets = getMercadoPagoWebhookSecrets();
+  if (!secrets.length) {
     if (process.env.NODE_ENV === 'production') {
       console.error('[Webhook] CRITICAL: secret de webhook MP no configurado en producción. Rechazando webhook.');
       return false;
     }
-    return true; // Solo permitir sin secret en desarrollo/staging
+    return true;
   }
   const xSig = req.headers['x-signature'];
   const xReqId = req.headers['x-request-id'];
@@ -51,16 +56,18 @@ function validateMPSignature(req, dataId) {
     if (k?.trim() === 'ts') ts = v?.trim() ?? '';
     if (k?.trim() === 'v1') hash = v?.trim() ?? '';
   }
-  // MP docs: alphanumeric ids must be lowercase in manifest
   const idForManifest = /^[a-zA-Z0-9]+$/.test(String(dataId)) ? String(dataId).toLowerCase() : String(dataId);
   const manifest = `id:${idForManifest};request-id:${xReqId};ts:${ts};`;
-  const expected = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
-  const expBuf = Buffer.from(String(expected).trim(), 'hex');
-  const gotBuf = Buffer.from(String(hash).trim(), 'hex');
-  if (expBuf.length !== gotBuf.length || expBuf.length === 0) {
-    return false;
+
+  for (const secret of secrets) {
+    const expected = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
+    const expBuf = Buffer.from(String(expected).trim(), 'hex');
+    const gotBuf = Buffer.from(String(hash).trim(), 'hex');
+    if (expBuf.length === gotBuf.length && expBuf.length > 0 && crypto.timingSafeEqual(expBuf, gotBuf)) {
+      return true;
+    }
   }
-  return crypto.timingSafeEqual(expBuf, gotBuf);
+  return false;
 }
 
 router.post('/mercadopago', express.json({ 
@@ -277,9 +284,18 @@ router.post('/mercadopago', express.json({
           return;
         }
 
-        const parts = String(externalRef).split('|');
-        const organizationId = parts[0];
-        const planSKU = parts[1] || 'plan-profesional';
+        const parsedRef = parseExternalReferenceV2(externalRef) || parseExternalReference(externalRef);
+        const organizationId = parsedRef?.organizationId;
+        const planSKU = parsedRef?.planSKU || 'plan-profesional';
+
+        if (!organizationId) {
+          console.warn('[Webhook] MercadoPago: payment external_reference inválido:', externalRef);
+          await prisma.webhookEvent.update({
+            where: { id: webhookEvent.id },
+            data: { processingStatus: 'skipped', errorMessage: 'invalid external_reference' },
+          });
+          return;
+        }
 
         // Skip processing for soft-deleted organizations
         const orgCheckPayment = await prisma.restaurantOrganization.findUnique({
@@ -295,15 +311,43 @@ router.post('/mercadopago', express.json({
           return;
         }
 
-        console.log('[Webhook] MercadoPago payment:', { 
-          id: paymentId, 
-          status: mpPayment.status, 
+        console.log('[Webhook] MercadoPago payment:', {
+          id: paymentId,
+          status: mpPayment.status,
           amount: mpPayment.transaction_amount,
           organizationId,
           planSKU,
+          refKind: parsedRef.kind,
         });
 
+        if (parsedRef.kind === 'checkout_pro' || parsedRef.provider === 'mp_checkout_pro') {
+          if (mpPayment.status === 'approved') {
+            const cpResult = await mercadopagoCheckoutProService.processCheckoutProPayment(mpPayment);
+            if (cpResult.activated) {
+              await createReceiptFromMPPayment(mpPayment, organizationId, planSKU);
+              console.log('[Webhook] Checkout Pro: suscripción activada/renovada:', organizationId);
+            }
+          }
+          await prisma.webhookEvent.update({
+            where: { id: webhookEvent.id },
+            data: {
+              processingStatus: 'processed',
+              mpStatus: mpPayment.status,
+              organizationId,
+              externalRef,
+              normalizedKind: normalizeMercadoPagoWebhook({ type, data: { id: paymentId }, mpEntity: mpPayment })?.kind,
+              processedAt: new Date(),
+            },
+          });
+          return;
+        }
+
         if (mpPayment.status === 'approved') {
+          try {
+            await persistPaymentMethodSnapshot(organizationId, mpPayment);
+          } catch (e) {
+            console.warn('[Webhook] payment method snapshot:', e?.message);
+          }
           await createReceiptFromMPPayment(mpPayment, organizationId, planSKU);
           console.log('[Webhook] MercadoPago receipt created for payment:', paymentId);
           try {
@@ -320,8 +364,6 @@ router.post('/mercadopago', express.json({
             const planService = require('../services/planService');
             planService.invalidateCache(organizationId);
             console.log('[Webhook] MercadoPago payment approved → grace cleared, org:', organizationId);
-            // Limpiar trialEndsAt para que la UI no muestre "Prueba gratuita" si el pago
-            // se procesó mientras el periodo de prueba aún estaba vigente
             await prisma.restaurantOrganization.update({
               where: { id: organizationId },
               data: { trialEndsAt: null },
@@ -361,6 +403,7 @@ router.post('/mercadopago', express.json({
             mpStatus: mpPayment.status,
             organizationId,
             externalRef,
+            normalizedKind: normalizeMercadoPagoWebhook({ type, data: { id: paymentId }, mpEntity: mpPayment })?.kind,
             processedAt: new Date(),
           },
         });

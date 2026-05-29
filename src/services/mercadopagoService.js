@@ -475,12 +475,30 @@ async function getActivateOptionsForPreapproval(organizationId, preapprovalId) {
 }
 
 async function activateOrganizationSubscription(organizationId, preapprovalId, planSKU = 'plan-profesional', options = {}) {
-  const { replaceSubscriptionId } = options;
+  const {
+    replaceSubscriptionId,
+    paymentProvider = 'mercadopago_preapproval',
+    providerCheckoutSessionId = null,
+  } = options;
 
-  const existing = await prisma.subscription.findFirst({
-    where: { mercadopagoPreapprovalId: preapprovalId, status: 'active' },
-  });
-  if (existing) return;
+  if (preapprovalId) {
+    const existing = await prisma.subscription.findFirst({
+      where: { mercadopagoPreapprovalId: preapprovalId, status: 'active' },
+    });
+    if (existing) return;
+  }
+
+  if (paymentProvider === 'mp_checkout_pro' && providerCheckoutSessionId) {
+    const existingCp = await prisma.subscription.findFirst({
+      where: {
+        organizationId,
+        paymentProvider: 'mp_checkout_pro',
+        providerCheckoutSessionId,
+        status: 'active',
+      },
+    });
+    if (existingCp) return;
+  }
 
   const organization = await prisma.restaurantOrganization.findUnique({ where: { id: organizationId } });
   if (!organization) {
@@ -558,7 +576,9 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
         planId: plan.id,
         status: 'active',
         isActiveSubscription: true,
-        mercadopagoPreapprovalId: preapprovalId,
+        mercadopagoPreapprovalId: preapprovalId || null,
+        paymentProvider,
+        providerCheckoutSessionId: providerCheckoutSessionId || null,
         startDate: activatedAt,
         currentPeriodEnd: nextPeriodEnd,
       },
