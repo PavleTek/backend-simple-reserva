@@ -47,3 +47,7 @@ ALTER TABLE "Subscription" ADD CONSTRAINT "Subscription_scheduledPlanId_fkey"
   FOREIGN KEY ("scheduledPlanId") REFERENCES "Plan"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 CREATE INDEX IF NOT EXISTS "Subscription_scheduledChangeAt_idx" ON "Subscription"("scheduledChangeAt");
+
+-- Alinear default de columna con schema.prisma (PSP)
+ALTER TABLE "Subscription" ALTER COLUMN "paymentProvider" SET DEFAULT 'mercadopago';
+ALTER TABLE "CheckoutSession" ALTER COLUMN "paymentProvider" SET DEFAULT 'mercadopago';
