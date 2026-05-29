@@ -98,6 +98,10 @@ Permitido con acceso activo y `status` en `active` o `trial` (checkout). Bloquea
 - `CHECKOUT_PRO_RENEWAL_CRON` / `CHECKOUT_PRO_RENEWAL_DAYS_BEFORE`
 - `MP_WEBHOOK_SECRET` o `MP_WEBHOOK_SECRET_*`
 
+## Checklist QA manual
+
+Lista completa (legacy, usuarios nuevos, todos los caminos): **[BILLING_QA_CHECKLIST.md](./BILLING_QA_CHECKLIST.md)**.
+
 ## Tests unitarios de flujos
 
 Matriz de decisiones pura: `src/lib/billingFlowMatrix.js` (activación, cambio de plan, método de cobro, reactivación, cancelar programado).
