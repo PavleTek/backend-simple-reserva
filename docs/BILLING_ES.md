@@ -96,6 +96,43 @@ Reglas de producto:
 
 Implementación: `referralFreeWindowService.js`, `consumeCreditsForSubscription` en `referralService.js`.
 
+### Canje en renovación (opt-in, plan activo)
+
+Para referidores que **ya pagan** y acumulan créditos nuevos:
+
+| Camino | Cuándo | Cómo |
+|--------|--------|------|
+| **Activación / reactivación** | Prueba, expirado, cancelado reactivable | Checkout al activar; ventana desde hoy (`referralFreeWindowStartsAt = null`) |
+| **Renovación** | `status = active`, créditos `available`, sin ventana ni cambio programado | Opt-in: `POST /billing/referral-credits/apply-to-renewal` |
+| **Bloqueado v1** | Gracia, cambio de plan programado, ventana activa o extensión ya programada | Ver `renewalCreditBlockedReason` en overview |
+
+Al canjear en renovación:
+
+- `referralFreeWindowStartsAt = currentPeriodEnd` (fin del periodo ya pagado)
+- `referralFreeUntil = startsAt + días del crédito`
+- `currentPeriodEnd` se alinea con `referralFreeUntil`
+- **Manual:** sin checkout; recordatorios al nuevo vencimiento
+- **Automático:** cancela preapproval, checkout con `start_date = referralFreeUntil` (reautorización MP)
+
+Preview: `GET /billing/referral-credits/renewal-preview`.
+
+**Importante:** cambiar de plan **no consume** créditos de referido; son flujos independientes en la UI.
+
+### Cambio de plan vs créditos
+
+| Situación | Cambio de plan |
+|-----------|----------------|
+| Ventana activa o extensión programada (opt-in renovación) | **Bloqueado** hasta fin de `referralFreeUntil` |
+| Créditos `available` sin aplicar | Solo **mismo tier** (sin subir/bajar); requiere confirmar **pérdida del crédito** (`confirmForfeitReferralCredits`) |
+| Sin créditos | Flujo normal |
+
+Implementación: `referralCreditGuardService.js`, `forfeitAvailableCredits` en `referralService.js`.
+
+### Método de cobro con créditos activos
+
+- **Manual → automático:** checkout preapproval con `start_date = referralFreeUntil` (ventana activa o extensión programada).
+- **Automático → manual:** cancela preapproval; conserva fechas de ventana en la sub.
+
 ## Cambios de plan
 
 - **Sin prorrateo:** upgrade inmediato = mes completo del plan nuevo; ciclo reinicia al pagar.

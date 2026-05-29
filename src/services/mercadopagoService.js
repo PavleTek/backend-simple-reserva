@@ -532,13 +532,17 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   }
 
   let freeUntilDate = referralFreeUntil ? new Date(referralFreeUntil) : null;
+  let freeWindowStartsAt = null;
   if (!freeUntilDate && replaceSubscriptionId) {
     const replacedSub = await prisma.subscription.findUnique({
       where: { id: replaceSubscriptionId },
-      select: { referralFreeUntil: true },
+      select: { referralFreeUntil: true, referralFreeWindowStartsAt: true },
     });
     if (replacedSub?.referralFreeUntil && new Date(replacedSub.referralFreeUntil) > new Date()) {
       freeUntilDate = new Date(replacedSub.referralFreeUntil);
+      freeWindowStartsAt = replacedSub.referralFreeWindowStartsAt
+        ? new Date(replacedSub.referralFreeWindowStartsAt)
+        : null;
     }
   }
   const inReferralWindow = !!freeUntilDate;
@@ -625,6 +629,7 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
         startDate: activatedAt,
         currentPeriodEnd: nextPeriodEnd,
         referralFreeUntil: freeUntilDate,
+        referralFreeWindowStartsAt: freeWindowStartsAt,
       },
     });
     await tx.restaurantOrganization.update({

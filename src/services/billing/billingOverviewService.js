@@ -21,6 +21,12 @@ const {
 } = require('./billingContractService');
 const referralService = require('../referralService');
 const { isInReferralFreeWindow } = require('./referralFreeWindowService');
+const {
+  evaluateRenewalCreditEligibility,
+  isReferralCreditExtensionScheduled,
+  scheduledRenewalCreditDays,
+} = require('./referralRenewalCreditService');
+const { isReferralCreditPeriodLocked } = require('./referralCreditGuardService');
 
 const IVA_RATE = 0.19;
 
@@ -248,19 +254,36 @@ async function getBillingOverview(organizationId, restaurantId) {
     const creditsAvailableDays = referralSummary.creditsAvailableDays ?? 0;
     const creditsAppliedDays = referralSummary.creditsAppliedDays ?? 0;
     const referralFreeUntil = sub?.referralFreeUntil?.toISOString?.() ?? null;
+    const referralFreeWindowStartsAt = sub?.referralFreeWindowStartsAt?.toISOString?.() ?? null;
     const inFreeWindow = isInReferralFreeWindow(sub);
+    const extensionScheduled = isReferralCreditExtensionScheduled(sub);
     const canRedeemOnActivation =
       creditsAvailableDays > 0 &&
       !inFreeWindow &&
+      !extensionScheduled &&
       (trialing || status === 'expired' || canReactivate);
+    const renewalEligibility = evaluateRenewalCreditEligibility(sub, creditsAvailableDays);
+    const canRedeemOnRenewal = renewalEligibility.eligible;
+    const scheduledRenewalCreditDaysVal = extensionScheduled ? scheduledRenewalCreditDays(sub) : 0;
 
-    if (creditsAvailableDays > 0 || creditsAppliedDays > 0 || inFreeWindow) {
+    if (
+      creditsAvailableDays > 0 ||
+      creditsAppliedDays > 0 ||
+      inFreeWindow ||
+      extensionScheduled
+    ) {
       referralCredits = {
         creditsAvailableDays,
         creditsAppliedDays,
         referralFreeUntil,
+        referralFreeWindowStartsAt,
         isInFreeWindow: inFreeWindow,
+        isReferralCreditExtensionScheduled: extensionScheduled,
         canRedeemOnActivation,
+        canRedeemOnRenewal,
+        renewalCreditBlockedReason: canRedeemOnRenewal ? null : renewalEligibility.blockedReason ?? null,
+        scheduledRenewalCreditDays: scheduledRenewalCreditDaysVal,
+        planChangeBlocked: isReferralCreditPeriodLocked(sub),
         daysUntilFreeWindowEnds: inFreeWindow && sub?.referralFreeUntil
           ? daysUntil(sub.referralFreeUntil.toISOString())
           : null,
@@ -268,6 +291,21 @@ async function getBillingOverview(organizationId, restaurantId) {
     }
   } catch (refErr) {
     console.warn('[billingOverview] referralCredits:', refErr?.message ?? refErr);
+  }
+
+  let nextChargeAmountCLP = price.base;
+  let nextChargeAmountWithIVA = price.withIva;
+  let nextChargeReferralNote = null;
+  if (sub && isInReferralFreeWindow(sub)) {
+    nextChargeAmountCLP = 0;
+    nextChargeAmountWithIVA = 0;
+    nextChargeReferralNote = 'Estás en periodo gratis por referidos.';
+  } else if (sub && isReferralCreditExtensionScheduled(sub)) {
+    const days = scheduledRenewalCreditDays(sub);
+    nextChargeReferralNote =
+      days > 0
+        ? `Incluye ${days} día${days === 1 ? '' : 's'} gratis de referido tras tu periodo pagado.`
+        : null;
   }
 
   return {
@@ -282,8 +320,8 @@ async function getBillingOverview(organizationId, restaurantId) {
       subscriptionStartDate: sub?.startDate?.toISOString?.() ?? null,
     },
     nextCharge: {
-      amountCLP: price.base,
-      amountWithIVA: price.withIva,
+      amountCLP: nextChargeAmountCLP,
+      amountWithIVA: nextChargeAmountWithIVA,
       currency: 'CLP',
       date: nextPaymentDate,
       daysUntil: daysUntil(nextPaymentDate),
@@ -291,6 +329,7 @@ async function getBillingOverview(organizationId, restaurantId) {
       isManual,
       collectionMethodLabel: billingView?.collectionMethodLabel ?? null,
       paymentMethod,
+      referralNote: nextChargeReferralNote,
     },
     status,
     billingStatus: inGrace ? 'recovering' : status === 'active' ? 'healthy' : status === 'trial' ? 'healthy' : status === 'expired' ? 'expired' : 'expiring_soon',

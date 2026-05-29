@@ -3,6 +3,7 @@
 const prisma = require('../../lib/prisma');
 const { canSelfServeBilling } = require('../../lib/canSelfServeBilling');
 const { resolvePlanSourceForOrganization, resolvePlanOfferFlags } = require('../../lib/planSource');
+const { isReferralCreditPeriodLocked } = require('./referralCreditGuardService');
 const { subscriptionBillingView } = require('../../lib/billingDomain');
 const { resolveScheduledPlanFromSub } = require('./billingOrchestrator');
 
@@ -124,12 +125,17 @@ async function buildBillingCapabilities({
   };
 
   const isAdminComped = sub?.status === 'cancelled_by_admin';
+  const referralPlanChangeBlocked = isReferralCreditPeriodLocked(sub);
 
   const canReactivateBase = !!(sub?.status === 'cancelled' && sub?.endDate && new Date() < sub.endDate);
   const canReactivate = canReactivateBase && !scheduledSub;
 
   return {
-    canChangePlan: gate.allowed && offerFlags.selfServicePlanChanges && !isAdminComped,
+    canChangePlan:
+      gate.allowed &&
+      offerFlags.selfServicePlanChanges &&
+      !isAdminComped &&
+      !referralPlanChangeBlocked,
     canChangeStrategy:
       gate.allowed && offerFlags.selfServiceBillingStrategyChanges && !isAdminComped && status === 'active',
     canReactivate,
@@ -140,6 +146,7 @@ async function buildBillingCapabilities({
     selfServiceBillingStrategyChanges: offerFlags.selfServiceBillingStrategyChanges,
     billingGateCode: gate.code ?? null,
     billingGateReason: gate.allowed ? null : gate.reason,
+    referralPlanChangeBlocked,
   };
 }
 

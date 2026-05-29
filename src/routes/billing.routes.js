@@ -534,6 +534,93 @@ router.get('/billing/overview', authenticateRestaurantRoles(ROLES_BILLING), asyn
   }
 });
 
+router.get(
+  '/billing/referral-credits/renewal-preview',
+  authenticateRestaurantRoles(['restaurant_owner']),
+  async (req, res, next) => {
+    try {
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: req.activeRestaurant.restaurantId },
+        select: { organizationId: true },
+      });
+      if (!restaurant) throw new Error('Restaurante no encontrado');
+      const { previewReferralCreditsOnRenewal } = require('../services/billing/referralRenewalCreditService');
+      const result = await previewReferralCreditsOnRenewal(restaurant.organizationId);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+router.post(
+  '/billing/referral-credits/apply-to-renewal',
+  authenticateRestaurantRoles(['restaurant_owner']),
+  async (req, res, next) => {
+    try {
+      const restaurantId = req.activeRestaurant.restaurantId;
+      const restaurant = await prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { organizationId: true },
+      });
+      if (!restaurant) throw new Error('Restaurante no encontrado');
+      const organizationId = restaurant.organizationId;
+
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { email: true },
+      });
+
+      const { resolveBillingStrategy, BILLING_STRATEGY_AUTOMATIC } = require('../lib/billingDomain');
+      const activeSub = await prisma.subscription.findFirst({
+        where: { organizationId, status: 'active' },
+      });
+      const strategy = activeSub ? resolveBillingStrategy(activeSub) : null;
+
+      let mercadopagoPayerEmail = user?.email ?? null;
+      if (strategy === BILLING_STRATEGY_AUTOMATIC) {
+        mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
+          organizationId,
+          req.body?.mercadopagoPayerEmail,
+          user?.email,
+          'mercadopago_preapproval',
+        );
+      }
+
+      const { applyReferralCreditsToNextRenewal } = require('../services/billing/referralRenewalCreditService');
+      const result = await applyReferralCreditsToNextRenewal({
+        organizationId,
+        userId: req.user.id,
+        payerEmail: mercadopagoPayerEmail || user?.email,
+        restaurantId,
+      });
+
+      if (result.requiresCheckout && result.checkoutUrl) {
+        return sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
+          paymentProvider: result.providerId,
+          billingStrategy: result.billingStrategy,
+          hints: result.checkoutHints,
+          referralCreditApplied: true,
+          totalDays: result.totalDays,
+          message: result.message,
+        });
+      }
+
+      res.json({
+        applied: true,
+        referralCreditApplied: true,
+        totalDays: result.totalDays,
+        referralFreeUntil: result.referralFreeUntil,
+        referralFreeWindowStartsAt: result.referralFreeWindowStartsAt,
+        newChargeDate: result.newChargeDate,
+        message: result.message,
+      });
+    } catch (error) {
+      handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
+    }
+  },
+);
+
 router.post('/billing/change-plan/preview', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
     const restaurant = await prisma.restaurant.findUnique({
@@ -551,6 +638,7 @@ router.post('/billing/change-plan/preview', authenticateRestaurantRoles(['restau
       organizationId: restaurant.organizationId,
       planSKU,
       when: req.body?.when ? normalizePlanChangeWhen(req.body.when) : undefined,
+      confirmForfeitReferralCredits: !!req.body?.confirmForfeitReferralCredits,
     });
     res.json(result);
   } catch (error) {

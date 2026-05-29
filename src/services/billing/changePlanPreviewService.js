@@ -18,6 +18,11 @@ const { orgCanUsePlan } = require('../../lib/orgPlanAccess');
 const { canSelfServeBilling } = require('../../lib/canSelfServeBilling');
 const { resolvePlanOfferFlags } = require('../../lib/planSource');
 const { resolvePlanChangePreviewFlags } = require('../../lib/billingFlowMatrix');
+const referralService = require('../referralService');
+const {
+  evaluatePlanChangeReferralPolicy,
+  isReferralCreditPeriodLocked,
+} = require('./referralCreditGuardService');
 
 function formatEffectDate(isoDate) {
   if (!isoDate) return '';
@@ -129,8 +134,9 @@ function buildPreviewForWhen({
  * @param {string} params.organizationId
  * @param {string} params.planSKU
  * @param {string} [params.when] immediate | end_of_period
+ * @param {boolean} [params.confirmForfeitReferralCredits]
  */
-async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
+async function previewChangePlan({ organizationId, planSKU, when: rawWhen, confirmForfeitReferralCredits = false }) {
   const sku = String(planSKU || '').trim();
   if (!sku) {
     return { allowed: false, error: 'Debes indicar el plan a previsualizar.' };
@@ -182,6 +188,28 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
       code: 'plan_changes_managed',
     };
   }
+
+  const creditsAvailableDays = await referralService.getAvailableCreditDays(organizationId);
+  const referralPolicy = evaluatePlanChangeReferralPolicy({
+    sub,
+    currentSku: currentPlan.productSKU,
+    newSku: sku,
+    creditsAvailableDays,
+    confirmForfeitReferralCredits,
+  });
+
+  if (!referralPolicy.allowed) {
+    return {
+      allowed: false,
+      error: referralPolicy.error,
+      code: referralPolicy.code,
+      referralPlanChangeBlocked: referralPolicy.planChangeBlocked ?? false,
+      referralForfeitRequired: referralPolicy.requiresForfeitConfirmation ?? false,
+      referralCreditsAvailableDays: referralPolicy.creditsAvailableDays ?? creditsAvailableDays,
+      referralSameTierOnly: referralPolicy.sameTierOnly ?? false,
+    };
+  }
+
   const currentPrice = priceWithIva(currentPlan.priceCLP ?? 0);
   const newPrice = priceWithIva(newPlan.priceCLP);
 
@@ -262,6 +290,9 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen }) {
     collectionMethodLabel: billingView.collectionMethodLabel,
     paymentProvider: billingView.paymentProvider,
     legacyPaymentProviderId: billingView.legacyPaymentProviderId,
+    referralPlanChangeBlocked: isReferralCreditPeriodLocked(sub),
+    referralForfeitRequired: creditsAvailableDays > 0,
+    referralCreditsAvailableDays: creditsAvailableDays > 0 ? creditsAvailableDays : undefined,
   };
 }
 

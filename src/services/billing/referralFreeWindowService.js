@@ -23,7 +23,28 @@ const {
  */
 function isInReferralFreeWindow(sub, now = new Date()) {
   if (!sub?.referralFreeUntil) return false;
-  return new Date(sub.referralFreeUntil) > now;
+  const until = new Date(sub.referralFreeUntil);
+  if (until <= now) return false;
+  if (sub.referralFreeWindowStartsAt) {
+    return new Date(sub.referralFreeWindowStartsAt) <= now;
+  }
+  return true;
+}
+
+/**
+ * Crédito de referido ya aplicado a renovación pero el periodo pagado aún no termina.
+ */
+function isReferralCreditExtensionScheduled(sub, now = new Date()) {
+  if (!sub?.referralFreeWindowStartsAt || !sub?.referralFreeUntil) return false;
+  return new Date(sub.referralFreeWindowStartsAt) > now;
+}
+
+function scheduledRenewalCreditDays(sub) {
+  if (!sub?.referralFreeWindowStartsAt || !sub?.referralFreeUntil) return 0;
+  const start = new Date(sub.referralFreeWindowStartsAt);
+  const end = new Date(sub.referralFreeUntil);
+  const ms = end.getTime() - start.getTime();
+  return ms > 0 ? Math.ceil(ms / (24 * 60 * 60 * 1000)) : 0;
 }
 
 /**
@@ -200,6 +221,7 @@ async function clearReferralFreeWindowOnFirstPayment(sub, plan) {
     where: { id: sub.id },
     data: {
       referralFreeUntil: null,
+      referralFreeWindowStartsAt: null,
       currentPeriodEnd: nextPeriodEnd,
       status: 'active',
       isActiveSubscription: true,
@@ -313,12 +335,14 @@ async function changePlanInReferralFreeWindow({
  * startDate para manual→automatic cuando hay ventana activa.
  */
 function deferredStartDateForCollectionSwitch(sub) {
-  if (!isInReferralFreeWindow(sub)) return null;
-  return new Date(sub.referralFreeUntil);
+  const { deferredChargeDateForReferralCredits } = require('./referralCreditGuardService');
+  return deferredChargeDateForReferralCredits(sub);
 }
 
 module.exports = {
   isInReferralFreeWindow,
+  isReferralCreditExtensionScheduled,
+  scheduledRenewalCreditDays,
   previewReferralFreeWindow,
   prepareAutomaticReferralCheckout,
   isReferralFreeWindowPreapproval,

@@ -603,6 +603,8 @@ model Subscription {
   currentPeriodEnd DateTime?
   /// Fin de ventana de días gratis por créditos de referido (sin primer cobro real aún). null = sin ventana / ya cobrado.
   referralFreeUntil DateTime?
+  /// Inicio de ventana gratis cuando se difiere al fin del periodo pagado (canje en renovación). null = ventana desde activación.
+  referralFreeWindowStartsAt DateTime?
   /// Access deadline: 7 days after payment failure, OR set equal to endDate on manual cancellation
   gracePeriodEndsAt DateTime?
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid (preapproval)

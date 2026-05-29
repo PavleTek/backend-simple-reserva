@@ -597,6 +597,37 @@ async function releaseCreditsForSubscription(subscriptionId, client = prisma) {
 }
 
 /**
+ * Pierde créditos disponibles al cambiar de plan (mismo tier, confirmado por el usuario).
+ */
+async function forfeitAvailableCredits(organizationId, client = prisma) {
+  const credits = await getAvailableCredits(organizationId, client);
+  if (!credits.length) return { forfeitedDays: 0, creditIds: [] };
+
+  const creditIds = credits.map((c) => c.id);
+  const forfeitedDays = credits.reduce((sum, c) => sum + c.amountDays, 0);
+  const now = new Date();
+
+  await client.referralCredit.updateMany({
+    where: { id: { in: creditIds }, organizationId, status: 'available' },
+    data: {
+      status: 'revoked',
+      notes: 'Revocado por cambio de plan (crédito no aplicado).',
+    },
+  });
+
+  await client.referral.updateMany({
+    where: {
+      referrerOrganizationId: organizationId,
+      rewardCreditId: { in: creditIds },
+      status: REFERRAL_STATUSES.APPROVED,
+    },
+    data: { status: REFERRAL_STATUSES.REWARD_APPLIED, rewardAppliedAt: now },
+  });
+
+  return { forfeitedDays, creditIds };
+}
+
+/**
  * Reserva créditos para un checkout y calcula startDate con días extra.
  */
 async function applyAvailableCreditsOnNextCheckout(organizationId, plannedStartDate, checkoutSessionId) {
@@ -807,6 +838,7 @@ module.exports = {
   getAvailableCreditDays,
   consumeCreditsForSubscription,
   releaseCreditsForSubscription,
+  forfeitAvailableCredits,
   applyAvailableCreditsOnNextCheckout,
   markCreditsApplied,
   addDays,

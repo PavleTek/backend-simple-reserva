@@ -4,6 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   isInReferralFreeWindow,
+  isReferralCreditExtensionScheduled,
+  scheduledRenewalCreditDays,
   deferredStartDateForCollectionSwitch,
 } = require('./billing/referralFreeWindowService');
 const { addDays } = require('./referralService');
@@ -11,6 +13,42 @@ const { addDays } = require('./referralService');
 test('isInReferralFreeWindow is true while referralFreeUntil is in the future', () => {
   const future = addDays(new Date(), 10);
   assert.equal(isInReferralFreeWindow({ referralFreeUntil: future }), true);
+});
+
+test('isInReferralFreeWindow is false before referralFreeWindowStartsAt', () => {
+  const startsAt = addDays(new Date(), 5);
+  const freeUntil = addDays(new Date(), 35);
+  assert.equal(
+    isInReferralFreeWindow({ referralFreeUntil: freeUntil, referralFreeWindowStartsAt: startsAt }),
+    false,
+  );
+});
+
+test('isInReferralFreeWindow is true after referralFreeWindowStartsAt', () => {
+  const startsAt = addDays(new Date(), -1);
+  const freeUntil = addDays(new Date(), 29);
+  assert.equal(
+    isInReferralFreeWindow({ referralFreeUntil: freeUntil, referralFreeWindowStartsAt: startsAt }),
+    true,
+  );
+});
+
+test('isReferralCreditExtensionScheduled when startsAt is in the future', () => {
+  const startsAt = addDays(new Date(), 3);
+  const freeUntil = addDays(new Date(), 33);
+  assert.equal(
+    isReferralCreditExtensionScheduled({ referralFreeWindowStartsAt: startsAt, referralFreeUntil: freeUntil }),
+    true,
+  );
+});
+
+test('scheduledRenewalCreditDays counts days between startsAt and freeUntil', () => {
+  const startsAt = new Date('2026-06-26T12:00:00.000Z');
+  const freeUntil = new Date('2026-07-26T12:00:00.000Z');
+  assert.equal(
+    scheduledRenewalCreditDays({ referralFreeWindowStartsAt: startsAt, referralFreeUntil: freeUntil }),
+    30,
+  );
 });
 
 test('isInReferralFreeWindow is false when referralFreeUntil is null or past', () => {

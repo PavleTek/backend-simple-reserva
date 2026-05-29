@@ -24,10 +24,10 @@ const { canSelfServeBillingOrThrow } = require('../../lib/canSelfServeBilling');
 const { resolvePlanOfferFlags } = require('../../lib/planSource');
 const { getActiveSubscription } = require('../subscriptionService');
 const {
-  isInReferralFreeWindow,
-  changePlanInReferralFreeWindow,
   deferredStartDateForCollectionSwitch,
 } = require('./referralFreeWindowService');
+const { assertPlanChangeAllowedWithReferralCredits } = require('./referralCreditGuardService');
+const referralService = require('../referralService');
 
 /**
  * Programa cambio al fin del periodo sin checkout MP (estrategia manual).
@@ -121,16 +121,16 @@ async function executePlanChange({
     throw err;
   }
 
-  if (isInReferralFreeWindow(currentSubFull)) {
-    return changePlanInReferralFreeWindow({
-      organizationId,
-      userId,
-      payerEmail,
-      restaurantId,
-      currentSub: currentSubFull,
-      newPlan,
-      whenNorm,
-    });
+  const referralPolicy = await assertPlanChangeAllowedWithReferralCredits({
+    organizationId,
+    sub: currentSubFull,
+    currentSku: currentSubFull.plan.productSKU,
+    newSku: planSKU,
+    confirmForfeitReferralCredits: !!body.confirmForfeitReferralCredits,
+  });
+
+  if (referralPolicy.forfeitAvailableCredits) {
+    await referralService.forfeitAvailableCredits(organizationId);
   }
 
   const offerFlags = await resolvePlanOfferFlags(organizationId, currentSubFull.plan.id);

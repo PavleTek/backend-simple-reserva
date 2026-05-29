@@ -221,7 +221,9 @@ async function processCheckoutProRenewal(mpPayment, parsed) {
       isActiveSubscription: true,
       gracePeriodEndsAt: null,
       currentPeriodEnd: nextPeriodEnd,
-      ...(clearingReferralWindow ? { referralFreeUntil: null } : {}),
+      ...(clearingReferralWindow
+        ? { referralFreeUntil: null, referralFreeWindowStartsAt: null }
+        : {}),
     },
   });
 
