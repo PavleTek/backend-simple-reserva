@@ -3,6 +3,7 @@
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const planService = require('../services/planService');
+const { withCronLock } = require('../lib/cronLock');
 const { BILLING_STRATEGY_MANUAL } = require('../lib/billingDomain');
 const { PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
 const { createBillingCheckoutWithPendingChange } = require('../services/billingCheckoutService');
@@ -87,11 +88,13 @@ async function runPlanChangeScheduler() {
 function startPlanChangeSchedulerJob() {
   if (process.env.PLAN_CHANGE_SCHEDULER_ENABLED === 'false') return;
   cron.schedule(CRON, () => {
-    runPlanChangeScheduler().catch((err) => {
+    withCronLock('planChangeScheduler', runPlanChangeScheduler).catch((err) => {
       logger.error('[planChangeScheduler] Job falló', { error: err?.message ?? err });
     });
+  }, {
+    timezone: process.env.TZ || 'America/Santiago',
   });
-  logger.info('[planChangeScheduler] Programado', { cron: CRON });
+  logger.info('[planChangeScheduler] Programado', { cron: CRON, timezone: process.env.TZ || 'America/Santiago' });
 }
 
 module.exports = { startPlanChangeSchedulerJob, runPlanChangeScheduler };

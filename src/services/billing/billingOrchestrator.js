@@ -121,6 +121,46 @@ async function executePlanChange({
     throw err;
   }
 
+  // Enforce plan limits on downgrade: block if org's current usage exceeds target plan caps.
+  const changeType = resolvePlanChangeType(currentSubFull.plan, newPlan);
+  if (changeType === 'downgrade') {
+    const usageViolations = [];
+
+    if (newPlan.maxRestaurants !== null && newPlan.maxRestaurants !== undefined) {
+      const restaurantCount = await prisma.restaurant.count({
+        where: { organizationId, isDeleted: false },
+      });
+      if (restaurantCount > newPlan.maxRestaurants) {
+        usageViolations.push(
+          `Tienes ${restaurantCount} restaurante(s), pero el plan seleccionado permite máximo ${newPlan.maxRestaurants}.`,
+        );
+      }
+    }
+
+    if (newPlan.maxTeamMembers !== null && newPlan.maxTeamMembers !== undefined) {
+      const [managers, hosts] = await Promise.all([
+        prisma.organizationManager.count({ where: { organizationId } }),
+        prisma.organizationHost.count({ where: { organizationId } }),
+      ]);
+      const teamTotal = managers + hosts;
+      if (teamTotal > newPlan.maxTeamMembers) {
+        usageViolations.push(
+          `Tienes ${teamTotal} miembro(s) de equipo, pero el plan seleccionado permite máximo ${newPlan.maxTeamMembers}.`,
+        );
+      }
+    }
+
+    if (usageViolations.length > 0) {
+      const err = new Error(
+        `No puedes cambiar a este plan por el siguiente uso actual:\n${usageViolations.join('\n')}\nReduce el uso antes de hacer el downgrade.`,
+      );
+      err.statusCode = 400;
+      err.code = 'usage_exceeds_plan_limits';
+      err.violations = usageViolations;
+      throw err;
+    }
+  }
+
   const referralPolicy = await assertPlanChangeAllowedWithReferralCredits({
     organizationId,
     sub: currentSubFull,
@@ -131,6 +171,17 @@ async function executePlanChange({
 
   if (referralPolicy.forfeitAvailableCredits) {
     await referralService.forfeitAvailableCredits(organizationId);
+  }
+
+  if (referralPolicy.forfeitAppliedReferralPeriod) {
+    await referralService.forfeitAppliedReferralPeriod(currentSubFull.id, organizationId);
+    const refreshed = await prisma.subscription.findUnique({
+      where: { id: currentSubFull.id },
+      include: { plan: true },
+    });
+    if (refreshed) {
+      Object.assign(currentSubFull, refreshed);
+    }
   }
 
   const offerFlags = await resolvePlanOfferFlags(organizationId, currentSubFull.plan.id);
@@ -152,6 +203,23 @@ async function executePlanChange({
       newPlan,
       when: whenNorm,
     });
+  }
+
+  // Require explicit confirmation for immediate plan changes since there is no proration:
+  // the client begins paying the new price from the next billing cycle with no credit for
+  // the unused portion of the current period.
+  if (whenNorm === PLAN_CHANGE_IMMEDIATE && !body.confirmImmediateChange) {
+    const periodEnd = currentSubFull.currentPeriodEnd
+      ? new Date(currentSubFull.currentPeriodEnd)
+      : computePeriodEnd(currentSubFull.startDate, currentSubFull.plan);
+
+    const err = new Error(
+      'El cambio inmediato de plan no incluye compensación por el periodo actual. Confirma enviando confirmImmediateChange: true para continuar.',
+    );
+    err.statusCode = 400;
+    err.code = 'confirm_immediate_change_required';
+    err.currentPeriodEnd = periodEnd?.toISOString() ?? null;
+    throw err;
   }
 
   let checkoutStartDateOpt = null;

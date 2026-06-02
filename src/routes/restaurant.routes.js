@@ -41,6 +41,8 @@ const {
 } = require('../services/slotEngine/businessDate');
 const { ACTIVE_TABLE_STATUSES, canTransitionStatus } = require('../lib/reservationStatuses');
 const { buildServiceView } = require('../services/serviceView');
+const { computeTableFloorStatus } = require('../services/tableFloorStatus');
+const { buildReservationDayWhere } = require('../utils/reservationDateFilter');
 const { getAvailableTablesForSlot } = require('../services/availableTablesForSlot');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
 
@@ -247,9 +249,9 @@ router.get('/service-view', async (req, res, next) => {
 router.get('/tables/status', async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
-    const dateParam = req.query.date;
+    const dateParam = typeof req.query.date === 'string' ? req.query.date : undefined;
 
-    const [zones, reservations, restaurant] = await Promise.all([
+    const [zones, restaurant] = await Promise.all([
       prisma.zone.findMany({
         where: { restaurantId, isActive: true },
         orderBy: { sortOrder: 'asc' },
@@ -260,24 +262,17 @@ router.get('/tables/status', async (req, res, next) => {
           },
         },
       }),
-      prisma.reservation.findMany({
-        where: {
-          restaurantId,
-          status: { in: ACTIVE_TABLE_STATUSES },
-          // Boundary filtering will be added below after resolving TZ
-        },
-        include: { table: { select: { id: true, label: true } } },
-        orderBy: { dateTime: 'asc' },
-      }),
       prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        select: { 
+        select: {
           bufferMinutesBetweenReservations: true,
           timezone: true,
-          organization: { include: { owner: { select: { country: true } } } }
+          organization: { include: { owner: { select: { country: true } } } },
         },
       }),
     ]);
+
+    if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
@@ -285,17 +280,18 @@ router.get('/tables/status', async (req, res, next) => {
     const nowTZ = nowInTimezone(timezone);
     const todayLocal = nowTZ.toFormat('yyyy-MM-dd');
     const dateStr = dateParam || todayLocal;
-    const dayStart = parseInTimezone(dateStr, '00:00', timezone);
-    const dayEnd = parseInTimezone(dateStr, '23:59', timezone);
     const isToday = dateStr === todayLocal;
-    const now = isToday ? nowTZ.toJSDate() : dayStart;
+    const now = isToday ? nowTZ.toJSDate() : parseInTimezone(dateStr, '00:00', timezone);
 
-    // Re-filter reservations with correct boundaries
-    const filteredReservations = reservations.filter(r => 
-      r.dateTime >= dayStart && r.dateTime <= dayEnd
-    );
+    const reservations = await prisma.reservation.findMany({
+      where: buildReservationDayWhere(restaurantId, dateStr, timezone, {
+        status: { in: ACTIVE_TABLE_STATUSES },
+      }),
+      include: { table: { select: { id: true, label: true } } },
+      orderBy: { dateTime: 'asc' },
+    });
 
-    const bufferMs = (restaurant?.bufferMinutesBetweenReservations ?? 0) * 60000;
+    const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
 
     const zonesWithStatus = zones.map((zone) => ({
       id: zone.id,
@@ -304,76 +300,12 @@ router.get('/tables/status', async (req, res, next) => {
       smokingZone: zone.smokingZone,
       petFriendly: zone.petFriendly,
       tables: zone.tables.map((table) => {
-        const tableReservations = filteredReservations.filter((r) => r.tableId === table.id);
-        let status = 'free';
-        let currentReservation = null;
-        let nextReservation = null;
-        let lateReservation = null;
-
-        for (const r of tableReservations) {
-          const rStart = r.dateTime;
-          const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
-          const minutesUntilStart = (rStart.getTime() - now.getTime()) / 60000;
-
-          if (r.status === 'arrived' || (now >= rStart && now < rEnd)) {
-            status = 'occupied';
-            currentReservation = {
-              id: r.id,
-              customerName: r.customerName,
-              customerPhone: r.customerPhone,
-              partySize: r.partySize,
-              dateTime: r.dateTime,
-              dateTimeEnd: rEnd,
-              status: r.status,
-            };
-            break;
-          }
-          if (now > rEnd) {
-            if (reservationIsWalkIn(r)) {
-              // Ya están en la mesa; el cupo nominal venció pero no es "atrasada" como una reserva web
-              status = 'occupied';
-              currentReservation = {
-                id: r.id,
-                customerName: r.customerName,
-                customerPhone: r.customerPhone,
-                partySize: r.partySize,
-                dateTime: r.dateTime,
-                dateTimeEnd: rEnd,
-              };
-              break;
-            }
-            if (!lateReservation) {
-              lateReservation = {
-                id: r.id,
-                customerName: r.customerName,
-                customerPhone: r.customerPhone,
-                partySize: r.partySize,
-                dateTime: r.dateTime,
-              };
-              status = 'late_arrival';
-            }
-          }
-          if (r.dateTime > now) {
-            nextReservation = nextReservation || {
-              id: r.id,
-              customerName: r.customerName,
-              customerPhone: r.customerPhone,
-              partySize: r.partySize,
-              dateTime: r.dateTime,
-            };
-            if (minutesUntilStart <= 60) {
-              status = 'reserved_soon';
-            } else if (status === 'free') {
-              status = 'upcoming';
-            }
-            break;
-          }
-        }
-
-        if (status === 'free' && nextReservation) status = 'upcoming';
-        if (status === 'late_arrival' && lateReservation) {
-          currentReservation = lateReservation;
-        }
+        const tableReservations = reservations.filter((r) => r.tableId === table.id);
+        const { status, currentReservation, nextReservation } = computeTableFloorStatus(
+          tableReservations,
+          now,
+          bufferMs,
+        );
 
         return {
           id: table.id,
@@ -895,7 +827,8 @@ router.post('/reservations', async (req, res, next) => {
 
           const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
           selectedTable = pickTable(tables, size, dateTime, slotEnd, bufferMs,
-            parseReservations(reservationsRaw), parseHolds(holdsRaw), null, null);
+            parseReservations(reservationsRaw), parseHolds(holdsRaw), null, null,
+            { preferOpenEnded: isWalkIn });
           if (!selectedTable) throw new ValidationError('No hay mesas disponibles en este horario');
         }
 
@@ -1113,7 +1046,7 @@ router.patch('/reservations/:id', async (req, res, next) => {
           const windowEnd = parseInTimezone(dateStr, '23:59', timezone);
           const dayReservations = await tx.reservation.findMany({
             where: {
-              restaurantId: restaurant.id, status: 'confirmed',
+              restaurantId: restaurant.id, status: { in: ACTIVE_TABLE_STATUSES },
               dateTime: { gte: windowStart, lte: windowEnd },
               id: { not: reservation.id },
             },

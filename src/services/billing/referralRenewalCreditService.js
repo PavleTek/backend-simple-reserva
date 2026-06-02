@@ -198,23 +198,8 @@ async function applyReferralCreditsToNextRenewal({
     }
   }
 
-  await prisma.$transaction(async (tx) => {
-    await referralService.consumeCreditsForSubscription({
-      organizationId,
-      subscriptionId: sub.id,
-      tx,
-    });
-    await tx.subscription.update({
-      where: { id: sub.id },
-      data: {
-        referralFreeUntil: freeUntil,
-        referralFreeWindowStartsAt: anchor,
-        currentPeriodEnd: freeUntil,
-        mercadopagoPreapprovalId: null,
-      },
-    });
-  });
-
+  // Expire old pending sessions and create the new checkout BEFORE consuming credits,
+  // so we have the session ID available for the reserve key.
   await prisma.checkoutSession.updateMany({
     where: { organizationId, status: 'pending' },
     data: { status: 'expired' },
@@ -230,6 +215,37 @@ async function applyReferralCreditsToNextRenewal({
     billingStrategy: BILLING_STRATEGY_AUTOMATIC,
     pendingChangeFromSubscriptionId: sub.id,
     createSubscriptionOptions: { startDate: freeUntil },
+  });
+
+  // Reserve credits against the new checkout session (not consumed until MP confirms).
+  // This prevents the zombie scenario: credits are lost + preapproval nulled on abandon.
+  const newSession = await prisma.checkoutSession.findFirst({
+    where: { organizationId, status: 'pending' },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true },
+  });
+
+  if (newSession) {
+    await prisma.referralCredit.updateMany({
+      where: { organizationId, status: 'available' },
+      data: {
+        status: 'applied',
+        appliedAt: new Date(),
+        appliedToSubscriptionId: `checkout:${newSession.id}`,
+      },
+    });
+  }
+
+  // Only null the preapprovalId AFTER the checkout session exists so reconciliation
+  // can still detect this org if the MP checkout is abandoned.
+  await prisma.subscription.update({
+    where: { id: sub.id },
+    data: {
+      referralFreeUntil: freeUntil,
+      referralFreeWindowStartsAt: anchor,
+      currentPeriodEnd: freeUntil,
+      mercadopagoPreapprovalId: null,
+    },
   });
 
   planService.invalidateCache(organizationId);

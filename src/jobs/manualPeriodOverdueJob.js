@@ -8,6 +8,8 @@ const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const logger = require('../lib/logger');
 const { enterGracePeriod } = require('../services/mercadopagoService');
+const { recordJobRun } = require('./billingIntegrityJob');
+const { withCronLock } = require('../lib/cronLock');
 const { BILLING_STRATEGY_MANUAL } = require('../lib/billingDomain');
 const { createRecoveryPaymentLink } = require('../services/billing/recoveryLinkService');
 const {
@@ -26,6 +28,8 @@ async function processOverdueSubscription(sub) {
   const restaurantId = org?.restaurants?.[0]?.id;
   const periodKey = periodKeyFromPeriodEnd(sub.currentPeriodEnd);
 
+  // Anchor grace to currentPeriodEnd so the 7-day window starts from when payment was due,
+  // not from when this job happens to run. enterGracePeriod already anchors internally.
   await enterGracePeriod(sub.organizationId, { skipOwnerEmail: true });
 
   const updated = await prisma.subscription.findFirst({
@@ -120,13 +124,14 @@ async function runManualPeriodOverdue() {
   if (processed > 0) {
     logger.info({ processed }, '[ManualPeriodOverdueJob] overdue subscriptions processed');
   }
+  recordJobRun('manualPeriodOverdue');
   return { processed };
 }
 
 function startManualPeriodOverdueJob() {
   const schedule = process.env.MANUAL_PERIOD_OVERDUE_CRON || '30 1 * * *';
   cron.schedule(schedule, () => {
-    runManualPeriodOverdue().catch((err) => {
+    withCronLock('manualPeriodOverdue', runManualPeriodOverdue).catch((err) => {
       logger.error({ err }, '[ManualPeriodOverdueJob] cron error');
     });
   }, { timezone: process.env.TZ || 'America/Santiago' });

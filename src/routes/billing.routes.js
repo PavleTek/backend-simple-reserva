@@ -9,6 +9,7 @@ const { getMercadoPagoCheckoutHints } = require('../services/mercadopagoService'
 const {
   tryGrantManualReferralWindowAtCheckout,
 } = require('../services/billing/referralFreeWindowService');
+const { withOrgBillingLock } = require('../lib/advisoryLock');
 
 function isValidPayerEmail(email) {
   const e = (email || '').trim();
@@ -566,6 +567,8 @@ router.post(
       if (!restaurant) throw new Error('Restaurante no encontrado');
       const organizationId = restaurant.organizationId;
 
+      return await withOrgBillingLock(organizationId, async () => {
+
       const user = await prisma.user.findUnique({
         where: { id: req.user.id },
         select: { email: true },
@@ -615,6 +618,7 @@ router.post(
         newChargeDate: result.newChargeDate,
         message: result.message,
       });
+      }); // withOrgBillingLock
     } catch (error) {
       handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
     }
@@ -798,6 +802,9 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const organizationId = restaurant.organizationId;
 
+    // Per-org lock: prevent concurrent checkouts from creating duplicate preapprovals
+    return await withOrgBillingLock(organizationId, async () => {
+
     const planSKU = req.body?.plan || 'plan-profesional';
     if (req.body?.when === 'end_of_trial') {
       return res.status(400).json({
@@ -821,11 +828,11 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       return res.status(403).json({ error: 'Este plan no está disponible para tu cuenta.' });
     }
 
-    // Anti-doble-checkout: si ya existe una sesion pendiente no expirada para el MISMO plan, retornar esa URL
+    // Anti-doble-checkout: si ya existe una sesion pendiente no expirada para ESTA ORG (no
+    // solo el mismo plan) retornar esa URL para evitar preapprovals duplicados que cobran dos veces.
     const pendingSession = await prisma.checkoutSession.findFirst({
       where: {
         organizationId,
-        planId: plan.id,
         status: 'pending',
         expiresAt: { gt: new Date() },
       },
@@ -910,6 +917,7 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       paymentProvider: result.providerId,
       hints: result.checkoutHints,
     });
+    }); // withOrgBillingLock
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }
@@ -1020,22 +1028,36 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
       return;
     }
 
-    // Cancelar en MercadoPago solo si hay un preapproval vinculado.
-    // Suscripciones asignadas manualmente por admin no tienen preapproval; se cancelan solo localmente.
-    if (sub.mercadopagoPreapprovalId) {
-      const mercadopagoService = require('../services/mercadopagoService');
-      await mercadopagoService.cancelSubscription(sub.mercadopagoPreapprovalId);
-    }
-
     // Calcular el fin real del periodo ya pagado: anclar en currentPeriodEnd o startDate + periodicidad
     const periodEnd = sub.currentPeriodEnd ?? computePeriodEnd(sub.startDate, sub.plan);
     if (!periodEnd) {
       return res.status(500).json({ error: 'No se pudo calcular el fin del periodo.' });
     }
+
+    // Actualizar DB primero: dejar el preapprovalId en null para evitar reintentos
+    // y marcar como cancelada aunque el llamado a MP falle.
+    const preapprovalId = sub.mercadopagoPreapprovalId;
     await prisma.subscription.update({
       where: { id: sub.id },
-      data: { status: 'cancelled', endDate: periodEnd, currentPeriodEnd: periodEnd, gracePeriodEndsAt: periodEnd },
+      data: {
+        status: 'cancelled',
+        endDate: periodEnd,
+        currentPeriodEnd: periodEnd,
+        gracePeriodEndsAt: periodEnd,
+        mercadopagoPreapprovalId: null,
+      },
     });
+
+    // Cancelar en MercadoPago. Si falla, el estado local ya está correcto (acceso hasta periodEnd).
+    if (preapprovalId) {
+      const mercadopagoService = require('../services/mercadopagoService');
+      try {
+        await mercadopagoService.cancelSubscription(preapprovalId);
+      } catch (mpErr) {
+        console.error('[billing/cancel] MP cancel failed (local DB already updated):', mpErr?.message);
+        // No re-lanzar: la cancelación local es suficiente para proteger al usuario.
+      }
+    }
 
     if (req.body?.reason || req.body?.reasonDetail) {
       await prisma.subscriptionCancellation.create({
@@ -1113,6 +1135,8 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
     });
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const organizationId = restaurant.organizationId;
+
+    return await withOrgBillingLock(organizationId, async () => {
 
     const whenRaw = String(req.body?.when || '').trim();
     const when = whenRaw === 'now' || whenRaw === 'immediate' ? 'now' : 'end_of_period';
@@ -1252,6 +1276,7 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
       paymentProvider: result.providerId,
       hints: result.checkoutHints,
     });
+    }); // withOrgBillingLock
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }
@@ -1270,6 +1295,8 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     });
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const organizationId = restaurant.organizationId;
+
+    return await withOrgBillingLock(organizationId, async () => {
 
     const newPlanSKU = req.body?.plan?.trim();
     if (!newPlanSKU) return res.status(400).json({ error: 'plan requerido' });
@@ -1332,6 +1359,7 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       billingStrategy: result.billingStrategy,
       hints: result.checkoutHints,
     });
+    }); // withOrgBillingLock
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
   }

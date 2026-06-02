@@ -6,10 +6,14 @@ const { NotFoundError, ValidationError } = require('../utils/errors');
 const planService = require('../services/planService');
 const { incrementDataVersion } = require('../utils/dataVersion');
 
+const zoneFixtureRouter = require('./zoneFixture.routes');
+
 const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
+
+router.use('/:zoneId/fixtures', zoneFixtureRouter);
 
 router.get('/', authenticateRestaurantRoles(ROLES_CONFIG_VIEW), async (req, res, next) => {
   try {
@@ -21,6 +25,9 @@ router.get('/', authenticateRestaurantRoles(ROLES_CONFIG_VIEW), async (req, res,
         tables: {
           where: { isActive: true },
           orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+        },
+        fixtures: {
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         },
       },
     });
@@ -91,14 +98,16 @@ router.patch('/:id', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res,
       const tables = await prisma.restaurantTable.findMany({
         where: { zoneId: zone.id, isActive: true },
       });
-      const { tableFitsInGrid } = require('../lib/floorPlanUtils');
-      for (const t of tables) {
-        if (t.posX == null || t.posY == null) continue;
-        if (!tableFitsInGrid(t, nextCols, nextRows)) {
-          throw new ValidationError(
-            'No se puede reducir la grilla: alguna mesa quedaría fuera del plano. Mueve las mesas primero.',
-          );
-        }
+      const fixtures = await prisma.zoneFixture.findMany({
+        where: { zoneId: zone.id },
+      });
+      const { validateNoOverlap } = require('../lib/floorPlanUtils');
+      const check = validateNoOverlap(tables, nextCols, nextRows, fixtures);
+      if (!check.ok) {
+        throw new ValidationError(
+          check.message ??
+            'No se puede reducir la grilla: hay mesas o elementos fuera del plano. Muévelos primero.',
+        );
       }
     }
 

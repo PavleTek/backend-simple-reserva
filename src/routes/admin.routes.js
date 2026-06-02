@@ -2827,4 +2827,21 @@ router.use('/restaurants/:id/feedback', adminFeedbackRouter);
 
 router.use('/referrals', require('./adminReferral.routes'));
 
+// ─── Billing integrity (on-demand) ───────────────────────────────
+
+router.get('/billing/integrity', async (req, res, next) => {
+  try {
+    const { runBillingIntegrityChecks } = require('../services/billing/billingIntegrityService');
+    const results = await runBillingIntegrityChecks();
+    const hasIssues = results.some((r) => !r.ok);
+    res.status(hasIssues ? 200 : 200).json({
+      ok: !hasIssues,
+      checks: results,
+      runAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

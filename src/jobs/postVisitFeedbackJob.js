@@ -56,7 +56,7 @@ async function findCandidateReservations() {
   const reservations = await prisma.reservation.findMany({
     where: {
       restaurantId: { in: restaurantIds },
-      status: { in: ['confirmed', 'completed'] },
+      status: { in: ['confirmed', 'arrived', 'completed'] },
       feedbackRequest: null,
       customerEmail: { not: null },
     },

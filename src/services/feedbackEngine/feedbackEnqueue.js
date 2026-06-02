@@ -43,9 +43,6 @@ function computeLastInteractionAt(reservation, req) {
     req?.completedAt,
     req?.clickedAt,
     req?.openedAt,
-    req?.sentAt,
-    req?.updatedAt,
-    req?.scheduledFor,
     reservation.dateTime,
   );
   return new Date(ms > 0 ? ms : reservation.dateTime).toISOString();
@@ -241,7 +238,7 @@ async function ensureFeedbackRequestForReservation(reservation, options = {}) {
 }
 
 async function syncFeedbackOnReservationStatusChange(reservation, newStatus) {
-  if (newStatus !== 'completed' && newStatus !== 'confirmed') return;
+  if (newStatus !== 'completed' && newStatus !== 'confirmed' && newStatus !== 'arrived') return;
 
   try {
     const planOk = await planService.canUsePostVisitFeedback(reservation.restaurantId);
@@ -289,7 +286,7 @@ async function listFeedbackOutreach(restaurantId, { page = 1, limit = 50, forAdm
   const statusFilter =
     survey.eligibilityMode === 'completed_only'
       ? ['completed']
-      : ['confirmed', 'completed'];
+      : ['confirmed', 'arrived', 'completed'];
 
   const reservations = await prisma.reservation.findMany({
     where: {
@@ -418,7 +415,7 @@ async function syncRestaurantFeedbackQueue(restaurantId) {
   const statusFilter =
     survey.eligibilityMode === 'completed_only'
       ? ['completed']
-      : ['confirmed', 'completed'];
+      : ['confirmed', 'arrived', 'completed'];
 
   const reservations = await prisma.reservation.findMany({
     where: {

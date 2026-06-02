@@ -124,10 +124,11 @@ router.get('/:id', async (req, res, next) => {
 router.post('/:id/approve', async (req, res, next) => {
   try {
     const { amountDays, notes, force } = req.body || {};
+    // force must be explicitly true to skip eligibility check; default is to validate
     const result = await referralService.approveReferral(req.params.id, req.user.id, {
       amountDays,
       notes,
-      skipEligibilityCheck: force !== false,
+      skipEligibilityCheck: force === true,
     });
     res.json(result);
   } catch (error) {

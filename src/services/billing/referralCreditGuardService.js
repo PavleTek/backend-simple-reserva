@@ -8,8 +8,7 @@ const {
 } = require('./referralFreeWindowService');
 
 /**
- * Periodo con crédito de referido aplicado (ventana activa o extensión programada tras opt-in).
- * Durante este periodo no se permite cambio de plan.
+ * Ventana activa o extensión programada tras opt-in en renovación.
  */
 function isReferralCreditPeriodLocked(sub, now = new Date()) {
   if (!sub?.referralFreeUntil) return false;
@@ -30,6 +29,35 @@ function deferredChargeDateForReferralCredits(sub, now = new Date()) {
   return null;
 }
 
+function requiresForfeitOnUpgrade({
+  tierChange,
+  confirmForfeitReferralCredits,
+  forfeitAppliedPeriod,
+  creditsAvailableDays,
+}) {
+  if (tierChange !== 'upgrade') return null;
+
+  if (!confirmForfeitReferralCredits) {
+    return {
+      allowed: false,
+      code: 'referral_credits_forfeit_required',
+      error: 'Al subir de plan perderás tu beneficio de referido.',
+      requiresForfeitConfirmation: true,
+      forfeitAppliedReferralPeriod: forfeitAppliedPeriod,
+      creditsAvailableDays: creditsAvailableDays > 0 ? creditsAvailableDays : undefined,
+      upgradeOnlyDuringBenefit: true,
+    };
+  }
+
+  return {
+    allowed: true,
+    forfeitAppliedReferralPeriod: forfeitAppliedPeriod,
+    forfeitAvailableCredits: !forfeitAppliedPeriod && creditsAvailableDays > 0,
+    creditsAvailableDays: creditsAvailableDays > 0 ? creditsAvailableDays : undefined,
+    upgradeOnlyDuringBenefit: true,
+  };
+}
+
 /**
  * @param {object} params
  * @param {object|null} params.sub
@@ -45,53 +73,50 @@ function evaluatePlanChangeReferralPolicy({
   creditsAvailableDays,
   confirmForfeitReferralCredits = false,
 }) {
-  if (isReferralCreditPeriodLocked(sub)) {
-    const until = sub.referralFreeUntil?.toISOString?.() ?? null;
-    return {
-      allowed: false,
-      code: 'referral_period_locked',
-      error:
-        'No puedes cambiar de plan mientras tengas días gratis de referido activos o programados en tu renovación. Espera a que termine ese periodo o contacta a soporte.',
-      referralFreeUntil: until,
-      planChangeBlocked: true,
-    };
+  const tierChange = resolvePlanChangeType(currentSku, newSku);
+  const benefitActive = isReferralCreditPeriodLocked(sub);
+
+  if (benefitActive) {
+    if (tierChange !== 'upgrade') {
+      return {
+        allowed: false,
+        code: 'referral_upgrade_only',
+        error: 'Durante tu beneficio de referido solo puedes subir de plan.',
+        upgradeOnlyDuringBenefit: true,
+      };
+    }
+    return (
+      requiresForfeitOnUpgrade({
+        tierChange,
+        confirmForfeitReferralCredits,
+        forfeitAppliedPeriod: true,
+        creditsAvailableDays: 0,
+      }) ?? { allowed: true, forfeitAppliedReferralPeriod: true }
+    );
   }
 
   if (creditsAvailableDays <= 0) {
-    return { allowed: true, planChangeBlocked: false };
+    return { allowed: true, upgradeOnlyDuringBenefit: false };
   }
 
-  const tierChange = resolvePlanChangeType(currentSku, newSku);
-  if (tierChange === 'upgrade' || tierChange === 'downgrade') {
+  if (tierChange !== 'upgrade') {
     return {
       allowed: false,
-      code: 'referral_credits_cross_tier',
-      error:
-        'No puedes subir ni bajar de tier mientras tengas créditos de referido disponibles. Canjéalos en tu renovación o elige un plan del mismo tier.',
+      code: 'referral_upgrade_only',
+      error: 'Con créditos de referido disponibles solo puedes subir de plan.',
       creditsAvailableDays,
-      planChangeBlocked: false,
-      sameTierOnly: true,
+      upgradeOnlyDuringBenefit: true,
     };
   }
 
-  if (!confirmForfeitReferralCredits) {
-    return {
-      allowed: false,
-      code: 'referral_credits_forfeit_required',
-      error:
-        'Al cambiar de plan perderás tus créditos de referido disponibles. Solo puedes cambiar dentro del mismo tier.',
-      requiresForfeitConfirmation: true,
+  return (
+    requiresForfeitOnUpgrade({
+      tierChange,
+      confirmForfeitReferralCredits,
+      forfeitAppliedPeriod: false,
       creditsAvailableDays,
-      planChangeBlocked: false,
-    };
-  }
-
-  return {
-    allowed: true,
-    forfeitAvailableCredits: true,
-    creditsAvailableDays,
-    planChangeBlocked: false,
-  };
+    }) ?? { allowed: true, forfeitAvailableCredits: true, creditsAvailableDays }
+  );
 }
 
 /**

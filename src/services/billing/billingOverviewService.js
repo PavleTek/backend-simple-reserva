@@ -283,7 +283,7 @@ async function getBillingOverview(organizationId, restaurantId) {
         canRedeemOnRenewal,
         renewalCreditBlockedReason: canRedeemOnRenewal ? null : renewalEligibility.blockedReason ?? null,
         scheduledRenewalCreditDays: scheduledRenewalCreditDaysVal,
-        planChangeBlocked: isReferralCreditPeriodLocked(sub),
+        referralUpgradeOnlyDuringBenefit: isReferralCreditPeriodLocked(sub),
         daysUntilFreeWindowEnds: inFreeWindow && sub?.referralFreeUntil
           ? daysUntil(sub.referralFreeUntil.toISOString())
           : null,
@@ -299,12 +299,12 @@ async function getBillingOverview(organizationId, restaurantId) {
   if (sub && isInReferralFreeWindow(sub)) {
     nextChargeAmountCLP = 0;
     nextChargeAmountWithIVA = 0;
-    nextChargeReferralNote = 'Estás en periodo gratis por referidos.';
+    nextChargeReferralNote = 'Sin cobro · días gratis de referido';
   } else if (sub && isReferralCreditExtensionScheduled(sub)) {
     const days = scheduledRenewalCreditDays(sub);
     nextChargeReferralNote =
       days > 0
-        ? `Incluye ${days} día${days === 1 ? '' : 's'} gratis de referido tras tu periodo pagado.`
+        ? `Crédito de referido programado (${days} día${days === 1 ? '' : 's'} sin cobro)`
         : null;
   }
 

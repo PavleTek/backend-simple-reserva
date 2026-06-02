@@ -89,7 +89,7 @@ Los créditos del referidor otorgan una **ventana de acceso gratis** (`Subscript
 
 Reglas de producto:
 
-- En ventana activa se puede **cambiar a cualquier plan**; se conservan `referralFreeUntil` y `currentPeriodEnd`.
+- En ventana activa o con extensión programada solo puedes **subir de plan**; al hacerlo pierdes el beneficio (`forfeitAppliedReferralPeriod`).
 - **Cambiar método de cobro no modifica** la ventana (manual→automático difiere solo el `start_date` del preapproval).
 - El tiempo ya otorgado **no se revoca** ante refund/chargeback; sí se procesa reversa del referido y alerta admin.
 - Primer pago aprobado (CP o preapproval) limpia `referralFreeUntil` y avanza el periodo de facturación.
@@ -122,11 +122,11 @@ Preview: `GET /billing/referral-credits/renewal-preview`.
 
 | Situación | Cambio de plan |
 |-----------|----------------|
-| Ventana activa o extensión programada (opt-in renovación) | **Bloqueado** hasta fin de `referralFreeUntil` |
-| Créditos `available` sin aplicar | Solo **mismo tier** (sin subir/bajar); requiere confirmar **pérdida del crédito** (`confirmForfeitReferralCredits`) |
+| Ventana activa o extensión programada (opt-in renovación) | Solo **subir plan**; requiere confirmar **pérdida del beneficio** |
+| Créditos `available` sin aplicar | Solo **subir plan**; requiere confirmar **pérdida del crédito** (`confirmForfeitReferralCredits`) |
 | Sin créditos | Flujo normal |
 
-Implementación: `referralCreditGuardService.js`, `forfeitAvailableCredits` en `referralService.js`.
+Implementación: `referralCreditGuardService.js`, `forfeitAvailableCredits` y `forfeitAppliedReferralPeriod` en `referralService.js`.
 
 ### Método de cobro con créditos activos
 

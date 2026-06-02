@@ -34,6 +34,8 @@ const BILLING_EMAIL_KINDS = {
   GRACE_ENTERED: 'grace_entered',
   GRACE_LAST_CHANCE_1D: 'grace_last_chance_1d',
   CHECKOUT_PAYMENT_REJECTED: 'checkout_payment_rejected',
+  TRIAL_7D: 'trial_7d',
+  TRIAL_2D: 'trial_2d',
 };
 
 const KIND_LABELS = {
@@ -44,6 +46,8 @@ const KIND_LABELS = {
   [BILLING_EMAIL_KINDS.GRACE_ENTERED]: 'Fallo de cobro (entrada a gracia)',
   [BILLING_EMAIL_KINDS.GRACE_LAST_CHANCE_1D]: 'Última oportunidad (gracia)',
   [BILLING_EMAIL_KINDS.CHECKOUT_PAYMENT_REJECTED]: 'Pago rechazado en checkout',
+  [BILLING_EMAIL_KINDS.TRIAL_7D]: 'Recordatorio prueba 7 días',
+  [BILLING_EMAIL_KINDS.TRIAL_2D]: 'Recordatorio prueba 2 días',
 };
 
 function getAssetBaseUrl() {
@@ -81,10 +85,15 @@ function periodKeyFromGrace(gracePeriodEndsAt) {
  * @param {number} daysLeft
  * @returns {string|null}
  */
+/**
+ * Maps daysLeft to a reminder kind using window thresholds so a single
+ * missed cron run doesn't permanently drop that touchpoint.
+ * Windows: 7d bucket covers 5-8 days, 4d covers 2-4 days, 1d covers 0-1 days.
+ */
 function renewalKindFromDaysLeft(daysLeft) {
-  if (daysLeft === 7) return BILLING_EMAIL_KINDS.RENEWAL_7D;
-  if (daysLeft === 4) return BILLING_EMAIL_KINDS.RENEWAL_4D;
-  if (daysLeft === 1) return BILLING_EMAIL_KINDS.RENEWAL_1D;
+  if (daysLeft >= 5 && daysLeft <= 8) return BILLING_EMAIL_KINDS.RENEWAL_7D;
+  if (daysLeft >= 2 && daysLeft <= 4) return BILLING_EMAIL_KINDS.RENEWAL_4D;
+  if (daysLeft >= 0 && daysLeft <= 1) return BILLING_EMAIL_KINDS.RENEWAL_1D;
   return null;
 }
 

@@ -313,8 +313,27 @@ model Zone {
   petFriendly   Boolean   @default(false)
 
   tables        RestaurantTable[]
+  fixtures      ZoneFixture[]
 
   @@index([restaurantId])
+}
+
+/// Elementos decorativos del plano (entrada, barra, etiquetas) — misma grilla que las mesas.
+model ZoneFixture {
+  id        String   @id @default(cuid())
+  zoneId    String
+  zone      Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  type      String   // entrance | bar | wall | label | restroom | kitchen
+  label     String?
+  posX      Int
+  posY      Int
+  width     Int      @default(1)
+  height    Int      @default(1)
+  rotation  Int      @default(0)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([zoneId])
 }
 
 model RestaurantTable {

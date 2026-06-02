@@ -125,17 +125,13 @@ async function buildBillingCapabilities({
   };
 
   const isAdminComped = sub?.status === 'cancelled_by_admin';
-  const referralPlanChangeBlocked = isReferralCreditPeriodLocked(sub);
 
   const canReactivateBase = !!(sub?.status === 'cancelled' && sub?.endDate && new Date() < sub.endDate);
   const canReactivate = canReactivateBase && !scheduledSub;
+  const referralUpgradeOnlyDuringBenefit = isReferralCreditPeriodLocked(sub);
 
   return {
-    canChangePlan:
-      gate.allowed &&
-      offerFlags.selfServicePlanChanges &&
-      !isAdminComped &&
-      !referralPlanChangeBlocked,
+    canChangePlan: gate.allowed && offerFlags.selfServicePlanChanges && !isAdminComped,
     canChangeStrategy:
       gate.allowed && offerFlags.selfServiceBillingStrategyChanges && !isAdminComped && status === 'active',
     canReactivate,
@@ -146,7 +142,7 @@ async function buildBillingCapabilities({
     selfServiceBillingStrategyChanges: offerFlags.selfServiceBillingStrategyChanges,
     billingGateCode: gate.code ?? null,
     billingGateReason: gate.allowed ? null : gate.reason,
-    referralPlanChangeBlocked,
+    referralUpgradeOnlyDuringBenefit,
   };
 }
 

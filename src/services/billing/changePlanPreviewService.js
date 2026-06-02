@@ -203,10 +203,10 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen, confi
       allowed: false,
       error: referralPolicy.error,
       code: referralPolicy.code,
-      referralPlanChangeBlocked: referralPolicy.planChangeBlocked ?? false,
+      referralUpgradeOnlyDuringBenefit: referralPolicy.upgradeOnlyDuringBenefit ?? false,
       referralForfeitRequired: referralPolicy.requiresForfeitConfirmation ?? false,
+      forfeitAppliedReferralPeriod: referralPolicy.forfeitAppliedReferralPeriod ?? false,
       referralCreditsAvailableDays: referralPolicy.creditsAvailableDays ?? creditsAvailableDays,
-      referralSameTierOnly: referralPolicy.sameTierOnly ?? false,
     };
   }
 
@@ -290,8 +290,10 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen, confi
     collectionMethodLabel: billingView.collectionMethodLabel,
     paymentProvider: billingView.paymentProvider,
     legacyPaymentProviderId: billingView.legacyPaymentProviderId,
-    referralPlanChangeBlocked: isReferralCreditPeriodLocked(sub),
-    referralForfeitRequired: creditsAvailableDays > 0,
+    referralUpgradeOnlyDuringBenefit:
+      isReferralCreditPeriodLocked(sub) || creditsAvailableDays > 0,
+    referralForfeitRequired: false,
+    forfeitAppliedReferralPeriod: referralPolicy.forfeitAppliedReferralPeriod ?? false,
     referralCreditsAvailableDays: creditsAvailableDays > 0 ? creditsAvailableDays : undefined,
   };
 }

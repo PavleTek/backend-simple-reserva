@@ -20,33 +20,60 @@ test('isReferralCreditPeriodLocked false without referralFreeUntil', () => {
   assert.equal(isReferralCreditPeriodLocked({}), false);
 });
 
-test('evaluatePlanChangeReferralPolicy blocks during credit period', () => {
+test('evaluatePlanChangeReferralPolicy blocks non-upgrade during active benefit', () => {
   const freeUntil = addDays(new Date(), 20);
   const policy = evaluatePlanChangeReferralPolicy({
     sub: { referralFreeUntil: freeUntil, referralFreeWindowStartsAt: addDays(new Date(), -2) },
     currentSku: 'plan-profesional',
-    newSku: 'plan-profesional-custom',
+    newSku: 'plan-basico',
     creditsAvailableDays: 0,
   });
   assert.equal(policy.allowed, false);
-  assert.equal(policy.code, 'referral_period_locked');
+  assert.equal(policy.code, 'referral_upgrade_only');
 });
 
-test('evaluatePlanChangeReferralPolicy blocks cross-tier with available credits', () => {
+test('evaluatePlanChangeReferralPolicy requires forfeit on upgrade during active benefit', () => {
+  const freeUntil = addDays(new Date(), 20);
   const policy = evaluatePlanChangeReferralPolicy({
-    sub: {},
+    sub: { referralFreeUntil: freeUntil, referralFreeWindowStartsAt: addDays(new Date(), -2) },
     currentSku: 'plan-basico',
     newSku: 'plan-profesional',
-    creditsAvailableDays: 30,
+    creditsAvailableDays: 0,
+    confirmForfeitReferralCredits: false,
   });
   assert.equal(policy.allowed, false);
-  assert.equal(policy.code, 'referral_credits_cross_tier');
+  assert.equal(policy.code, 'referral_credits_forfeit_required');
+  assert.equal(policy.forfeitAppliedReferralPeriod, true);
 });
 
-test('evaluatePlanChangeReferralPolicy requires forfeit for same-tier with credits', () => {
+test('evaluatePlanChangeReferralPolicy allows upgrade with forfeit during active benefit', () => {
+  const freeUntil = addDays(new Date(), 20);
+  const policy = evaluatePlanChangeReferralPolicy({
+    sub: { referralFreeUntil: freeUntil, referralFreeWindowStartsAt: addDays(new Date(), -2) },
+    currentSku: 'plan-basico',
+    newSku: 'plan-profesional',
+    creditsAvailableDays: 0,
+    confirmForfeitReferralCredits: true,
+  });
+  assert.equal(policy.allowed, true);
+  assert.equal(policy.forfeitAppliedReferralPeriod, true);
+});
+
+test('evaluatePlanChangeReferralPolicy blocks downgrade with available credits', () => {
   const policy = evaluatePlanChangeReferralPolicy({
     sub: {},
     currentSku: 'plan-profesional',
+    newSku: 'plan-basico',
+    creditsAvailableDays: 30,
+  });
+  assert.equal(policy.allowed, false);
+  assert.equal(policy.code, 'referral_upgrade_only');
+});
+
+test('evaluatePlanChangeReferralPolicy requires forfeit on upgrade with available credits', () => {
+  const policy = evaluatePlanChangeReferralPolicy({
+    sub: {},
+    currentSku: 'plan-basico',
     newSku: 'plan-profesional',
     creditsAvailableDays: 30,
     confirmForfeitReferralCredits: false,
@@ -55,11 +82,11 @@ test('evaluatePlanChangeReferralPolicy requires forfeit for same-tier with credi
   assert.equal(policy.code, 'referral_credits_forfeit_required');
 });
 
-test('evaluatePlanChangeReferralPolicy allows same-tier with forfeit confirm', () => {
+test('evaluatePlanChangeReferralPolicy allows upgrade with forfeit confirm', () => {
   const policy = evaluatePlanChangeReferralPolicy({
     sub: {},
     currentSku: 'plan-basico',
-    newSku: 'plan-basico',
+    newSku: 'plan-profesional',
     creditsAvailableDays: 30,
     confirmForfeitReferralCredits: true,
   });

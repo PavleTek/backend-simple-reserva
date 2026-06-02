@@ -600,10 +600,11 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
 
   await prisma.$transaction(async (tx) => {
     // Cancelar suscripciones previas para evitar duplicados.
-    // Incluye 'grace': cuando el cliente compra un plan nuevo durante periodo de gracia,
-    // la sub en grace queda reemplazada por la nueva activa.
+    // Incluye 'cancelled': una sub cancelada puede tener isActiveSubscription=true si está
+    // en su periodo pagado (gracePeriodEndsAt = endDate). Al activar una nueva, la anterior
+    // queda reemplazada y ambas activas crearían una violación del índice único parcial.
     await tx.subscription.updateMany({
-      where: { organizationId, status: { in: ['trial', 'active', 'scheduled', 'grace'] } },
+      where: { organizationId, status: { in: ['trial', 'active', 'scheduled', 'grace', 'cancelled'] } },
       data: { status: 'cancelled', isActiveSubscription: false },
     });
     await tx.subscription.updateMany({
@@ -671,8 +672,22 @@ async function deactivateOrganizationSubscription(organizationId) {
  */
 async function enterGracePeriod(organizationId, options = {}) {
   const { scheduledPreapprovalId, skipOwnerEmail = false } = options;
-  const graceEnd = new Date();
+
+  // Anchor grace period to the subscription's own period end when possible.
+  // Grace = max(periodEnd, now) + 7 days. This prevents delayed job runs from
+  // inflating the free-access window beyond the intended 7 days.
+  const activeSub = await prisma.subscription.findFirst({
+    where: { organizationId, status: 'active' },
+    select: { currentPeriodEnd: true },
+    orderBy: { startDate: 'desc' },
+  });
+  const anchor =
+    activeSub?.currentPeriodEnd && new Date(activeSub.currentPeriodEnd) > new Date()
+      ? new Date(activeSub.currentPeriodEnd)
+      : new Date();
+  const graceEnd = new Date(anchor.getTime());
   graceEnd.setDate(graceEnd.getDate() + 7);
+
   await prisma.subscription.updateMany({
     where: { organizationId, status: 'active' },
     data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },

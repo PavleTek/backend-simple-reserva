@@ -52,10 +52,13 @@ function transition(currentStatus, event, opts = {}) {
   const map = TRANSITIONS[currentStatus];
   const next = map?.[event];
   if (!next) {
-    if (opts.logOnly) {
-      return { newStatus: currentStatus, sideEffects: [] };
-    }
-    throw new InvalidTransitionError(currentStatus, event);
+    // Log a warning so invalid transitions are visible in observability tooling.
+    // We don't throw because the actual business side-effects are handled in EVENT_HANDLERS,
+    // which are called regardless. An exception here would suppress the real effect.
+    console.warn(
+      `[subscriptionStateMachine] Invalid transition: status="${currentStatus}" event="${event}" — handler will still run`,
+    );
+    return { newStatus: currentStatus, sideEffects: [] };
   }
 
   const sideEffects = [];

@@ -8,6 +8,7 @@
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const logger = require('../lib/logger');
+const { withCronLock } = require('../lib/cronLock');
 const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutProService');
 const { BILLING_STRATEGY_MANUAL } = require('../lib/billingDomain');
 const {
@@ -51,10 +52,15 @@ async function runBillingRenewalReminders() {
   for (const sub of subs) {
     if (!sub.currentPeriodEnd) continue;
     const daysLeft = msToDays(new Date(sub.currentPeriodEnd).getTime() - now.getTime());
-    if (!reminderDays.includes(daysLeft)) continue;
 
+    // Use window-based matching: if daysLeft is within the window of any configured
+    // reminder day, send (dedup prevents double-sending via BillingEmailLog).
     const kind = renewalKindFromDaysLeft(daysLeft);
     if (!kind) continue;
+
+    // Also skip if daysLeft exceeds the largest configured day (too early)
+    const maxDay = Math.max(...reminderDays);
+    if (daysLeft > maxDay + 1) continue;
 
     const eligible = await shouldSendRenewalReminder(sub, daysLeft);
     if (!eligible) continue;
@@ -113,7 +119,7 @@ async function runBillingRenewalReminders() {
 function startBillingRenewalReminderJob() {
   const schedule = process.env.CHECKOUT_PRO_RENEWAL_CRON || '0 10 * * *';
   cron.schedule(schedule, () => {
-    runBillingRenewalReminders().catch((err) => {
+    withCronLock('billingRenewalReminder', runBillingRenewalReminders).catch((err) => {
       logger.error({ err }, '[BillingRenewalReminderJob] cron error');
     });
   }, {

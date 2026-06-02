@@ -54,6 +54,22 @@ async function orgHasActiveSubscription(organizationId, client = prisma) {
   return count > 0;
 }
 
+/**
+ * Returns true only if the org has a PAID (non-trial) active subscription.
+ * Used to prevent trial accounts from participating as referrers,
+ * which would cost referee grants with no actual revenue from the referrer.
+ */
+async function orgHasPaidActiveSubscription(organizationId, client = prisma) {
+  const count = await client.subscription.count({
+    where: {
+      organizationId,
+      isActiveSubscription: true,
+      status: { not: 'trial' },
+    },
+  });
+  return count > 0;
+}
+
 async function loadReferrerOrganization(orgId, client = prisma) {
   return client.restaurantOrganization.findUnique({
     where: { id: orgId },
@@ -83,8 +99,11 @@ async function validateReferrerOrgId(orgId, options = {}) {
     throw new ValidationError(INVALID_REFERRAL_MSG);
   }
 
-  const hasActive = await orgHasActiveSubscription(referrerOrganization.id);
-  if (!hasActive) {
+  // Referrer must have a PAID subscription (not just trial) to be eligible.
+  // This prevents trial-account referral farms that grant free days to referees
+  // without any referrer having paid.
+  const hasPaidActive = await orgHasPaidActiveSubscription(referrerOrganization.id);
+  if (!hasPaidActive) {
     throw new ValidationError(INVALID_REFERRAL_MSG);
   }
 
@@ -597,6 +616,67 @@ async function releaseCreditsForSubscription(subscriptionId, client = prisma) {
 }
 
 /**
+ * Revoca beneficio de referido ya aplicado (ventana activa o programada) al subir de plan.
+ */
+async function forfeitAppliedReferralPeriod(subscriptionId, organizationId, client = prisma) {
+  const sub = await client.subscription.findUnique({
+    where: { id: subscriptionId },
+    select: {
+      id: true,
+      organizationId: true,
+      referralFreeUntil: true,
+      referralFreeWindowStartsAt: true,
+      currentPeriodEnd: true,
+    },
+  });
+  if (!sub || sub.organizationId !== organizationId) return { revokedDays: 0 };
+
+  const credits = await client.referralCredit.findMany({
+    where: { appliedToSubscriptionId: subscriptionId, status: 'applied' },
+    select: { id: true, amountDays: true },
+  });
+
+  const now = new Date();
+  let resetPeriodEnd = sub.referralFreeWindowStartsAt
+    ? new Date(sub.referralFreeWindowStartsAt)
+    : now;
+  if (resetPeriodEnd < now) resetPeriodEnd = now;
+
+  await client.subscription.update({
+    where: { id: subscriptionId },
+    data: {
+      referralFreeUntil: null,
+      referralFreeWindowStartsAt: null,
+      currentPeriodEnd: resetPeriodEnd,
+    },
+  });
+
+  if (!credits.length) return { revokedDays: 0 };
+
+  const creditIds = credits.map((c) => c.id);
+  const revokedDays = credits.reduce((sum, c) => sum + c.amountDays, 0);
+
+  await client.referralCredit.updateMany({
+    where: { id: { in: creditIds }, status: 'applied' },
+    data: {
+      status: 'revoked',
+      notes: 'Revocado por subida de plan durante beneficio de referido.',
+    },
+  });
+
+  await client.referral.updateMany({
+    where: {
+      referrerOrganizationId: organizationId,
+      rewardCreditId: { in: creditIds },
+      status: REFERRAL_STATUSES.REWARD_APPLIED,
+    },
+    data: { status: REFERRAL_STATUSES.APPROVED, rewardAppliedAt: null },
+  });
+
+  return { revokedDays, creditIds };
+}
+
+/**
  * Pierde créditos disponibles al cambiar de plan (mismo tier, confirmado por el usuario).
  */
 async function forfeitAvailableCredits(organizationId, client = prisma) {
@@ -649,7 +729,8 @@ async function applyAvailableCreditsOnNextCheckout(organizationId, plannedStartD
   const creditIds = credits.map((c) => c.id);
   const pendingKey = `checkout:${checkoutSessionId}`;
 
-  await prisma.referralCredit.updateMany({
+  // Atomic reserve: only proceed if ALL credits are still available (prevents concurrent double-reserve)
+  const reserved = await prisma.referralCredit.updateMany({
     where: { id: { in: creditIds }, status: 'available' },
     data: {
       status: 'applied',
@@ -657,6 +738,16 @@ async function applyAvailableCreditsOnNextCheckout(organizationId, plannedStartD
       appliedToSubscriptionId: pendingKey,
     },
   });
+  if (reserved.count !== creditIds.length) {
+    // Partially or fully claimed by another concurrent request; release whatever we reserved
+    await prisma.referralCredit.updateMany({
+      where: { appliedToSubscriptionId: pendingKey, status: 'applied' },
+      data: { status: 'available', appliedAt: null, appliedToSubscriptionId: null },
+    });
+    const err = new Error('Los créditos de referido ya no están disponibles. Intenta nuevamente.');
+    err.statusCode = 409;
+    throw err;
+  }
 
   return { startDate, totalDays, creditIds };
 }
@@ -680,9 +771,14 @@ async function markCreditsApplied(organizationId, subscriptionId, preapprovalId)
 
   const pendingKey = checkoutSession ? `checkout:${checkoutSession.id}` : null;
 
-  const where = pendingKey
-    ? { organizationId, appliedToSubscriptionId: pendingKey, status: 'applied' }
-    : { organizationId, status: 'applied', appliedToSubscriptionId: { startsWith: 'checkout:' } };
+  if (!pendingKey) {
+    // No session found — cannot safely link credits without a specific session key.
+    // Avoid the org-wide fallback that could link another session's reserved credits.
+    console.warn('[referralService] markCreditsApplied: no session encontrada para preapprovalId', preapprovalId, '— créditos no enlazados');
+    return [];
+  }
+
+  const where = { organizationId, appliedToSubscriptionId: pendingKey, status: 'applied' };
 
   const credits = await prisma.referralCredit.findMany({ where });
   if (!credits.length) return [];
@@ -705,20 +801,54 @@ async function markCreditsApplied(organizationId, subscriptionId, preapprovalId)
 }
 
 async function releaseExpiredCheckoutCredits() {
-  const expiredSessions = await prisma.checkoutSession.findMany({
+  // Find credits reserved with a checkout: key whose session is no longer pending/completed.
+  // This covers:
+  //   1. Sessions still in 'pending' but past their expiresAt
+  //   2. Sessions explicitly set to 'expired' (e.g., by reconciliation or route logic)
+  const reservedCredits = await prisma.referralCredit.findMany({
     where: {
+      status: 'applied',
+      appliedToSubscriptionId: { startsWith: 'checkout:' },
+    },
+    select: { id: true, appliedToSubscriptionId: true },
+  });
+  if (!reservedCredits.length) return 0;
+
+  const sessionIds = [...new Set(
+    reservedCredits
+      .map((c) => c.appliedToSubscriptionId?.replace('checkout:', ''))
+      .filter(Boolean),
+  )];
+
+  const nonActiveSessions = await prisma.checkoutSession.findMany({
+    where: {
+      id: { in: sessionIds },
+      status: { in: ['expired', 'abandoned'] },
+    },
+    select: { id: true },
+  });
+
+  // Also include pending sessions past their expiry
+  const staleSessionIds = await prisma.checkoutSession.findMany({
+    where: {
+      id: { in: sessionIds },
       status: 'pending',
       expiresAt: { lt: new Date() },
     },
     select: { id: true },
   });
-  if (!expiredSessions.length) return 0;
 
-  const keys = expiredSessions.map((s) => `checkout:${s.id}`);
+  const toRelease = new Set([
+    ...nonActiveSessions.map((s) => `checkout:${s.id}`),
+    ...staleSessionIds.map((s) => `checkout:${s.id}`),
+  ]);
+
+  if (!toRelease.size) return 0;
+
   const result = await prisma.referralCredit.updateMany({
     where: {
       status: 'applied',
-      appliedToSubscriptionId: { in: keys },
+      appliedToSubscriptionId: { in: [...toRelease] },
     },
     data: {
       status: 'available',
@@ -813,7 +943,16 @@ async function runReferralEvaluationBatch() {
 
   await releaseExpiredCheckoutCredits();
 
-  return { moved, canceled, evaluated: candidates.length };
+  // Expire ReferralCredit rows whose expiresAt has passed
+  const expiredCredits = await prisma.referralCredit.updateMany({
+    where: {
+      status: 'available',
+      expiresAt: { lt: new Date() },
+    },
+    data: { status: 'expired' },
+  });
+
+  return { moved, canceled, evaluated: candidates.length, creditsExpired: expiredCredits.count };
 }
 
 module.exports = {
@@ -839,6 +978,7 @@ module.exports = {
   consumeCreditsForSubscription,
   releaseCreditsForSubscription,
   forfeitAvailableCredits,
+  forfeitAppliedReferralPeriod,
   applyAvailableCreditsOnNextCheckout,
   markCreditsApplied,
   addDays,

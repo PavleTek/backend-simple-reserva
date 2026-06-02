@@ -10,6 +10,7 @@ const {
   resolveDuration,
 } = require('../services/slotEngine/index');
 const { pickTable, parseReservations, parseHolds } = require('../services/slotEngine/capacity');
+const { ACTIVE_TABLE_STATUSES } = require('../lib/reservationStatuses');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const {
   sendReservationConfirmation,
@@ -181,7 +182,7 @@ router.patch('/token/:secureToken', async (req, res, next) => {
         const dayReservations = await tx.reservation.findMany({
           where: {
             restaurantId: restaurant.id,
-            status: 'confirmed',
+            status: { in: ACTIVE_TABLE_STATUSES },
             dateTime: { gte: windowStart, lte: windowEnd },
             id: { not: reservation.id },
           },
@@ -533,7 +534,7 @@ router.post('/', async (req, res, next) => {
         const dayReservations = await tx.reservation.findMany({
           where: {
             restaurantId: restaurant.id,
-            status: 'confirmed',
+            status: { in: ACTIVE_TABLE_STATUSES },
             dateTime: { gte: windowStart, lte: windowEnd },
           },
           select: { tableId: true, dateTime: true, durationMinutes: true },
