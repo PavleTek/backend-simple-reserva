@@ -17,6 +17,7 @@ const {
 const { parseExternalReferenceV2 } = require('../lib/externalReferenceV2');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const planService = require('./planService');
+const { montoEfectivoNeto } = require('../lib/addonPricing');
 
 const CURRENCY = 'CLP';
 const MIN_AMOUNT_CLP = 950;
@@ -101,7 +102,8 @@ async function createCheckoutPreference({
   const config = await planService.getPlanConfig(planSKU);
   if (!config) throw new Error(`Plan no encontrado: ${planSKU}`);
 
-  const amount = computeAmountWithIva(config.priceCLP);
+  const efectivoNeto = await montoEfectivoNeto(organizationId, config.priceCLP);
+  const amount = computeAmountWithIva(efectivoNeto);
   const externalRef = buildCheckoutProExternalReference(organizationId, planSKU, checkoutSessionId);
 
   const backendBase = (process.env.BACKEND_PUBLIC_URL || `http://localhost:${process.env.PORT || 3000}`).replace(
@@ -460,7 +462,8 @@ async function createRenewalPreference({ organizationId, planSKU, subscriptionId
   const config = await planService.getPlanConfig(planSKU);
   if (!config) throw new Error(`Plan no encontrado: ${planSKU}`);
 
-  const amount = computeAmountWithIva(config.priceCLP);
+  const efectivoNeto = await montoEfectivoNeto(organizationId, config.priceCLP);
+  const amount = computeAmountWithIva(efectivoNeto);
   const renewalSessionId = `renewal-${subscriptionId}-${Date.now()}`;
   const externalRef = buildCheckoutProExternalReference(organizationId, planSKU, renewalSessionId);
 

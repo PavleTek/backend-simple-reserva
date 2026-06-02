@@ -22,6 +22,13 @@ const bookingAcceptanceRouter = require("./routes/bookingAcceptance.routes");
 const organizationNotificationRouter = require("./routes/organizationNotification.routes");
 const adminRouter = require("./routes/admin.routes");
 const uploadRouter = require("./routes/upload.routes");
+const activitiesRouter = require("./routes/activities.routes");
+const { bookingsRouter: activityBookingsRouter } = require("./routes/activities.routes");
+const publicActivitiesRouter = require("./routes/publicActivities.routes");
+const {
+  tokenRouter: activityBookingTokenRouter,
+  activityHoldRouter,
+} = require("./routes/publicActivities.routes");
 const billingRouter = require("./routes/billing.routes");
 const webhooksRouter = require("./routes/webhooks.routes");
 const analyticsRouter = require("./routes/analytics.routes");
@@ -42,6 +49,7 @@ const { startManualPeriodOverdueJob } = require("./jobs/manualPeriodOverdueJob")
 const { startPlanChangeSchedulerJob } = require("./jobs/planChangeSchedulerJob");
 const { startLastChanceLinkJob } = require("./jobs/lastChanceLinkJob");
 const { startBillingIntegrityJob } = require("./jobs/billingIntegrityJob");
+const { startAddonRemovalJob } = require("./jobs/addonRemovalJob");
 const { assertMpEnvSafety } = require("./lib/mercadopagoEnv");
 const { publicRouter: feedbackPublicRouter, restaurantRouter: feedbackRestaurantRouter } = require("./routes/feedback.routes");
 const { publicRestaurantRouter: holdRestaurantRouter, publicHoldRouter, staffRouter: holdStaffRouter } = require("./routes/reservationHold.routes");
@@ -230,6 +238,10 @@ app.get("/api/public/referrals/:orgId", async (req, res, next) => {
 app.use("/api/public/restaurants", holdRestaurantRouter);
 app.use("/api/public/reservation-holds", publicHoldRouter);
 
+app.use("/api/public/restaurants/:slug", publicActivitiesRouter);
+app.use("/api/public/activity-session-holds", activityHoldRouter);
+app.use("/api/public/activity-bookings", activityBookingTokenRouter);
+
 // Public alias for user-front
 app.use("/api/public/restaurants", reservationRouter);
 app.use("/api/public/reservations", reservationRouter);
@@ -252,6 +264,8 @@ app.use("/api/restaurant/:restaurantId", organizationNotificationRouter);
 app.use("/api/restaurant/:restaurantId/feedback", feedbackRestaurantRouter);
 app.use("/api/restaurant/:restaurantId/holds", holdStaffRouter);
 app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
+app.use("/api/restaurant/:restaurantId/activities", activitiesRouter);
+app.use("/api/restaurant/:restaurantId", activityBookingsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/places", placesRouter);
@@ -285,4 +299,5 @@ app.listen(PORT, "0.0.0.0", () => {
   startPlanChangeSchedulerJob();
   startLastChanceLinkJob();
   startBillingIntegrityJob();
+  startAddonRemovalJob();
 });

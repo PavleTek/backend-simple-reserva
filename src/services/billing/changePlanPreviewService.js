@@ -23,6 +23,7 @@ const {
   evaluatePlanChangeReferralPolicy,
   isReferralCreditPeriodLocked,
 } = require('./referralCreditGuardService');
+const { getActiveAddonTotal } = require('../../lib/addonPricing');
 
 function formatEffectDate(isoDate) {
   if (!isoDate) return '';
@@ -210,8 +211,9 @@ async function previewChangePlan({ organizationId, planSKU, when: rawWhen, confi
     };
   }
 
-  const currentPrice = priceWithIva(currentPlan.priceCLP ?? 0);
-  const newPrice = priceWithIva(newPlan.priceCLP);
+  const addonTotal = await getActiveAddonTotal(organizationId);
+  const currentPrice = priceWithIva((Number(currentPlan.priceCLP) || 0) + addonTotal);
+  const newPrice = priceWithIva(Number(newPlan.priceCLP) + addonTotal);
 
   let periodEnd = sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
   if (!periodEnd || Number.isNaN(periodEnd.getTime())) {

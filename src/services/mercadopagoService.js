@@ -12,6 +12,7 @@
 const prisma = require('../lib/prisma');
 const planService = require('./planService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
+const { montoEfectivoNeto } = require('../lib/addonPricing');
 const {
   getMercadoPagoAccessToken,
   getMercadoPagoPublicKey,
@@ -187,10 +188,11 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
   const config = await planService.getPlanConfig(planSKU);
   if (!config) throw new Error(`Plan no encontrado: ${planSKU}`);
 
-  const planAmount = Number(config.priceCLP);
   const mpFreq = planService.toMercadoPagoFrequency(config.billingFrequency, config.billingFrequencyType);
   // priceCLP es precio neto (sin IVA); el frontend lo muestra como "más IVA (19%)".
-  let amount = Math.round(planAmount * (1 + IVA_RATE));
+  // Se suman add-ons activos org-scoped para que el preapproval refleje el monto efectivo.
+  const efectivoNeto = await montoEfectivoNeto(organizationId, config.priceCLP);
+  let amount = Math.round(efectivoNeto * (1 + IVA_RATE));
   if (amount < MIN_AMOUNT_CLP) {
     amount = MIN_AMOUNT_CLP;
   }
@@ -649,6 +651,13 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     });
     if (activeSub) {
       await referralService.markCreditsApplied(organizationId, activeSub.id, preapprovalId);
+      // Re-apuntar add-ons org-scoped al nuevo subscriptionId (snapshot).
+      try {
+        const { reattachAddonsToSubscription } = require('./billing/subscriptionAddonService');
+        await reattachAddonsToSubscription(organizationId, activeSub.id);
+      } catch (addonErr) {
+        console.warn('[MercadoPago] activateOrganizationSubscription: reattach addons falló:', addonErr?.message ?? addonErr);
+      }
     }
     if (!shouldSkipFirstPayment) {
       await referralService.markFirstPayment(organizationId);

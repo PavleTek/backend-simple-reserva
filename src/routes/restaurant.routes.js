@@ -45,6 +45,7 @@ const { computeTableFloorStatus } = require('../services/tableFloorStatus');
 const { buildReservationDayWhere } = require('../utils/reservationDateFilter');
 const { getAvailableTablesForSlot } = require('../services/availableTablesForSlot');
 const { incrementReservationAnalytics } = require('../services/reservationAnalyticsService');
+const { loadBlockingSessionsForDay } = require('../services/activitySessionService');
 
 async function withSerializableRetry(fn, maxRetries = 3) {
   let attempt = 0;
@@ -132,6 +133,7 @@ router.get('/access-status', async (req, res, next) => {
         planConfig = {
           maxZonesPerRestaurant: resolved.maxZonesPerRestaurant ?? null,
           maxTables: resolved.maxTables ?? null,
+          activitiesModule: resolved.activitiesModule === true,
         };
       }
     }
@@ -753,6 +755,12 @@ router.post('/reservations', async (req, res, next) => {
           select: { tableId: true, dateTime: true, durationMinutes: true },
         });
 
+        const blockingSessions = await loadBlockingSessionsForDay(
+          restaurantId,
+          windowStart,
+          new Date(dateTime.getTime() + 4 * 60 * 60000)
+        );
+
         const reservationsRaw = dayReservations.map((r) => ({
           tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes,
         }));
@@ -777,12 +785,11 @@ router.post('/reservations', async (req, res, next) => {
           const { countFreeTables } = require('../services/slotEngine/capacity');
           const specificFree = countFreeTables(
             [{ id: table.id, zoneId: table.zone.id, minCapacity: table.minCapacity, maxCapacity: table.maxCapacity }],
-            dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null
+            dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null, blockingSessions
           );
           if (specificFree === 0) throw new ValidationError('Esa mesa ya está reservada en ese horario. Elige otra mesa o cambia la hora.');
           selectedTable = table;
         } else {
-          // Walk-in u otro: usar slotEngine para validar y asignar (walk-in bypasea grid/notice)
           if (!isWalkIn) {
             const validation = validateSlotForBooking({
               time,
@@ -803,6 +810,7 @@ router.post('/reservations', async (req, res, next) => {
               zoneId: null,
               excludeHoldToken: null,
               dayOfWeek,
+              blockingSessions,
             });
             if (!validation.valid) {
               const msgs = {
@@ -828,14 +836,14 @@ router.post('/reservations', async (req, res, next) => {
           const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
           selectedTable = pickTable(tables, size, dateTime, slotEnd, bufferMs,
             parseReservations(reservationsRaw), parseHolds(holdsRaw), null, null,
-            { preferOpenEnded: isWalkIn });
+            { preferOpenEnded: isWalkIn }, blockingSessions);
           if (!selectedTable) throw new ValidationError('No hay mesas disponibles en este horario');
         }
 
         return tx.reservation.create({
           data: {
             restaurantId,
-            tableId: selectedTable.id,
+            tableId: selectedTable?.id ?? null,
             customerName: name,
             customerPhone: phone,
             customerEmail: customerEmail?.trim() || null,

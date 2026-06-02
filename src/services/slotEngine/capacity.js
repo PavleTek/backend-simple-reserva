@@ -31,6 +31,20 @@ function overlaps(s1, e1, s2, e2) {
   return s1 < e2 && e1 > s2;
 }
 
+function isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions) {
+  if (!blockingSessions?.length) return false;
+  for (const bs of blockingSessions) {
+    const bsStart = bs.startAt instanceof Date ? bs.startAt : new Date(bs.startAt);
+    const bsEnd = bs.endAt instanceof Date ? bs.endAt : new Date(bs.endAt);
+    if (!overlaps(slotStart, slotEnd, bsStart, bsEnd)) continue;
+    if (bs.blockScope === 'VENUE' || !bs.blockScope) return true;
+    if (bs.blockScope === 'ZONES' && Array.isArray(bs.zoneIds) && bs.zoneIds.includes(table.zoneId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Tiempo (en ms) hasta la próxima reserva en una mesa, a partir de afterTime.
  * Retorna Infinity si no hay reservas futuras en esa mesa.
@@ -88,10 +102,12 @@ function countFreeTables(
   bufferMs,
   parsedReservations,
   parsedHolds,
-  excludeHoldToken = null
+  excludeHoldToken = null,
+  blockingSessions = []
 ) {
   let free = 0;
   for (const table of candidateTables) {
+    if (isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions)) continue;
     const reservationConflict = parsedReservations.some((r) => {
       if (r.tableId !== table.id) return false;
       const rEnd = new Date(r.end.getTime() + bufferMs);
@@ -126,7 +142,7 @@ function countFreeTables(
  * @param {string|null} [excludeHoldToken]
  * @param {{ preferOpenEnded?: boolean }} [opts]
  *   preferOpenEnded: true → prioriza mesas con más tiempo libre después del slot (ideal para walk-ins).
- *   Si hay empate en slack/zona/orden, la mesa cuya próxima reserva esté más lejos va primero.
+ * @param {Array<{ startAt: Date; endAt: Date; blockScope?: string; zoneIds?: string[] }>} [blockingSessions]
  * @returns {typeof tables[0] | null}
  */
 function pickTable(
@@ -139,10 +155,12 @@ function pickTable(
   parsedHolds,
   preferredZoneId,
   excludeHoldToken = null,
-  { preferOpenEnded = false } = {}
+  { preferOpenEnded = false } = {},
+  blockingSessions = []
 ) {
   const candidates = getCandidateTables(tables, partySize, null);
   const free = candidates.filter((t) => {
+    if (isTableBlockedBySessions(t, slotStart, slotEnd, blockingSessions)) return false;
     const reservationConflict = parsedReservations.some((r) => {
       if (r.tableId !== t.id) return false;
       const rEnd = new Date(r.end.getTime() + bufferMs);

@@ -239,6 +239,8 @@ model Restaurant {
   feedbackSurvey            FeedbackSurvey?
   feedbackRequests          FeedbackRequest[]
   feedbackAlerts            FeedbackAlert[]
+  activities                Activity[]
+  activityBookings          ActivityBooking[]
 
   @@index([organizationId])
   @@index([isActive])
@@ -314,6 +316,7 @@ model Zone {
 
   tables        RestaurantTable[]
   fixtures      ZoneFixture[]
+  activityZones ActivityZone[]
 
   @@index([restaurantId])
 }
@@ -484,13 +487,165 @@ model Reservation {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  feedbackRequest           FeedbackRequest?
+  activityBooking ActivityBooking?
+
+  feedbackRequest FeedbackRequest?
 
   @@index([restaurantId, dateTime, status])
   @@index([restaurantId, businessDate, status])
   @@index([secureToken])
   @@index([confirmedByUserId])
   @@index([updatedByUserId])
+}
+
+enum ActivityCapacityMode {
+  INDEPENDENT
+  BLOCKS_VENUE
+  SHARED_TABLES
+}
+
+enum ActivityBlockScope {
+  VENUE
+  ZONES
+}
+
+enum ActivitySessionStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+enum ActivityBookingStatus {
+  PENDING
+  CONFIRMED
+  ARRIVED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum ActivityCategory {
+  TOUR
+  TASTING
+  CLASS
+  EVENT
+  MENU
+  CORPORATE
+  CUSTOM
+}
+
+/// Producto reservable independiente (tours, degustaciones, eventos).
+/// Dominio separado de Reservation; precio es informativo (sin cobro en línea).
+model Activity {
+  id                     String               @id @default(cuid())
+  restaurantId           String
+  restaurant             Restaurant           @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  name                   String
+  slug                   String?
+  description            String?
+  category               ActivityCategory     @default(CUSTOM)
+  imageUrl               String?
+  defaultDurationMinutes Int                  @default(60)
+  defaultCapacity        Int?
+  pricePerPerson         Decimal?             @db.Decimal(10, 2)
+  currency               String               @default("CLP")
+  minimumNoticeMinutes   Int                  @default(0)
+  minPartySize           Int                  @default(1)
+  maxPartySize           Int?
+  capacityMode           ActivityCapacityMode @default(INDEPENDENT)
+  blockScope             ActivityBlockScope?
+  requiresApproval       Boolean              @default(false)
+  cancellationPolicy     String?
+  featured               Boolean              @default(false)
+  sortOrder              Int                  @default(0)
+  isActive               Boolean              @default(true)
+  isDeleted              Boolean              @default(false)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  sessions               ActivitySession[]
+  bookings               ActivityBooking[]
+  zones                  ActivityZone[]
+
+  @@unique([restaurantId, slug])
+  @@index([restaurantId, isActive, isDeleted])
+}
+
+model ActivityZone {
+  id         String   @id @default(cuid())
+  activityId String
+  zoneId     String
+  activity   Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  zone       Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([activityId, zoneId])
+}
+
+model ActivitySession {
+  id                     String                @id @default(cuid())
+  activityId             String
+  restaurantId           String
+  startAt                DateTime
+  endAt                  DateTime
+  businessDate           DateTime              @db.Date
+  capacity               Int
+  pricePerPersonOverride Decimal?              @db.Decimal(10, 2)
+  status                 ActivitySessionStatus @default(SCHEDULED)
+  notes                  String?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  activity               Activity              @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  bookings               ActivityBooking[]
+  holds                  ActivitySessionHold[]
+
+  @@index([restaurantId, businessDate, status])
+  @@index([activityId, startAt])
+}
+
+model ActivityBooking {
+  id                String                @id @default(cuid())
+  sessionId         String
+  activityId        String
+  restaurantId      String
+  customerName      String
+  customerEmail     String?
+  customerPhone     String?
+  partySize         Int
+  status            ActivityBookingStatus @default(CONFIRMED)
+  notes             String?
+  source            String                @default("web")
+  secureToken       String                @unique @default(cuid())
+  activityName      String
+  sessionStartAt    DateTime
+  pricePerPerson    Decimal?              @db.Decimal(10, 2)
+  totalReferential  Decimal?              @db.Decimal(10, 2)
+  reservationId     String?               @unique
+  confirmedByUserId String?
+  updatedByUserId   String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  session           ActivitySession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  activity          Activity              @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  restaurant        Restaurant            @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  reservation       Reservation?          @relation(fields: [reservationId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId, status])
+  @@index([sessionId, status])
+}
+
+model ActivitySessionHold {
+  id        String          @id @default(cuid())
+  sessionId String
+  partySize Int
+  expiresAt DateTime
+  holdToken String          @unique @default(cuid())
+  status    String          @default("active")
+  session   ActivitySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status])
+  @@index([expiresAt, status])
 }
 
 /// Configuración de encuesta post-visita por restaurante (1:1)
@@ -784,6 +939,7 @@ model Plan {
   multipleMenu             Boolean  @default(false)
   prioritySupport          Boolean  @default(false)
   postVisitFeedback        Boolean  @default(false)
+  activitiesModule         Boolean  @default(false)
 
   comingSoon               Boolean  @default(false)
   comingSoonLabel          String?
@@ -1046,22 +1202,33 @@ model SubscriptionCancellation {
   @@index([createdAt])
 }
 
-/// Add-ons de suscripción (locales extra, módulos)
+/// Add-ons de suscripción (locales extra, módulos).
+/// Org-scoped: la fuente de verdad es organizationId.
+/// subscriptionId es snapshot que se re-apunta al crear nueva Subscription.
 model SubscriptionAddon {
-  id             String    @id @default(cuid())
-  organizationId String
-  subscriptionId String?
-  subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
-  addonType      String    // extra_location, module_marketing, etc.
-  quantity       Int       @default(1)
-  priceCLP       Decimal   @db.Decimal(10, 2)
-  isActive       Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id                     String    @id @default(cuid())
+  organizationId         String
+  subscriptionId         String?
+  subscription           Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  addonType              String    // extra_location, module_experiences, etc.
+  quantity               Int       @default(1)
+  priceCLP               Decimal   @db.Decimal(10, 2)
+  isActive               Boolean   @default(true)
+  /// Cuándo se activó el add-on (inmediato).
+  activatedAt            DateTime?
+  /// Primera renovación en la que se cobra (= currentPeriodEnd al activar).
+  billingStartsAt        DateTime?
+  /// Fin del primer ciclo facturado. El add-on no puede removerse antes de esta fecha sin cobrar igual ese ciclo.
+  minimumCommitmentUntil DateTime?
+  /// Fecha en que el add-on se desactiva definitivamente (= max(currentPeriodEnd, minimumCommitmentUntil) al solicitar baja).
+  removalScheduledFor    DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   @@index([organizationId])
   @@index([subscriptionId])
   @@index([addonType])
+  @@index([removalScheduledFor])
 }
 
 model AuditLog {

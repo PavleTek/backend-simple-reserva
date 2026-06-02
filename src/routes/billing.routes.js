@@ -3,6 +3,10 @@ const prisma = require('../lib/prisma');
 const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = require('../middleware/authentication');
 const { getActiveSubscription, hasActiveAccess, isTrialing, getOrganizationWithTrial } = require('../services/subscriptionService');
 const planService = require('../services/planService');
+const {
+  listActiveAddons,
+} = require('../services/billing/subscriptionAddonService');
+const { getActiveAddonTotal } = require('../lib/addonPricing');
 const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const { computePeriodEnd, estimateNextPaymentDate } = require('../lib/billingPeriod');
 const { getMercadoPagoCheckoutHints } = require('../services/mercadopagoService');
@@ -409,6 +413,10 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
     });
     const entitlement = await buildEntitlementBlock(organizationId, sub, plan);
 
+    // Add-ons activos para esta organización
+    const activeAddons = await listActiveAddons(organizationId);
+    const addonTotal = await getActiveAddonTotal(organizationId);
+
     const canReactivate = capabilities.canReactivate;
 
     res.json({
@@ -454,6 +462,7 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
         googleReserveIntegration: planConfig.googleReserveIntegration,
         prioritySupport: planConfig.prioritySupport,
         postVisitFeedback: planConfig.postVisitFeedback === true,
+        activitiesModule: planConfig.activitiesModule === true,
       } : null,
       allPlans: sortPlansByDisplayOrder(allPlansForOrg),
       offeredPlans,
@@ -473,11 +482,15 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
             paymentProvider: billingView.paymentProvider,
           }
         : null,
+      effectiveMonthlyCLP: Number(plan?.priceCLP ?? 0) + addonTotal,
+      effectiveMonthlyWithIvaCLP: Math.round((Number(plan?.priceCLP ?? 0) + addonTotal) * 1.19),
     });
   } catch (error) {
     next(error);
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.get('/billing/payments', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {

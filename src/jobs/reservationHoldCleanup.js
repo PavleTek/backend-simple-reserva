@@ -28,6 +28,14 @@ async function expireHolds() {
     if (count > 0) {
       logger.info({ count }, 'reservationHoldCleanup: holds marcados como expirados');
     }
+
+    const activityResult = await prisma.activitySessionHold.updateMany({
+      where: { status: 'active', expiresAt: { lt: now } },
+      data: { status: 'expired' },
+    });
+    if (activityResult.count > 0) {
+      logger.info({ count: activityResult.count }, 'reservationHoldCleanup: activity holds expirados');
+    }
   } catch (err) {
     logger.error({ err }, 'reservationHoldCleanup: error al expirar holds');
   }

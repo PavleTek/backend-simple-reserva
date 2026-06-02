@@ -39,6 +39,7 @@ const {
 } = require('./capacity');
 const { validateSlotForBooking } = require('./validate');
 const { ACTIVE_TABLE_STATUSES } = require('../../lib/reservationStatuses');
+const { loadBlockingSessionsForDay } = require('../activitySessionService');
 
 const ENGINE_VERSION = 3;
 
@@ -174,6 +175,8 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
     }),
   ]);
 
+  const blockingSessionsRaw = await loadBlockingSessionsForDay(restaurant.id, dayStart, dayEnd);
+
   const serverNow = nowInTimezone(timezone).toJSDate();
   const todayLocal = nowInTimezone(timezone).toFormat('yyyy-MM-dd');
 
@@ -240,6 +243,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       startUtc: r.dateTime.toISOString(),
       durationMinutes: r.durationMinutes,
     })),
+    blockingSessions: blockingSessionsRaw,
     activeHolds: activeHolds.map((h) => ({
       tableId: h.tableId,
       startUtc: h.dateTime.toISOString(),
@@ -280,12 +284,12 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
     isToday,
     timezone,
     date,
+    blockingSessions,
   } = snapshot;
 
   if (!schedule) return { slots: [], reason: 'no_schedule' };
 
-  // Una mesa individual debe calzar; sin combinaciones
-  const candidateTables = getCandidateTables(tables, partySize, zoneId ?? null);
+  let candidateTables = getCandidateTables(tables, partySize, zoneId ?? null);
   if (candidateTables.length === 0) {
     const anyTable = getCandidateTables(tables, partySize, null);
     return {
@@ -303,6 +307,7 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
   const intervalMinutes = defaults.slotIntervalMinutes;
   const reservationEndPolicy = defaults.reservationEndPolicy;
   const reservationWindowMode = defaults.reservationWindowMode;
+  const effectiveMinimumNoticeMinutes = defaults.minimumNoticeMinutes;
 
   const windows = getReservationWindows(
     schedule,
@@ -330,11 +335,11 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
 
   const nowDate = now instanceof Date ? now : new Date(snapshot.serverNowUtc);
   const parsedBlocked = parseBlockedSlots(blockedSlots);
-  const filteredSlots = applyPolicies(timeSlots, {
+  let filteredSlots = applyPolicies(timeSlots, {
     isToday,
     walkIn,
     nowDate,
-    minimumNoticeMinutes: defaults.minimumNoticeMinutes,
+    minimumNoticeMinutes: effectiveMinimumNoticeMinutes,
     parsedBlockedSlots: parsedBlocked,
   });
 
@@ -351,11 +356,11 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
       bufferMs,
       parsedRes,
       parsedHoldsArr,
-      excludeHoldToken
+      excludeHoldToken,
+      blockingSessions ?? []
     );
     if (openTables === 0) continue;
 
-    // Pacing check
     let coversRemaining;
     if (pacingRules.length > 0) {
       const slotRes = parsedRes.filter((r) => slot.start < r.end && slot.end > r.start);
@@ -371,10 +376,11 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
       if (pacingCheck.coversRemaining != null) coversRemaining = pacingCheck.coversRemaining;
     }
 
+    const availableTables = openTables;
     const entry = {
       time: slot.time,
       available: true,
-      availableTables: openTables,
+      availableTables,
       nextDay: slot.nextDay ?? false,
       calendarDate: slot.calendarDate ?? date,
     };
@@ -460,9 +466,6 @@ async function getAvailabilitySlotsForRestaurant(
   });
 }
 
-/**
- * Busca el próximo día futuro con disponibilidad para un slug de restaurante.
- */
 async function findNextAvailableDateForSlug(slug, { fromDateStr, partySize, zoneId }) {
   const restaurant = await prisma.restaurant.findUnique({
     where: { slug, isActive: true, isDeleted: false },
