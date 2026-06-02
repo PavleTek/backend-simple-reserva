@@ -64,7 +64,7 @@ const router = express.Router({ mergeParams: true });
 function sanitizeActivityInput(body) {
   const data = {};
   const fields = [
-    'name', 'description', 'category', 'imageUrl', 'defaultDurationMinutes',
+    'name', 'description', 'includes', 'category', 'imageUrl', 'defaultDurationMinutes',
     'defaultCapacity', 'pricePerPerson', 'currency', 'minimumNoticeMinutes',
     'minPartySize', 'maxPartySize', 'capacityMode', 'blockScope',
     'requiresApproval', 'cancellationPolicy', 'featured', 'sortOrder', 'isActive',
@@ -75,6 +75,9 @@ function sanitizeActivityInput(body) {
   if (data.name !== undefined) data.name = String(data.name).trim().slice(0, 255);
   if (data.description !== undefined) {
     data.description = data.description ? String(data.description).trim().slice(0, 5000) : null;
+  }
+  if (data.includes !== undefined) {
+    data.includes = data.includes ? String(data.includes).trim().slice(0, 3000) : null;
   }
   if (data.imageUrl !== undefined) {
     const trimmed = data.imageUrl ? String(data.imageUrl).trim() : '';

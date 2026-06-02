@@ -543,6 +543,7 @@ model Activity {
   name                   String
   slug                   String?
   description            String?
+  includes               String?
   category               ActivityCategory     @default(CUSTOM)
   imageUrl               String?
   defaultDurationMinutes Int                  @default(60)
