@@ -26,13 +26,13 @@ function buildShortAddress(components) {
  * GET /api/places/autocomplete
  * Proxies Google Places Autocomplete (New API). Requires authentication.
  * Query params:
- *   input       - text typed by user (required)
+ *   input        - text typed by user (required)
  *   sessionToken - optional session token for billing
- *   country     - ISO 3166-1 alpha-2 code to restrict results (default: cl)
+ *   country      - optional ISO 3166-1 alpha-2 code to bias/restrict results (omit for worldwide)
  */
 router.get('/autocomplete', authenticateToken, async (req, res, next) => {
   try {
-    const { input, sessionToken, country = 'cl' } = req.query;
+    const { input, sessionToken, country } = req.query;
 
     if (!input || typeof input !== 'string' || !input.trim()) {
       return res.status(400).json({ error: 'El parámetro "input" es requerido.' });
@@ -46,9 +46,15 @@ router.get('/autocomplete', authenticateToken, async (req, res, next) => {
     const body = {
       input: input.trim(),
       languageCode: 'es',
-      regionCode: country.toLowerCase(),
-      includedRegionCodes: [country.toLowerCase()],
     };
+    const countryCode =
+      typeof country === 'string' && /^[a-z]{2}$/i.test(country.trim())
+        ? country.trim().toLowerCase()
+        : null;
+    if (countryCode) {
+      body.regionCode = countryCode;
+      body.includedRegionCodes = [countryCode];
+    }
     if (sessionToken) body.sessionToken = sessionToken;
 
     const response = await fetch(`${PLACES_BASE}:autocomplete`, {
