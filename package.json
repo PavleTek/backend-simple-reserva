@@ -13,6 +13,7 @@
     "railway-predeploy": "npm run migrate && npm run seed",
     "postinstall": "npm run build",
     "prepare": "husky",
+    "prepush": "npm run build",
     "test": "node --test src/**/*.test.js",
     "test:billing": "node --test src/lib/billingFlowMatrix.test.js src/lib/canSelfServeBilling.test.js src/services/billing/*.test.js",
     "cy:seed": "node cypress/scripts/seed.js",
