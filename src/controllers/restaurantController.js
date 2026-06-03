@@ -3,6 +3,10 @@ const { ValidationError } = require('../utils/errors');
 const { getEffectiveTimezone, COUNTRY_TIMEZONES } = require('../utils/timezone');
 const r2LogosService = require('../services/r2LogosService');
 const { isValidBookingThemeId } = require('../constants/bookingThemes');
+const {
+  slugifyRestaurantName,
+  ensureUniqueRestaurantSlug,
+} = require('../lib/restaurantSlug');
 
 const getRestaurant = async (req, res, next) => {
   try {
@@ -65,14 +69,36 @@ const updateRestaurant = async (req, res, next) => {
       appearanceTheme,
     } = req.body;
 
-    if (slug) {
-      const existing = await prisma.restaurant.findUnique({
-        where: { slug },
-      });
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const current = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { name: true, slug: true },
+    });
+    if (!current) {
+      throw new ValidationError('Restaurante no encontrado');
+    }
 
-      if (existing && existing.id !== req.activeRestaurant.restaurantId) {
-        throw new ValidationError('El slug ya está en uso');
+    let resolvedSlug;
+    const nameTrimmed = name !== undefined ? String(name).trim() : undefined;
+    const currentName = (current.name || '').trim();
+    const nameChanged =
+      nameTrimmed !== undefined && nameTrimmed.length > 0 && nameTrimmed !== currentName;
+
+    if (nameChanged) {
+      resolvedSlug = await ensureUniqueRestaurantSlug(nameTrimmed, restaurantId);
+    } else if (slug !== undefined && String(slug).trim()) {
+      const requested = slugifyRestaurantName(String(slug).trim());
+      const taken = await prisma.restaurant.findUnique({
+        where: { slug: requested },
+        select: { id: true },
+      });
+      if (taken && taken.id !== restaurantId) {
+        resolvedSlug = await ensureUniqueRestaurantSlug(requested, restaurantId);
+      } else {
+        resolvedSlug = requested;
       }
+    } else if (!(current.slug || '').trim() && (nameTrimmed || currentName)) {
+      resolvedSlug = await ensureUniqueRestaurantSlug(nameTrimmed || currentName, restaurantId);
     }
 
     if (timezone !== undefined && timezone !== null) {
@@ -110,7 +136,7 @@ const updateRestaurant = async (req, res, next) => {
         ...(longitude !== undefined && { longitude: longitude !== null ? parseFloat(longitude) : null }),
         ...(phone !== undefined && { phone }),
         ...(email !== undefined && { email }),
-        ...(slug !== undefined && { slug }),
+        ...(resolvedSlug !== undefined && { slug: resolvedSlug }),
         ...(timezone !== undefined && { timezone }),
         ...(defaultSlotDurationMinutes !== undefined && {
           defaultSlotDurationMinutes: Math.min(240, Math.max(15, parseInt(defaultSlotDurationMinutes, 10) || 60)),

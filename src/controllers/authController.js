@@ -133,17 +133,10 @@ async function getStaffOrganizationIds(userId) {
 /** Mensaje genérico en login: no revelar si el correo existe o la contraseña falló. */
 const LOGIN_CREDENTIALS_ERROR = 'Usuario o Contraseña incorrecta';
 
-function generateSlug(restaurantName) {
-  const base = restaurantName
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/[\s]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-  const rand = Math.random().toString(36).substring(2, 6);
-  return `${base}-${rand}`;
-}
+const {
+  slugifyRestaurantName,
+  ensureUniqueRestaurantSlug,
+} = require('../lib/restaurantSlug');
 
 const login = async (req, res) => {
   try {
@@ -280,16 +273,8 @@ const register = async (req, res) => {
       return;
     }
 
-    const slug = restaurantSlug || generateSlug(restaurantName);
-
-    const existingSlug = await prisma.restaurant.findUnique({
-      where: { slug }
-    });
-
-    if (existingSlug) {
-      res.status(409).json({ error: 'El slug del restaurante ya está en uso. Por favor elige otro nombre o slug.' });
-      return;
-    }
+    const slugBase = restaurantSlug?.trim() || restaurantName;
+    const slug = await ensureUniqueRestaurantSlug(slugBase, null);
 
     // Validate promo code before we start writing anything
     let validatedPromoCode = null;
@@ -523,13 +508,7 @@ const addRestaurant = async (req, res) => {
     }
 
     const base = (providedSlug && providedSlug.trim()) ? providedSlug.trim() : name.trim();
-    const slug = generateSlug(base);
-
-    const existing = await prisma.restaurant.findUnique({ where: { slug } });
-    if (existing) {
-      res.status(400).json({ error: 'Ya existe un restaurante con ese identificador. Intenta con otro nombre.' });
-      return;
-    }
+    const slug = await ensureUniqueRestaurantSlug(base, null);
 
     const { buildInitialRestaurantNotifyRecipients } = require('../services/reservationNotifyRecipients');
 
