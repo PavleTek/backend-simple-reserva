@@ -6,6 +6,8 @@
 const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const logger = require('../lib/logger');
+const { recordJobRun } = require('./billingIntegrityJob');
+const { withCronLock } = require('../lib/cronLock');
 
 async function runGracePeriodExpiry() {
   try {
@@ -33,6 +35,7 @@ async function runGracePeriodExpiry() {
     if (total > 0) {
       logger.info({ grace: expired.count, cancelled: cancelledExpired.count }, '[GracePeriodExpiryJob] subscriptions expired');
     }
+    recordJobRun('gracePeriodExpiry');
   } catch (err) {
     logger.error({ err }, '[GracePeriodExpiryJob] failed');
   }
@@ -40,7 +43,11 @@ async function runGracePeriodExpiry() {
 
 function startGracePeriodExpiryJob() {
   const schedule = process.env.GRACE_PERIOD_EXPIRY_CRON || '0 2 * * *';
-  cron.schedule(schedule, runGracePeriodExpiry, {
+  cron.schedule(schedule, () => {
+    withCronLock('gracePeriodExpiry', runGracePeriodExpiry).catch((err) => {
+      logger.error({ err }, '[GracePeriodExpiryJob] lock/run error');
+    });
+  }, {
     timezone: process.env.TZ || 'America/Santiago',
   });
   logger.info({ schedule }, '[GracePeriodExpiryJob] scheduled');

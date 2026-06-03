@@ -20,6 +20,7 @@ const FALLBACK_CONFIG = {
     multipleMenu: false,
     prioritySupport: false,
     postVisitFeedback: false,
+    activitiesModule: false,
     priceCLP: 9990,
     priceUSD: 12.99,
     priceEUR: 11.49,
@@ -39,6 +40,7 @@ const FALLBACK_CONFIG = {
     multipleMenu: true,
     prioritySupport: false,
     postVisitFeedback: true,
+    activitiesModule: false,
     priceCLP: 14990,
     priceUSD: 18.99,
     priceEUR: 16.99,
@@ -58,6 +60,7 @@ const FALLBACK_CONFIG = {
     multipleMenu: true,
     prioritySupport: true,
     postVisitFeedback: true,
+    activitiesModule: true,
     priceCLP: 39990,
     priceUSD: 44.99,
     priceEUR: 41.99,
@@ -241,6 +244,12 @@ async function canUsePostVisitFeedback(restaurantId, includeTrial = true) {
   return config.postVisitFeedback === true;
 }
 
+async function canUseActivitiesModule(restaurantId, includeTrial = true) {
+  const config = await resolvePlanConfigForRestaurant(restaurantId, includeTrial);
+  if (!config) return false;
+  return config.activitiesModule === true;
+}
+
 /**
  * Check if owner has access to a feature.
  */
@@ -396,6 +405,7 @@ module.exports = {
   resolvePlanConfigForRestaurant,
   hasFeature,
   canUsePostVisitFeedback,
+  canUseActivitiesModule,
   getLimit,
   canAddLocation,
   canAddZone,

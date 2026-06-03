@@ -219,7 +219,11 @@ router.put('/zone/:zoneId/layout', authenticateRestaurantRoles(ROLES_CONFIG), as
       };
     });
 
-    const check = validateNoOverlap(merged, zone.gridCols, zone.gridRows);
+    const fixtures = await prisma.zoneFixture.findMany({
+      where: { zoneId: zone.id },
+    });
+
+    const check = validateNoOverlap(merged, zone.gridCols, zone.gridRows, fixtures);
     if (!check.ok) {
       throw new ValidationError(check.message);
     }

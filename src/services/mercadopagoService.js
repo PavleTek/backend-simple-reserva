@@ -12,6 +12,7 @@
 const prisma = require('../lib/prisma');
 const planService = require('./planService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
+const { montoEfectivoNeto } = require('../lib/addonPricing');
 const {
   getMercadoPagoAccessToken,
   getMercadoPagoPublicKey,
@@ -187,10 +188,11 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
   const config = await planService.getPlanConfig(planSKU);
   if (!config) throw new Error(`Plan no encontrado: ${planSKU}`);
 
-  const planAmount = Number(config.priceCLP);
   const mpFreq = planService.toMercadoPagoFrequency(config.billingFrequency, config.billingFrequencyType);
   // priceCLP es precio neto (sin IVA); el frontend lo muestra como "más IVA (19%)".
-  let amount = Math.round(planAmount * (1 + IVA_RATE));
+  // Se suman add-ons activos org-scoped para que el preapproval refleje el monto efectivo.
+  const efectivoNeto = await montoEfectivoNeto(organizationId, config.priceCLP);
+  let amount = Math.round(efectivoNeto * (1 + IVA_RATE));
   if (amount < MIN_AMOUNT_CLP) {
     amount = MIN_AMOUNT_CLP;
   }
@@ -475,12 +477,49 @@ async function getActivateOptionsForPreapproval(organizationId, preapprovalId) {
 }
 
 async function activateOrganizationSubscription(organizationId, preapprovalId, planSKU = 'plan-profesional', options = {}) {
-  const { replaceSubscriptionId } = options;
+  const {
+    replaceSubscriptionId,
+    paymentProvider: legacyPaymentProvider = 'mercadopago_preapproval',
+    providerCheckoutSessionId = null,
+    billingStrategy: billingStrategyOpt = null,
+    paymentProviderPsp = 'mercadopago',
+    referralFreeUntil = null,
+    skipMarkFirstPayment = false,
+  } = options;
 
-  const existing = await prisma.subscription.findFirst({
-    where: { mercadopagoPreapprovalId: preapprovalId, status: 'active' },
+  const {
+    checkoutSessionBillingData,
+    BILLING_STRATEGY_MANUAL,
+    LEGACY_MP_CHECKOUT_PRO,
+  } = require('../lib/billingDomain');
+  const billingStrategy =
+    billingStrategyOpt ||
+    (legacyPaymentProvider === LEGACY_MP_CHECKOUT_PRO
+      ? BILLING_STRATEGY_MANUAL
+      : 'automatic_recurring');
+  const billingFields = checkoutSessionBillingData({
+    billingStrategy,
+    paymentProvider: paymentProviderPsp,
   });
-  if (existing) return;
+
+  if (preapprovalId) {
+    const existing = await prisma.subscription.findFirst({
+      where: { mercadopagoPreapprovalId: preapprovalId, status: 'active' },
+    });
+    if (existing) return;
+  }
+
+  if (billingStrategy === BILLING_STRATEGY_MANUAL && providerCheckoutSessionId) {
+    const existingCp = await prisma.subscription.findFirst({
+      where: {
+        organizationId,
+        billingStrategy: BILLING_STRATEGY_MANUAL,
+        providerCheckoutSessionId,
+        status: 'active',
+      },
+    });
+    if (existingCp) return;
+  }
 
   const organization = await prisma.restaurantOrganization.findUnique({ where: { id: organizationId } });
   if (!organization) {
@@ -493,6 +532,23 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     console.error('[MercadoPago] activateOrganizationSubscription: plan no encontrado:', planSKU);
     throw new Error(`Plan no encontrado: ${planSKU}`);
   }
+
+  let freeUntilDate = referralFreeUntil ? new Date(referralFreeUntil) : null;
+  let freeWindowStartsAt = null;
+  if (!freeUntilDate && replaceSubscriptionId) {
+    const replacedSub = await prisma.subscription.findUnique({
+      where: { id: replaceSubscriptionId },
+      select: { referralFreeUntil: true, referralFreeWindowStartsAt: true },
+    });
+    if (replacedSub?.referralFreeUntil && new Date(replacedSub.referralFreeUntil) > new Date()) {
+      freeUntilDate = new Date(replacedSub.referralFreeUntil);
+      freeWindowStartsAt = replacedSub.referralFreeWindowStartsAt
+        ? new Date(replacedSub.referralFreeWindowStartsAt)
+        : null;
+    }
+  }
+  const inReferralWindow = !!freeUntilDate;
+  const shouldSkipFirstPayment = skipMarkFirstPayment || inReferralWindow;
 
   // Cambio de plan inmediato: cancelar en MP la suscripción que seguía activa hasta autorizar el nuevo cobro.
   if (replaceSubscriptionId) {
@@ -542,25 +598,41 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   }
 
   const activatedAt = new Date();
-  const nextPeriodEnd = computePeriodEnd(activatedAt, plan);
+  const nextPeriodEnd = freeUntilDate || computePeriodEnd(activatedAt, plan);
 
   await prisma.$transaction(async (tx) => {
     // Cancelar suscripciones previas para evitar duplicados.
-    // Incluye 'grace': cuando el cliente compra un plan nuevo durante periodo de gracia,
-    // la sub en grace queda reemplazada por la nueva activa.
+    // Incluye 'cancelled': una sub cancelada puede tener isActiveSubscription=true si está
+    // en su periodo pagado (gracePeriodEndsAt = endDate). Al activar una nueva, la anterior
+    // queda reemplazada y ambas activas crearían una violación del índice único parcial.
     await tx.subscription.updateMany({
-      where: { organizationId, status: { in: ['trial', 'active', 'scheduled', 'grace'] } },
+      where: { organizationId, status: { in: ['trial', 'active', 'scheduled', 'grace', 'cancelled'] } },
       data: { status: 'cancelled', isActiveSubscription: false },
     });
+    await tx.subscription.updateMany({
+      where: { organizationId, status: 'active' },
+      data: {
+        scheduledPlanId: null,
+        scheduledChangeAt: null,
+        planChangeWhen: null,
+      },
+    });
+
     await tx.subscription.create({
       data: {
         organizationId,
         planId: plan.id,
         status: 'active',
         isActiveSubscription: true,
-        mercadopagoPreapprovalId: preapprovalId,
+        mercadopagoPreapprovalId: preapprovalId || null,
+        billingStrategy: billingFields.billingStrategy,
+        paymentProvider: billingFields.paymentProvider,
+        providerImplementation: billingFields.providerImplementation,
+        providerCheckoutSessionId: providerCheckoutSessionId || null,
         startDate: activatedAt,
         currentPeriodEnd: nextPeriodEnd,
+        referralFreeUntil: freeUntilDate,
+        referralFreeWindowStartsAt: freeWindowStartsAt,
       },
     });
     await tx.restaurantOrganization.update({
@@ -570,6 +642,29 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   });
 
   planService.invalidateCache(organizationId);
+
+  try {
+    const referralService = require('./referralService');
+    const activeSub = await prisma.subscription.findFirst({
+      where: { organizationId, mercadopagoPreapprovalId: preapprovalId, status: 'active' },
+      select: { id: true },
+    });
+    if (activeSub) {
+      await referralService.markCreditsApplied(organizationId, activeSub.id, preapprovalId);
+      // Re-apuntar add-ons org-scoped al nuevo subscriptionId (snapshot).
+      try {
+        const { reattachAddonsToSubscription } = require('./billing/subscriptionAddonService');
+        await reattachAddonsToSubscription(organizationId, activeSub.id);
+      } catch (addonErr) {
+        console.warn('[MercadoPago] activateOrganizationSubscription: reattach addons falló:', addonErr?.message ?? addonErr);
+      }
+    }
+    if (!shouldSkipFirstPayment) {
+      await referralService.markFirstPayment(organizationId);
+    }
+  } catch (refErr) {
+    console.warn('[MercadoPago] activateOrganizationSubscription referral hooks failed:', refErr?.message ?? refErr);
+  }
 }
 
 async function deactivateOrganizationSubscription(organizationId) {
@@ -582,12 +677,26 @@ async function deactivateOrganizationSubscription(organizationId) {
 /**
  * Pasa a periodo de gracia por fallo de pago. Opcionalmente marca una sub programada (mismo preapproval) para reflejar el estado en DB.
  * @param {string} organizationId
- * @param {{ scheduledPreapprovalId?: string|null }} [options]
+ * @param {{ scheduledPreapprovalId?: string|null, skipOwnerEmail?: boolean }} [options]
  */
 async function enterGracePeriod(organizationId, options = {}) {
-  const { scheduledPreapprovalId } = options;
-  const graceEnd = new Date();
+  const { scheduledPreapprovalId, skipOwnerEmail = false } = options;
+
+  // Anchor grace period to the subscription's own period end when possible.
+  // Grace = max(periodEnd, now) + 7 days. This prevents delayed job runs from
+  // inflating the free-access window beyond the intended 7 days.
+  const activeSub = await prisma.subscription.findFirst({
+    where: { organizationId, status: 'active' },
+    select: { currentPeriodEnd: true },
+    orderBy: { startDate: 'desc' },
+  });
+  const anchor =
+    activeSub?.currentPeriodEnd && new Date(activeSub.currentPeriodEnd) > new Date()
+      ? new Date(activeSub.currentPeriodEnd)
+      : new Date();
+  const graceEnd = new Date(anchor.getTime());
   graceEnd.setDate(graceEnd.getDate() + 7);
+
   await prisma.subscription.updateMany({
     where: { organizationId, status: 'active' },
     data: { status: 'grace', gracePeriodEndsAt: graceEnd, isActiveSubscription: true },
@@ -603,26 +712,76 @@ async function enterGracePeriod(organizationId, options = {}) {
     });
   }
 
-  // Notify owners by email
+  if (skipOwnerEmail) return;
+
   try {
-  const organization = await prisma.restaurantOrganization.findUnique({
-    where: { id: organizationId },
-    select: {
-      name: true,
-      owner: { select: { email: true } },
-    },
-  });
-    if (organization && organization.owner?.email) {
-      const emails = [organization.owner.email];
-      const { billingUrl } = require('../utils/restaurantPanelUrl');
-      const panelUrl = `${billingUrl()}?organizationId=${organizationId}`;
-      const { sendPaymentFailureNotification } = require('./notificationService');
-      await sendPaymentFailureNotification({
-        emails,
-        restaurantName: organization.name,
-        panelUrl,
-      });
+    const organization = await prisma.restaurantOrganization.findUnique({
+      where: { id: organizationId },
+      select: {
+        name: true,
+        owner: { select: { id: true, email: true } },
+        restaurants: { take: 1, select: { id: true } },
+      },
+    });
+
+    const graceSub = await prisma.subscription.findFirst({
+      where: { organizationId, status: 'grace' },
+      include: { plan: { select: { name: true } } },
+    });
+
+    if (!organization?.owner?.email || !graceSub) return;
+
+    const {
+      BILLING_EMAIL_KINDS,
+      sendBillingEmail,
+      periodKeyFromGrace,
+      createOpsAlert,
+    } = require('./billing/billingEmailService');
+    const { billingUrl } = require('../utils/restaurantPanelUrl');
+    const { createRecoveryPaymentLink } = require('./billing/recoveryLinkService');
+
+    let checkoutUrl = billingUrl();
+    const ownerId = organization.owner.id;
+    const restaurantId = organization.restaurants?.[0]?.id;
+    if (ownerId && restaurantId) {
+      try {
+        const link = await createRecoveryPaymentLink({
+          organizationId,
+          userId: ownerId,
+          restaurantId,
+        });
+        checkoutUrl = link.paymentUrl;
+      } catch (linkErr) {
+        console.warn('[MercadoPago] enterGracePeriod recovery link:', linkErr?.message ?? linkErr);
+      }
     }
+
+    const graceKey = periodKeyFromGrace(graceSub.gracePeriodEndsAt || graceEnd);
+
+    await sendBillingEmail({
+      organizationId,
+      subscriptionId: graceSub.id,
+      kind: BILLING_EMAIL_KINDS.GRACE_ENTERED,
+      periodKey: graceKey,
+      toEmail: organization.owner.email,
+      orgName: organization.name,
+      planName: graceSub.plan?.name || 'Plan',
+      gracePeriodEndsAt: graceSub.gracePeriodEndsAt || graceEnd,
+      checkoutUrl,
+      panelUrl: billingUrl(),
+      metadata: { checkoutUrl, source: 'payment_failed' },
+    });
+
+    await createOpsAlert({
+      organizationId,
+      subscriptionId: graceSub.id,
+      kind: 'grace_entered',
+      severity: 'warning',
+      title: `Fallo de cobro — ${organization.name}`,
+      detail: scheduledPreapprovalId ? `preapprovalId=${scheduledPreapprovalId}` : 'Entrada a periodo de gracia',
+      suggestedAction: 'Contactar al cliente; revisar método de pago en MP.',
+      dedupeKey: `org:${organizationId}:grace_entered:${graceKey}`,
+    });
   } catch (err) {
     console.error('[MercadoPago] enterGracePeriod: failed to send payment failure email:', err?.message ?? err);
   }
@@ -666,6 +825,23 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
   const isFutureStart = startDate && (new Date(startDate).getTime() - Date.now() > THRESHOLD_MS);
 
   if (isFutureStart) {
+    const referralFreeWindowService = require('./billing/referralFreeWindowService');
+    const isReferralWindow = await referralFreeWindowService.isReferralFreeWindowPreapproval(
+      organizationId,
+      preapprovalId,
+    );
+    if (isReferralWindow) {
+      const activateOpts = await getActivateOptionsForPreapproval(organizationId, preapprovalId);
+      await activateOrganizationSubscription(organizationId, preapprovalId, planSKU, {
+        ...activateOpts,
+        referralFreeUntil: new Date(startDate),
+        skipMarkFirstPayment: true,
+      });
+      await cancelReplacedPreapprovalOnSchedule(organizationId, preapprovalId);
+      console.log('[MercadoPago] confirmSubscriptionFromPreapproval referral free window:', organizationId, planSKU, startDate);
+      return { activated: true, referralFreeWindow: true, freeUntil: startDate, planSKU };
+    }
+
     await scheduleOrganizationSubscription(organizationId, preapprovalId, planSKU, new Date(startDate));
     await cancelReplacedPreapprovalOnSchedule(organizationId, preapprovalId);
     console.log('[MercadoPago] confirmSubscriptionFromPreapproval scheduled:', organizationId, planSKU, startDate);
@@ -737,6 +913,7 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
 module.exports = {
   getMercadoPagoCheckoutHints,
   isMercadoPagoPolicyBlockedError,
+  isPreapprovalAlreadyCancelledError,
   createSubscription,
   cancelSubscription,
   activateOrganizationSubscription,

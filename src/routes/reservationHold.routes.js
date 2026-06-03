@@ -90,16 +90,15 @@ publicRestaurantRouter.post('/:slug/reservation-holds', async (req, res, next) =
 
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
+    const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
+
     const dateTime = parseInTimezone(date, time, timezone);
     if (isNaN(dateTime.getTime())) throw new ValidationError('Fecha u hora inválida');
-
-    const dayOfWeek = getDayOfWeekInTimezone(date, timezone);
     const now = nowInTimezone(timezone).toJSDate();
     const ttlMs = (restaurant.holdTtlSeconds ?? 300) * 1000;
 
     const hold = await withSerializableRetry(async () => {
       return prisma.$transaction(async (tx) => {
-        // Liberar holds anteriores del mismo sessionId en este restaurante
         if (sessionId) {
           await tx.reservationHold.updateMany({
             where: {
@@ -113,26 +112,18 @@ publicRestaurantRouter.post('/:slug/reservation-holds', async (req, res, next) =
 
         const snapshot = await loadDaySnapshot(restaurant, { dateStr: date, timezone });
 
-        const durationRules = snapshot.durationRules;
-        const tables = snapshot.tables;
-        const reservations = snapshot.reservations;
-        const activeHolds = snapshot.activeHolds;
-        const blockedSlots = snapshot.blockedSlots;
-        const pacingRules = snapshot.pacingRules;
-        const schedule = snapshot.schedule;
-
         const validation = validateSlotForBooking({
           time,
           partySize: size,
-          schedule,
+          schedule: snapshot.schedule,
           restaurant,
-          durationRules,
+          durationRules: snapshot.durationRules,
           customWindows: snapshot.reservationWindows,
-          tables,
-          reservations,
-          activeHolds,
-          blockedSlots,
-          pacingRules,
+          tables: snapshot.tables,
+          reservations: snapshot.reservations,
+          activeHolds: snapshot.activeHolds,
+          blockedSlots: snapshot.blockedSlots,
+          pacingRules: snapshot.pacingRules,
           slotDateTime: dateTime,
           now,
           isToday: snapshot.isToday,
@@ -140,6 +131,7 @@ publicRestaurantRouter.post('/:slug/reservation-holds', async (req, res, next) =
           zoneId: zoneId || null,
           excludeHoldToken: null,
           dayOfWeek,
+          blockingSessions: snapshot.blockingSessions ?? [],
         });
 
         if (!validation.valid) {
@@ -162,11 +154,10 @@ publicRestaurantRouter.post('/:slug/reservation-holds', async (req, res, next) =
         const slotEnd = new Date(dateTime.getTime() + durationMinutes * 60000);
         const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
 
-        // Seleccionar mesa (misma lógica que pickAutoTable)
-        const parsedRes = parseReservations(reservations);
-        const parsedHoldsArr = parseHolds(activeHolds);
+        const parsedRes = parseReservations(snapshot.reservations);
+        const parsedHoldsArr = parseHolds(snapshot.activeHolds);
         const table = pickTable(
-          tables.map((t) => ({ ...t, zone: { id: t.zoneId, sortOrder: t.zoneSortOrder ?? 0 } })),
+          snapshot.tables.map((t) => ({ ...t, zone: { id: t.zoneId, sortOrder: t.zoneSortOrder ?? 0 } })),
           size,
           dateTime,
           slotEnd,
@@ -174,7 +165,9 @@ publicRestaurantRouter.post('/:slug/reservation-holds', async (req, res, next) =
           parsedRes,
           parsedHoldsArr,
           zoneId || null,
-          null
+          null,
+          {},
+          snapshot.blockingSessions ?? []
         );
 
         if (!table) {

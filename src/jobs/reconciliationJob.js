@@ -18,13 +18,18 @@ const cron = require('node-cron');
 const prisma = require('../lib/prisma');
 const logger = require('../lib/logger');
 const { getMercadoPagoAccessToken } = require('../lib/mercadopagoEnv');
+const { recordJobRun } = require('./billingIntegrityJob');
+const { withCronLock } = require('../lib/cronLock');
 const {
   activateOrganizationSubscription,
   scheduleOrganizationSubscription,
-  enterGracePeriod,
   getActivateOptionsForPreapproval,
 } = require('../services/mercadopagoService');
+const { handlePreapprovalCancelledOrExpired } = require('../services/billing/handlePreapprovalTerminalStatus');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
+const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutProService');
+const { parseExternalReferenceV2 } = require('../lib/externalReferenceV2');
+const { parseExternalReference } = require('../lib/billingProviders');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -70,6 +75,29 @@ async function runReconciliation() {
     await sleep(100); // Rate limit suave contra MP API
 
     if (!session.mercadopagoPreapprovalId) {
+      // Checkout Pro session: buscar pagos aprobados por external_reference en MP
+      if (session.mercadopagoPreferenceId) {
+        try {
+          const searchRes = await paymentClient.search({
+            options: { external_reference: session.id, limit: 5 },
+          });
+          const approvedPayment = searchRes?.results?.find((p) => p.status === 'approved');
+          if (approvedPayment) {
+            const cpResult = await mercadopagoCheckoutProService.processCheckoutProPayment(approvedPayment);
+            if (cpResult.activated) {
+              await createReceiptFromMPPayment(approvedPayment, session.organizationId, null);
+              await prisma.checkoutSession.update({
+                where: { id: session.id },
+                data: { status: 'completed', completedAt: new Date() },
+              }).catch(() => {});
+              console.warn(`[Reconciliation] Checkout Pro session ${session.id} activada por reconciliacion org=${session.organizationId}`);
+              continue;
+            }
+          }
+        } catch (cpErr) {
+          console.error(`[Reconciliation] Error buscando pago Checkout Pro para session ${session.id}:`, cpErr?.message);
+        }
+      }
       await prisma.checkoutSession.update({
         where: { id: session.id },
         data: { status: 'expired' },
@@ -92,8 +120,23 @@ async function runReconciliation() {
         const isFutureStart = mpStartDate && (new Date(mpStartDate).getTime() - Date.now() > THRESHOLD_MS);
 
         if (isFutureStart) {
-          await scheduleOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, new Date(mpStartDate));
-          console.warn(`[Reconciliation] Session scheduled (future start ${mpStartDate}): ${session.id} org=${orgId}`);
+          const referralFreeWindowService = require('../services/billing/referralFreeWindowService');
+          const isReferralWindow = await referralFreeWindowService.isReferralFreeWindowPreapproval(
+            orgId,
+            session.mercadopagoPreapprovalId,
+          );
+          if (isReferralWindow) {
+            const activateOpts = await getActivateOptionsForPreapproval(orgId, session.mercadopagoPreapprovalId);
+            await activateOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, {
+              ...activateOpts,
+              referralFreeUntil: new Date(mpStartDate),
+              skipMarkFirstPayment: true,
+            });
+            console.warn(`[Reconciliation] Session referral free window: ${session.id} org=${orgId}`);
+          } else {
+            await scheduleOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, new Date(mpStartDate));
+            console.warn(`[Reconciliation] Session scheduled (future start ${mpStartDate}): ${session.id} org=${orgId}`);
+          }
         } else {
           const activateOpts = await getActivateOptionsForPreapproval(orgId, session.mercadopagoPreapprovalId);
           await activateOrganizationSubscription(orgId, session.mercadopagoPreapprovalId, planSKU, activateOpts);
@@ -155,12 +198,15 @@ async function runReconciliation() {
       const mpStatus = mpSub?.status;
 
       if (mpStatus === 'cancelled' || mpStatus === 'expired') {
-        await enterGracePeriod(sub.organizationId);
-        console.error(`[Reconciliation] ERROR: Sub ${sub.id} activa localmente pero MP dice ${mpStatus}. Entrando grace period. org=${sub.organizationId}`);
+        // Usar handlePreapprovalCancelledOrExpired en lugar de enterGracePeriod:
+        // respeta el periodo pagado restante (cancel_at_period_end) en lugar de siempre dar +7d.
+        await handlePreapprovalCancelledOrExpired(sub.organizationId, sub.mercadopagoPreapprovalId, mpStatus);
+        console.error(`[Reconciliation] ERROR: Sub ${sub.id} activa localmente pero MP dice ${mpStatus}. Aplicado terminal handler. org=${sub.organizationId}`);
       } else if (mpStatus === 'payment_required') {
         // Solo entrar grace si aun no esta en grace
         const currentSub = await prisma.subscription.findUnique({ where: { id: sub.id } });
         if (currentSub?.status === 'active') {
+          const { enterGracePeriod } = require('../services/mercadopagoService');
           await enterGracePeriod(sub.organizationId);
           console.error(`[Reconciliation] ERROR: Sub ${sub.id} con payment_required en MP. Entrando grace period. org=${sub.organizationId}`);
         }
@@ -258,7 +304,21 @@ async function runReconciliation() {
           const isFutureStart = mpStartDate && (new Date(mpStartDate).getTime() - Date.now() > THRESHOLD_MS);
 
           if (isFutureStart) {
-            await scheduleOrganizationSubscription(orgId, event.mpDataId, planSKU, new Date(mpStartDate));
+            const referralFreeWindowService = require('../services/billing/referralFreeWindowService');
+            const isReferralWindow = await referralFreeWindowService.isReferralFreeWindowPreapproval(
+              orgId,
+              event.mpDataId,
+            );
+            if (isReferralWindow) {
+              const activateOpts = await getActivateOptionsForPreapproval(orgId, event.mpDataId);
+              await activateOrganizationSubscription(orgId, event.mpDataId, planSKU, {
+                ...activateOpts,
+                referralFreeUntil: new Date(mpStartDate),
+                skipMarkFirstPayment: true,
+              });
+            } else {
+              await scheduleOrganizationSubscription(orgId, event.mpDataId, planSKU, new Date(mpStartDate));
+            }
           } else {
             const activateOpts = await getActivateOptionsForPreapproval(orgId, event.mpDataId);
             await activateOrganizationSubscription(orgId, event.mpDataId, planSKU, activateOpts);
@@ -284,19 +344,30 @@ async function runReconciliation() {
         if (mpPayment.status === 'approved') {
           const externalRef = mpPayment?.external_reference;
           if (!externalRef) continue;
-          const parts = String(externalRef).split('|');
-          const orgId = parts[0];
-          const planSKU = parts[1] || 'plan-profesional';
 
-          await createReceiptFromMPPayment(mpPayment, orgId, planSKU);
+          const parsedRef = parseExternalReferenceV2(externalRef) || parseExternalReference(externalRef);
+          const orgId = parsedRef?.organizationId || String(externalRef).split('|')[0];
+          const planSKU = parsedRef?.planSKU || String(externalRef).split('|')[1] || 'plan-profesional';
 
-          const reactivated = await prisma.subscription.updateMany({
-            where: { organizationId: orgId, status: 'grace' },
-            data: { status: 'active', gracePeriodEndsAt: null },
-          });
-          if (reactivated.count > 0) {
-            const planService = require('../services/planService');
-            planService.invalidateCache(orgId);
+          if (parsedRef?.kind === 'checkout_pro' || parsedRef?.provider === 'mp_checkout_pro') {
+            // Checkout Pro: route through the proper processor that activates the sub
+            const cpResult = await mercadopagoCheckoutProService.processCheckoutProPayment(mpPayment);
+            if (cpResult.activated) {
+              await createReceiptFromMPPayment(mpPayment, orgId, planSKU);
+              console.log(`[Reconciliation] Checkout Pro activado en reintento para payment ${event.mpDataId} org=${orgId}`);
+            }
+          } else {
+            await createReceiptFromMPPayment(mpPayment, orgId, planSKU);
+
+            const reactivated = await prisma.subscription.updateMany({
+              where: { organizationId: orgId, status: 'grace' },
+              data: { status: 'active', gracePeriodEndsAt: null },
+            });
+            if (reactivated.count > 0) {
+              const planService = require('../services/planService');
+              planService.invalidateCache(orgId);
+            }
+            console.log(`[Reconciliation] Receipt creado en reintento para payment ${event.mpDataId}`);
           }
 
           await prisma.webhookEvent.update({
@@ -309,7 +380,6 @@ async function runReconciliation() {
               processedAt: new Date(),
             },
           });
-          console.log(`[Reconciliation] Receipt creado en reintento para payment ${event.mpDataId}`);
         }
       }
     } catch (err) {
@@ -319,12 +389,13 @@ async function runReconciliation() {
   }
 
   logger.info({ at: new Date().toISOString() }, '[Reconciliation] completed');
+  recordJobRun('reconciliation');
 }
 
 function startReconciliationJob() {
   const schedule = process.env.RECONCILIATION_CRON || '0 */6 * * *'; // cada 6 horas
   cron.schedule(schedule, () => {
-    runReconciliation().catch((err) => {
+    withCronLock('reconciliation', runReconciliation).catch((err) => {
       logger.error({ err }, '[Reconciliation] job failed');
     });
   }, {

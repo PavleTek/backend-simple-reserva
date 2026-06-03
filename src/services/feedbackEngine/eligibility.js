@@ -26,7 +26,8 @@ function checkReservationEligibility(reservation, survey, now = new Date()) {
     return { eligible: false, skipReason: reservation.status };
   }
 
-  if (survey.excludeWalkIns && isWalkInReservation(reservation)) {
+  // Walk-ins del panel no llevan correo; si alguien agrega email manualmente, igual no encuestamos.
+  if (isWalkInReservation(reservation)) {
     return { eligible: false, skipReason: 'walk_in' };
   }
 
@@ -52,7 +53,7 @@ function checkReservationEligibility(reservation, survey, now = new Date()) {
     return { eligible: true };
   }
 
-  if (!['confirmed', 'completed'].includes(reservation.status)) {
+  if (!['confirmed', 'arrived', 'completed'].includes(reservation.status)) {
     return { eligible: false, skipReason: 'status' };
   }
 

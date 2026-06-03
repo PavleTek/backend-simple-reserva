@@ -13,7 +13,7 @@ const baseSurvey = {
 };
 
 describe('eligibility', () => {
-  it('rejects walk-in when excludeWalkIns', () => {
+  it('rejects walk-in even with email (llegada sin reserva previa)', () => {
     const r = {
       status: 'confirmed',
       notes: 'walk-in',
@@ -24,7 +24,10 @@ describe('eligibility', () => {
       durationMinutes: 60,
     };
     assert.equal(isWalkInReservation(r), true);
-    const { eligible, skipReason } = checkReservationEligibility(r, baseSurvey);
+    const { eligible, skipReason } = checkReservationEligibility(r, {
+      ...baseSurvey,
+      excludeWalkIns: false,
+    });
     assert.equal(eligible, false);
     assert.equal(skipReason, 'walk_in');
   });
@@ -88,5 +91,34 @@ describe('eligibility', () => {
     };
     const { eligible } = checkReservationEligibility(r, baseSurvey);
     assert.equal(eligible, true);
+  });
+
+  it('accepts arrived past end (en sala, visita ya terminó)', () => {
+    const r = {
+      status: 'arrived',
+      notes: '',
+      customerName: 'María',
+      customerEmail: 'maria@b.com',
+      partySize: 2,
+      dateTime: new Date(Date.now() - 3 * 60 * 60_000),
+      durationMinutes: 60,
+    };
+    const { eligible } = checkReservationEligibility(r, baseSurvey);
+    assert.equal(eligible, true);
+  });
+
+  it('rejects arrived when visit not yet ended', () => {
+    const r = {
+      status: 'arrived',
+      notes: '',
+      customerName: 'María',
+      customerEmail: 'maria@b.com',
+      partySize: 2,
+      dateTime: new Date(Date.now() + 60 * 60_000),
+      durationMinutes: 60,
+    };
+    const { eligible, skipReason } = checkReservationEligibility(r, baseSurvey);
+    assert.equal(eligible, false);
+    assert.equal(skipReason, 'visit_not_ended');
   });
 });

@@ -76,6 +76,36 @@ router.post('/promo-code/validate', promoCodeLimiter, async (req, res, next) => 
     next(error);
   }
 });
+
+router.post('/referral-code/validate', promoCodeLimiter, async (req, res, next) => {
+  try {
+    const { code, email } = req.body;
+    if (!code || !String(code).trim()) {
+      return res.status(400).json({ valid: false, error: 'El código no puede estar vacío.' });
+    }
+    const info = await require('../services/referralService').getPublicReferrerInfo(String(code).trim());
+    if (!info) {
+      return res.status(400).json({ valid: false, error: 'Código de referido no válido.' });
+    }
+    if (email && info.organizationId) {
+      try {
+        await require('../services/referralService').validateReferrerOrgId(info.organizationId, {
+          refereeEmail: email,
+        });
+      } catch {
+        return res.status(400).json({ valid: false, error: 'Código de referido no válido.' });
+      }
+    }
+    res.json({
+      valid: true,
+      referrerName: info.referrerName,
+      referrerLogoUrl: info.referrerLogoUrl,
+      organizationId: info.organizationId,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 router.post('/2fa/verify', verifyTwoFactor);
 router.post('/2fa/setup-mandatory', setupTwoFactorMandatory);
 router.post('/2fa/verify-setup-mandatory', verifyTwoFactorSetupMandatory);

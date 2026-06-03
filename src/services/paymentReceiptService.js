@@ -47,7 +47,7 @@ async function createReceiptFromMPPayment(paymentData, organizationId, planSKU) 
   });
 
   // Create the receipt
-  return await prisma.paymentReceipt.create({
+  const receipt = await prisma.paymentReceipt.create({
     data: {
       organizationId,
       subscriptionId: subscription?.id,
@@ -64,7 +64,34 @@ async function createReceiptFromMPPayment(paymentData, organizationId, planSKU) 
       mercadopagoPaymentId: String(id),
       mercadopagoStatus: status,
     },
+    include: { plan: true, organization: true },
   });
+
+  try {
+    const { persistPaymentMethodSnapshot } = require('./billing/paymentMethodSnapshot');
+    await persistPaymentMethodSnapshot(organizationId, paymentData);
+  } catch (snapErr) {
+    console.warn('[PaymentReceipt] snapshot error:', snapErr?.message);
+  }
+
+  if (status === 'approved') {
+    try {
+      const { generateReceiptPdf } = require('./billing/receiptPdfGenerator');
+      const { sendPaymentApprovedEmail } = require('./billing/billingTransactionalEmailService');
+      const pdfBuffer = await generateReceiptPdf(receipt, receipt.organization, receipt.plan);
+      await sendPaymentApprovedEmail({
+        organizationId,
+        planName: plan.name,
+        amountCLP: Number(transaction_amount),
+        currency: currency_id,
+        pdfBuffer,
+      });
+    } catch (emailErr) {
+      console.warn('[PaymentReceipt] payment approved email error:', emailErr?.message);
+    }
+  }
+
+  return receipt;
 }
 
 /**

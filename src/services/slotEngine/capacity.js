@@ -31,6 +31,40 @@ function overlaps(s1, e1, s2, e2) {
   return s1 < e2 && e1 > s2;
 }
 
+function isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions) {
+  if (!blockingSessions?.length) return false;
+  for (const bs of blockingSessions) {
+    const bsStart = bs.startAt instanceof Date ? bs.startAt : new Date(bs.startAt);
+    const bsEnd = bs.endAt instanceof Date ? bs.endAt : new Date(bs.endAt);
+    if (!overlaps(slotStart, slotEnd, bsStart, bsEnd)) continue;
+    if (bs.blockScope === 'VENUE' || !bs.blockScope) return true;
+    if (bs.blockScope === 'ZONES' && Array.isArray(bs.zoneIds) && bs.zoneIds.includes(table.zoneId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Tiempo (en ms) hasta la próxima reserva en una mesa, a partir de afterTime.
+ * Retorna Infinity si no hay reservas futuras en esa mesa.
+ *
+ * @param {string} tableId
+ * @param {Date} afterTime
+ * @param {Array<{ tableId: string|null; start: Date; end: Date }>} parsedReservations
+ * @returns {number}
+ */
+function msUntilNextReservation(tableId, afterTime, parsedReservations) {
+  let nearest = Infinity;
+  for (const r of parsedReservations) {
+    if (r.tableId !== tableId) continue;
+    if (r.start < afterTime) continue;
+    const gap = r.start.getTime() - afterTime.getTime();
+    if (gap < nearest) nearest = gap;
+  }
+  return nearest;
+}
+
 /**
  * Candidatos válidos para un partySize (sin filtro de zona si zoneId es null/undefined).
  *
@@ -68,10 +102,12 @@ function countFreeTables(
   bufferMs,
   parsedReservations,
   parsedHolds,
-  excludeHoldToken = null
+  excludeHoldToken = null,
+  blockingSessions = []
 ) {
   let free = 0;
   for (const table of candidateTables) {
+    if (isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions)) continue;
     const reservationConflict = parsedReservations.some((r) => {
       if (r.tableId !== table.id) return false;
       const rEnd = new Date(r.end.getTime() + bufferMs);
@@ -104,6 +140,9 @@ function countFreeTables(
  * @param {Array<{ tableId: string; start: Date; end: Date; holdToken: string }>} parsedHolds
  * @param {string|null} preferredZoneId
  * @param {string|null} [excludeHoldToken]
+ * @param {{ preferOpenEnded?: boolean }} [opts]
+ *   preferOpenEnded: true → prioriza mesas con más tiempo libre después del slot (ideal para walk-ins).
+ * @param {Array<{ startAt: Date; endAt: Date; blockScope?: string; zoneIds?: string[] }>} [blockingSessions]
  * @returns {typeof tables[0] | null}
  */
 function pickTable(
@@ -115,10 +154,13 @@ function pickTable(
   parsedReservations,
   parsedHolds,
   preferredZoneId,
-  excludeHoldToken = null
+  excludeHoldToken = null,
+  { preferOpenEnded = false } = {},
+  blockingSessions = []
 ) {
   const candidates = getCandidateTables(tables, partySize, null);
   const free = candidates.filter((t) => {
+    if (isTableBlockedBySessions(t, slotStart, slotEnd, blockingSessions)) return false;
     const reservationConflict = parsedReservations.some((r) => {
       if (r.tableId !== t.id) return false;
       const rEnd = new Date(r.end.getTime() + bufferMs);
@@ -147,6 +189,12 @@ function pickTable(
     const slackA = a.maxCapacity - partySize;
     const slackB = b.maxCapacity - partySize;
     if (slackA !== slackB) return slackA - slackB;
+    // Walk-in / preferOpenEnded: priorizar mesa con más tiempo libre antes de la próxima reserva
+    if (preferOpenEnded) {
+      const gapA = msUntilNextReservation(a.id, slotEnd, parsedReservations);
+      const gapB = msUntilNextReservation(b.id, slotEnd, parsedReservations);
+      if (gapA !== gapB) return gapB - gapA; // más tiempo libre primero
+    }
     // Zone sort order
     const za = (a.zone?.sortOrder ?? 0);
     const zb = (b.zone?.sortOrder ?? 0);
@@ -234,4 +282,5 @@ module.exports = {
   checkPacing,
   parseReservations,
   parseHolds,
+  msUntilNextReservation,
 };

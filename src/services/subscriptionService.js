@@ -1,7 +1,10 @@
 /**
  * Subscription enforcement.
- * Access = isActiveSubscription === true on any Subscription row for the org.
- * The status field is informational only; access is never derived from it.
+ * Primary gate: isActiveSubscription === true on any Subscription row for the org.
+ * Secondary gate (self-correcting): date conditions checked at runtime to catch
+ * subscriptions that should have been expired by a cron job that didn't run.
+ * When a stale-active sub is detected, access is denied immediately and the DB
+ * is corrected asynchronously.
  */
 
 const prisma = require('../lib/prisma');
@@ -10,13 +13,50 @@ const { isTrialExpired, isTrialActive } = require('../lib/trialPeriod');
 async function getOrganizationWithTrial(organizationId) {
   return prisma.restaurantOrganization.findUnique({
     where: { id: organizationId },
-    select: { trialEndsAt: true },
+    select: { trialEndsAt: true, billingEmail: true },
   });
 }
 
 /**
+ * Returns true if the subscription should be treated as expired based on date
+ * conditions, even though isActiveSubscription is still true in the DB.
+ * Covers:
+ * - grace/cancelled: gracePeriodEndsAt has passed
+ * - trial: org.trialEndsAt has passed (caller must supply trialEndsAt)
+ * - automatic zombie: active + no preapprovalId + currentPeriodEnd in the past
+ */
+function isDateExpired(sub, trialEndsAt) {
+  const now = new Date();
+
+  if (
+    (sub.status === 'grace' || sub.status === 'cancelled') &&
+    sub.gracePeriodEndsAt &&
+    new Date(sub.gracePeriodEndsAt) < now
+  ) {
+    return `${sub.status} grace expired (gracePeriodEndsAt=${sub.gracePeriodEndsAt.toISOString()})`;
+  }
+
+  if (sub.status === 'trial' && trialEndsAt && new Date(trialEndsAt) < now) {
+    return `trial ended (trialEndsAt=${new Date(trialEndsAt).toISOString()})`;
+  }
+
+  if (
+    sub.status === 'active' &&
+    sub.billingStrategy === 'automatic_recurring' &&
+    !sub.mercadopagoPreapprovalId &&
+    sub.currentPeriodEnd &&
+    new Date(sub.currentPeriodEnd) < now
+  ) {
+    return `automatic zombie: active with null preapproval and past currentPeriodEnd (${sub.currentPeriodEnd.toISOString()})`;
+  }
+
+  return null;
+}
+
+/**
  * Returns the active subscription for an organization, or null if none.
- * Access is determined solely by isActiveSubscription — no status or date checks.
+ * isActiveSubscription is the primary access gate; date conditions provide a
+ * self-correcting secondary check so missed cron jobs don't leak access.
  */
 async function getActiveSubscription(organizationId) {
   const sub = await prisma.subscription.findFirst({
@@ -27,7 +67,29 @@ async function getActiveSubscription(organizationId) {
     orderBy: { startDate: 'desc' },
     include: { plan: true },
   });
-  return sub ?? null;
+  if (!sub) return null;
+
+  let trialEndsAt = null;
+  if (sub.status === 'trial') {
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: organizationId },
+      select: { trialEndsAt: true },
+    });
+    trialEndsAt = org?.trialEndsAt ?? null;
+  }
+
+  const expireReason = isDateExpired(sub, trialEndsAt);
+  if (expireReason) {
+    console.warn(
+      `[subscriptionService] Self-correcting stale-active sub org=${organizationId} id=${sub.id}: ${expireReason}`,
+    );
+    prisma.subscription
+      .update({ where: { id: sub.id }, data: { isActiveSubscription: false, status: 'expired' } })
+      .catch((err) => console.error('[subscriptionService] Self-correct failed:', err?.message));
+    return null;
+  }
+
+  return sub;
 }
 
 /**

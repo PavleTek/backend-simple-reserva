@@ -65,6 +65,11 @@ model RestaurantOrganization {
   paymentReceipts PaymentReceipt[]
   checkoutSessions CheckoutSession[]
   customPlanOffers CustomPlanOffer[]
+  referralsAsReferrer Referral[] @relation("ReferrerOrganization")
+  referralAsReferee Referral? @relation("RefereeOrganization")
+  referralCredits ReferralCredit[]
+  billingEmailLogs BillingEmailLog[]
+  billingOpsAlerts BillingOpsAlert[]
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -72,6 +77,8 @@ model RestaurantOrganization {
   billingBusinessName String?   // Company/business name
   billingAddress      String?
   billingEmail        String?   // Billing-specific email
+  /// País para facturación / proveedor de pago (CL = preapproval + checkout pro; otro = solo checkout pro)
+  billingCountry      String    @default("CL")
 
   reservationNotifyScope        ReservationNotifyScope @default(restaurant)
   reservationNotifyAudience     ReservationNotifyAudience @default(owner)
@@ -199,6 +206,8 @@ model Restaurant {
   isDeleted                 Boolean   @default(false)
   scheduleMode              String    @default("continuous") // "continuous" | "service_periods"
   appearanceTheme           String    @default("crema-calida") // booking page palette id
+  /// When true, /restaurant/:slug may be indexed (sitemap + prerender). Link always works.
+  bookingPageIndexable      Boolean   @default(false)
   bookingAcceptanceMode     BookingAcceptanceMode @default(ALWAYS_24_7)
   bookingClosedFallback     BookingClosedFallback @default(MESSAGE)
   bookingClosedMessage      String?
@@ -230,6 +239,8 @@ model Restaurant {
   feedbackSurvey            FeedbackSurvey?
   feedbackRequests          FeedbackRequest[]
   feedbackAlerts            FeedbackAlert[]
+  activities                Activity[]
+  activityBookings          ActivityBooking[]
 
   @@index([organizationId])
   @@index([isActive])
@@ -304,8 +315,28 @@ model Zone {
   petFriendly   Boolean   @default(false)
 
   tables        RestaurantTable[]
+  fixtures      ZoneFixture[]
+  activityZones ActivityZone[]
 
   @@index([restaurantId])
+}
+
+/// Elementos decorativos del plano (entrada, barra, etiquetas) — misma grilla que las mesas.
+model ZoneFixture {
+  id        String   @id @default(cuid())
+  zoneId    String
+  zone      Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  type      String   // entrance | bar | wall | label | restroom | kitchen
+  label     String?
+  posX      Int
+  posY      Int
+  width     Int      @default(1)
+  height    Int      @default(1)
+  rotation  Int      @default(0)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([zoneId])
 }
 
 model RestaurantTable {
@@ -437,6 +468,10 @@ model Reservation {
   customerPhone   String?
   customerEmail   String?
   emailSent       Boolean   @default(false)
+  teamNotifySent        Boolean   @default(false)
+  teamNotifySentAt      DateTime?
+  teamNotifyRecipients  String[]  @default([])
+  teamNotifySkipReason  String?
   partySize       Int
   dateTime        DateTime
   businessDate    DateTime? @db.Date
@@ -452,13 +487,166 @@ model Reservation {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  feedbackRequest           FeedbackRequest?
+  activityBooking ActivityBooking?
+
+  feedbackRequest FeedbackRequest?
 
   @@index([restaurantId, dateTime, status])
   @@index([restaurantId, businessDate, status])
   @@index([secureToken])
   @@index([confirmedByUserId])
   @@index([updatedByUserId])
+}
+
+enum ActivityCapacityMode {
+  INDEPENDENT
+  BLOCKS_VENUE
+  SHARED_TABLES
+}
+
+enum ActivityBlockScope {
+  VENUE
+  ZONES
+}
+
+enum ActivitySessionStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+enum ActivityBookingStatus {
+  PENDING
+  CONFIRMED
+  ARRIVED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum ActivityCategory {
+  TOUR
+  TASTING
+  CLASS
+  EVENT
+  MENU
+  CORPORATE
+  CUSTOM
+}
+
+/// Producto reservable independiente (tours, degustaciones, eventos).
+/// Dominio separado de Reservation; precio es informativo (sin cobro en línea).
+model Activity {
+  id                     String               @id @default(cuid())
+  restaurantId           String
+  restaurant             Restaurant           @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  name                   String
+  slug                   String?
+  description            String?
+  includes               String?
+  category               ActivityCategory     @default(CUSTOM)
+  imageUrl               String?
+  defaultDurationMinutes Int                  @default(60)
+  defaultCapacity        Int?
+  pricePerPerson         Decimal?             @db.Decimal(10, 2)
+  currency               String               @default("CLP")
+  minimumNoticeMinutes   Int                  @default(0)
+  minPartySize           Int                  @default(1)
+  maxPartySize           Int?
+  capacityMode           ActivityCapacityMode @default(INDEPENDENT)
+  blockScope             ActivityBlockScope?
+  requiresApproval       Boolean              @default(false)
+  cancellationPolicy     String?
+  featured               Boolean              @default(false)
+  sortOrder              Int                  @default(0)
+  isActive               Boolean              @default(true)
+  isDeleted              Boolean              @default(false)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  sessions               ActivitySession[]
+  bookings               ActivityBooking[]
+  zones                  ActivityZone[]
+
+  @@unique([restaurantId, slug])
+  @@index([restaurantId, isActive, isDeleted])
+}
+
+model ActivityZone {
+  id         String   @id @default(cuid())
+  activityId String
+  zoneId     String
+  activity   Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  zone       Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@unique([activityId, zoneId])
+}
+
+model ActivitySession {
+  id                     String                @id @default(cuid())
+  activityId             String
+  restaurantId           String
+  startAt                DateTime
+  endAt                  DateTime
+  businessDate           DateTime              @db.Date
+  capacity               Int
+  pricePerPersonOverride Decimal?              @db.Decimal(10, 2)
+  status                 ActivitySessionStatus @default(SCHEDULED)
+  notes                  String?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  activity               Activity              @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  bookings               ActivityBooking[]
+  holds                  ActivitySessionHold[]
+
+  @@index([restaurantId, businessDate, status])
+  @@index([activityId, startAt])
+}
+
+model ActivityBooking {
+  id                String                @id @default(cuid())
+  sessionId         String
+  activityId        String
+  restaurantId      String
+  customerName      String
+  customerEmail     String?
+  customerPhone     String?
+  partySize         Int
+  status            ActivityBookingStatus @default(CONFIRMED)
+  notes             String?
+  source            String                @default("web")
+  secureToken       String                @unique @default(cuid())
+  activityName      String
+  sessionStartAt    DateTime
+  pricePerPerson    Decimal?              @db.Decimal(10, 2)
+  totalReferential  Decimal?              @db.Decimal(10, 2)
+  reservationId     String?               @unique
+  confirmedByUserId String?
+  updatedByUserId   String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  session           ActivitySession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  activity          Activity              @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  restaurant        Restaurant            @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  reservation       Reservation?          @relation(fields: [reservationId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId, status])
+  @@index([sessionId, status])
+}
+
+model ActivitySessionHold {
+  id        String          @id @default(cuid())
+  sessionId String
+  partySize Int
+  expiresAt DateTime
+  holdToken String          @unique @default(cuid())
+  status    String          @default("active")
+  session   ActivitySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status])
+  @@index([expiresAt, status])
 }
 
 /// Configuración de encuesta post-visita por restaurante (1:1)
@@ -588,17 +776,100 @@ model Subscription {
   endDate       DateTime?
   /// Fin del periodo de facturación actual (persistido al activar/renovar; alineado con computePeriodEnd)
   currentPeriodEnd DateTime?
+  /// Fin de ventana de días gratis por créditos de referido (sin primer cobro real aún). null = sin ventana / ya cobrado.
+  referralFreeUntil DateTime?
+  /// Inicio de ventana gratis cuando se difiere al fin del periodo pagado (canje en renovación). null = ventana desde activación.
+  referralFreeWindowStartsAt DateTime?
   /// Access deadline: 7 days after payment failure, OR set equal to endDate on manual cancellation
   gracePeriodEndsAt DateTime?
-  mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid
+  mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid (preapproval)
+  /// Cómo se cobra: automatic_recurring | manual_monthly
+  billingStrategy String @default("automatic_recurring")
+  /// PSP: mercadopago | paypal | stripe
+  paymentProvider String @default("mercadopago")
+  /// Implementación interna MP (preapproval | checkout_pro) durante transición
+  providerImplementation String?
+  /// CheckoutSession id for manual_monthly renewals / tracing
+  providerCheckoutSessionId String?
+  /// Cambio de plan programado (dominio SaaS, independiente de MP)
+  scheduledPlanId String?
+  scheduledPlan Plan? @relation("ScheduledPlanChange", fields: [scheduledPlanId], references: [id], onDelete: SetNull)
+  scheduledChangeAt DateTime?
+  /// Última intención de timing: immediate | end_of_period
+  planChangeWhen String?
+  /// Snapshot del último método de pago exitoso (desde webhook payment)
+  lastPaymentMethodKind       String?
+  lastPaymentMethodBrand      String?
+  lastPaymentLastFour         String?
+  lastPaymentExpirationMonth  Int?
+  lastPaymentExpirationYear   Int?
+  lastPaymentAt               DateTime?
+  /// Próximo reintento automático de MP (preapproval)
+  mpNextRetryAt               DateTime?
+  /// Pausa de suscripción (feature flag BILLING_PAUSE_ENABLED)
+  isPaused                    Boolean   @default(false)
+  pausedAt                    DateTime?
+  pauseEndsAt                 DateTime?
   createdAt     DateTime  @default(now())
 
   paymentReceipts PaymentReceipt[]
+  addons          SubscriptionAddon[]
+  cancellationEvents SubscriptionCancellation[]
+  billingEmailLogs BillingEmailLog[]
+  billingOpsAlerts BillingOpsAlert[]
 
   @@unique([organizationId, mercadopagoPreapprovalId])
   @@index([organizationId])
   @@index([currentPeriodEnd])
   @@index([isActiveSubscription])
+  @@index([scheduledChangeAt])
+}
+
+/// Registro de correos de facturación enviados al owner (idempotencia por ciclo).
+model BillingEmailLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptionId String
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  /// renewal_7d | renewal_4d | renewal_1d | period_overdue | grace_entered | grace_last_chance_1d | checkout_payment_rejected
+  kind           String
+  /// currentPeriodEnd ISO date o grace:{gracePeriodEndsAt ISO}
+  periodKey      String
+  sentAt         DateTime @default(now())
+  metadata       Json?
+
+  @@unique([subscriptionId, kind, periodKey])
+  @@index([organizationId])
+  @@index([sentAt])
+}
+
+/// Alertas operativas de facturación para el panel admin.
+model BillingOpsAlert {
+  id               String    @id @default(cuid())
+  organizationId   String
+  organization     RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  subscriptionId   String?
+  subscription     Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  kind             String
+  severity         String    @default("warning") // info | warning | critical
+  title            String
+  detail           String?
+  suggestedAction  String?
+  mpPaymentId      String?
+  mpStatus         String?
+  mpStatusDetail   String?
+  checkoutSessionId String?
+  status           String    @default("open") // open | resolved | snoozed
+  dedupeKey        String    @unique
+  createdAt        DateTime  @default(now())
+  resolvedAt       DateTime?
+  resolvedByUserId String?
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([severity])
+  @@index([createdAt])
 }
 
 model EmailDomain {
@@ -669,6 +940,7 @@ model Plan {
   multipleMenu             Boolean  @default(false)
   prioritySupport          Boolean  @default(false)
   postVisitFeedback        Boolean  @default(false)
+  activitiesModule         Boolean  @default(false)
 
   comingSoon               Boolean  @default(false)
   comingSoonLabel          String?
@@ -693,6 +965,7 @@ model Plan {
   organizations            RestaurantOrganization[]  @relation("OrgDefaultPlan")
   customOrganizations      RestaurantOrganization[]  @relation("OrgCustomPlan")
   subscriptions            Subscription[]
+  scheduledPlanSubscriptions Subscription[] @relation("ScheduledPlanChange")
   paymentReceipts          PaymentReceipt[]
   checkoutSessions         CheckoutSession[]
   promoCodes               PromoCode[]               @relation("PromoCodePlan")
@@ -801,6 +1074,10 @@ model CheckoutSession {
 
   status                    String    @default("pending") // "pending" | "completed" | "expired" | "abandoned"
   mercadopagoPreapprovalId  String?
+  mercadopagoPreferenceId   String?
+  billingStrategy           String    @default("automatic_recurring")
+  paymentProvider           String    @default("mercadopago")
+  providerImplementation    String?
   checkoutUrl               String?
   /// Si existe, al autorizar el nuevo preapproval se cancela esta suscripción en MP (cambio de plan inmediato sin perder acceso antes de pagar).
   pendingChangeFromSubscriptionId String?
@@ -872,6 +1149,10 @@ model CustomPlanOffer {
   organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   offeredById    String?
   offeredBy      User?                  @relation(fields: [offeredById], references: [id], onDelete: SetNull)
+  /// Si false, el restaurante no puede cambiar de plan sin contactar a soporte (enterprise).
+  selfServicePlanChanges            Boolean @default(true)
+  /// Si false, no puede cambiar débito automático / pago manual desde el portal.
+  selfServiceBillingStrategyChanges Boolean @default(true)
   createdAt      DateTime               @default(now())
 
   @@unique([planId, organizationId])
@@ -888,8 +1169,12 @@ model WebhookEvent {
   mpStatus         String?   // estado real consultado a MP API tras recibir el evento
   organizationId   String?   // extraído de external_reference (nullable si no se puede parsear)
   externalRef      String?   // external_reference completo del preapproval/payment
+  /// Evento normalizado de dominio (subscription.activated, payment.approved, etc.)
+  normalizedKind   String?
   processingStatus String    @default("received") // "received" | "processed" | "failed" | "skipped"
   errorMessage     String?   // mensaje de error truncado si processingStatus = "failed"
+  retryCount       Int       @default(0)
+  permanentlyFailed Boolean  @default(false)
   rawHeaders       Json?     // metadata de headers: x-request-id, presencia de x-signature
   processedAt      DateTime?
   createdAt        DateTime  @default(now())
@@ -898,6 +1183,53 @@ model WebhookEvent {
   @@index([organizationId])
   @@index([createdAt])
   @@index([processingStatus])
+  @@index([normalizedKind])
+}
+
+/// Razones de cancelación (analytics P2.8)
+model SubscriptionCancellation {
+  id                 String    @id @default(cuid())
+  organizationId     String
+  subscriptionId     String?
+  subscription       Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  reason             String?   // too_expensive, not_using, switched, closed_temporarily, other
+  reasonDetail       String?
+  offeredDowngrade   Boolean   @default(false)
+  acceptedRetention  Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+
+  @@index([organizationId])
+  @@index([reason])
+  @@index([createdAt])
+}
+
+/// Add-ons de suscripción (locales extra, módulos).
+/// Org-scoped: la fuente de verdad es organizationId.
+/// subscriptionId es snapshot que se re-apunta al crear nueva Subscription.
+model SubscriptionAddon {
+  id                     String    @id @default(cuid())
+  organizationId         String
+  subscriptionId         String?
+  subscription           Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  addonType              String    // extra_location, module_experiences, etc.
+  quantity               Int       @default(1)
+  priceCLP               Decimal   @db.Decimal(10, 2)
+  isActive               Boolean   @default(true)
+  /// Cuándo se activó el add-on (inmediato).
+  activatedAt            DateTime?
+  /// Primera renovación en la que se cobra (= currentPeriodEnd al activar).
+  billingStartsAt        DateTime?
+  /// Fin del primer ciclo facturado. El add-on no puede removerse antes de esta fecha sin cobrar igual ese ciclo.
+  minimumCommitmentUntil DateTime?
+  /// Fecha en que el add-on se desactiva definitivamente (= max(currentPeriodEnd, minimumCommitmentUntil) al solicitar baja).
+  removalScheduledFor    DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([organizationId])
+  @@index([subscriptionId])
+  @@index([addonType])
+  @@index([removalScheduledFor])
 }
 
 model AuditLog {
@@ -914,4 +1246,71 @@ model AuditLog {
   @@index([actorUserId])
   @@index([action])
   @@index([createdAt])
+}
+
+/// Programa de referidos: relación referidor ↔ referido.
+/// El "código" de referido es el `referrerOrganizationId` (cuid de la org que invita).
+model Referral {
+  id                      String    @id @default(cuid())
+  referrerOrganizationId  String
+  referrerOrganization    RestaurantOrganization @relation("ReferrerOrganization", fields: [referrerOrganizationId], references: [id], onDelete: Cascade)
+  refereeOrganizationId   String    @unique
+  refereeOrganization     RestaurantOrganization @relation("RefereeOrganization", fields: [refereeOrganizationId], references: [id], onDelete: Cascade)
+  refereeEmail            String?
+  refereePhone            String?
+  attributionSource       String    @default("url") // "url" | "manual_input"
+  status                  String    @default("registered")
+  signupIp                String?
+  signupUserAgent         String?
+  utmSource               String?
+  utmMedium               String?
+  utmCampaign             String?
+  registeredAt            DateTime  @default(now())
+  firstPaymentAt          DateTime?
+  qualifyingPaymentAt     DateTime?
+  approvedAt              DateTime?
+  rewardAppliedAt         DateTime?
+  rejectedAt              DateTime?
+  approvedById            String?
+  rejectionReason         String?
+  internalNotes           String?
+  isFraud                 Boolean   @default(false)
+  fraudNote               String?
+  rewardCreditId          String?   @unique
+  rewardCredit            ReferralCredit? @relation("ReferralRewardCredit", fields: [rewardCreditId], references: [id], onDelete: SetNull)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  sourceCredits           ReferralCredit[] @relation("CreditSourceReferral")
+
+  @@index([referrerOrganizationId])
+  @@index([status])
+  @@index([firstPaymentAt])
+  @@index([createdAt])
+}
+
+/// Crédito interno de días de plataforma acumulable para el referidor.
+model ReferralCredit {
+  id                      String    @id @default(cuid())
+  organizationId          String
+  organization            RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  source                  String    @default("referral") // "referral" | "manual_admin"
+  sourceReferralId        String?
+  sourceReferral          Referral? @relation("CreditSourceReferral", fields: [sourceReferralId], references: [id], onDelete: SetNull)
+  amountDays              Int       @default(30)
+  status                  String    @default("available") // "available" | "applied" | "expired" | "revoked"
+  appliedAt               DateTime?
+  appliedToSubscriptionId String?
+  expiresAt               DateTime?
+  createdById             String?
+  notes                   String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  referralReward          Referral? @relation("ReferralRewardCredit")
+
+  @@index([organizationId])
+  @@index([status])
+  @@index([sourceReferralId])
+  @@index([expiresAt])
 }

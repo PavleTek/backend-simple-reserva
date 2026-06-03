@@ -26,13 +26,14 @@ function mercadoPagoUseProductionCredentials() {
   return process.env.NODE_ENV === 'production';
 }
 
-function pickCred(devKey, prodKey, fallbackKey) {
+function pickCred(devKey, prodKey, fallbackKey, overlayProdKey) {
   const prod = mercadoPagoUseProductionCredentials();
   const legacy = trimmed(fallbackKey);
   const devOnly = trimmed(devKey);
   const prodOnly = trimmed(prodKey);
+  const prodOverlay = trimmed(overlayProdKey);
   if (prod) {
-    return prodOnly || legacy;
+    return prodOverlay || prodOnly || legacy;
   }
   return devOnly || legacy;
 }
@@ -42,6 +43,7 @@ function getMercadoPagoAccessToken() {
     'MERCADOPAGO_ACCESS_TOKEN_DEVELOPMENT',
     'MERCADOPAGO_ACCESS_TOKEN_PRODUCTION',
     'MERCADOPAGO_ACCESS_TOKEN',
+    'MERCADOPAGO_ACCESS_TOKEN_PRODUCTION_NEW',
   );
 }
 
@@ -51,11 +53,32 @@ function getMercadoPagoPublicKey() {
 
 /** Secret HMAC para validar POST del webhook (puede diferir entre app test y producción). */
 function getMercadoPagoWebhookSecret() {
-  return pickCred(
+  const primary = pickCred(
     'MP_WEBHOOK_SECRET_DEVELOPMENT',
     'MP_WEBHOOK_SECRET_PRODUCTION',
     'MP_WEBHOOK_SECRET',
   );
+  return primary;
+}
+
+/** Secrets adicionales durante rotación rolling (acepta firma con cualquiera). */
+function getMercadoPagoWebhookSecrets() {
+  const secrets = [getMercadoPagoWebhookSecret()].filter(Boolean);
+  const rolling = trimmed('MP_WEBHOOK_SECRET_PRODUCTION_NEW');
+  if (rolling && !secrets.includes(rolling)) secrets.push(rolling);
+  return secrets;
+}
+
+function assertMpEnvSafety() {
+  const token = getMercadoPagoAccessToken();
+  if (!token) return;
+  const prod = mercadoPagoUseProductionCredentials();
+  if (prod && !token.startsWith('APP_USR-') && !token.startsWith('TEST-')) {
+    console.warn('[MercadoPago] Token de producción no parece APP_USR-*');
+  }
+  if (!prod && token.startsWith('APP_USR-') && process.env.MERCADOPAGO_ENV !== 'production') {
+    console.warn('[MercadoPago] Token APP_USR-* en entorno no productivo — revisa MERCADOPAGO_ENV');
+  }
 }
 
 function describeMercadoPagoCredentialChoice() {
@@ -92,5 +115,7 @@ module.exports = {
   getMercadoPagoAccessToken,
   getMercadoPagoPublicKey,
   getMercadoPagoWebhookSecret,
+  getMercadoPagoWebhookSecrets,
+  assertMpEnvSafety,
   describeMercadoPagoCredentialChoice,
 };

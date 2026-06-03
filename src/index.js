@@ -22,6 +22,13 @@ const bookingAcceptanceRouter = require("./routes/bookingAcceptance.routes");
 const organizationNotificationRouter = require("./routes/organizationNotification.routes");
 const adminRouter = require("./routes/admin.routes");
 const uploadRouter = require("./routes/upload.routes");
+const activitiesRouter = require("./routes/activities.routes");
+const { bookingsRouter: activityBookingsRouter } = require("./routes/activities.routes");
+const publicActivitiesRouter = require("./routes/publicActivities.routes");
+const {
+  tokenRouter: activityBookingTokenRouter,
+  activityHoldRouter,
+} = require("./routes/publicActivities.routes");
 const billingRouter = require("./routes/billing.routes");
 const webhooksRouter = require("./routes/webhooks.routes");
 const analyticsRouter = require("./routes/analytics.routes");
@@ -35,8 +42,18 @@ const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
 const { startReconciliationJob } = require("./jobs/reconciliationJob");
 const { startReservationHoldCleanupJob } = require("./jobs/reservationHoldCleanup");
 const { startPostVisitFeedbackJob } = require("./jobs/postVisitFeedbackJob");
+const { startReferralEvaluationJob } = require("./jobs/referralEvaluationJob");
+const referralService = require("./services/referralService");
+const { startBillingRenewalReminderJob } = require("./jobs/billingRenewalReminderJob");
+const { startManualPeriodOverdueJob } = require("./jobs/manualPeriodOverdueJob");
+const { startPlanChangeSchedulerJob } = require("./jobs/planChangeSchedulerJob");
+const { startLastChanceLinkJob } = require("./jobs/lastChanceLinkJob");
+const { startBillingIntegrityJob } = require("./jobs/billingIntegrityJob");
+const { startAddonRemovalJob } = require("./jobs/addonRemovalJob");
+const { assertMpEnvSafety } = require("./lib/mercadopagoEnv");
 const { publicRouter: feedbackPublicRouter, restaurantRouter: feedbackRestaurantRouter } = require("./routes/feedback.routes");
 const { publicRestaurantRouter: holdRestaurantRouter, publicHoldRouter, staffRouter: holdStaffRouter } = require("./routes/reservationHold.routes");
+const restaurantReferralsRouter = require("./routes/restaurantReferrals.routes");
 const { sortPlansByDisplayOrder } = require("./lib/planDisplayOrder");
 const { getClpPerUsd } = require("./services/clpUsdRateService");
 
@@ -110,15 +127,21 @@ app.get("/", (req, res) => {
   res.json({ status: "ok", service: "SimpleReserva API" });
 });
 
-// Redirect after MercadoPago checkout (back_url). MP añade ?preapproval_id=xxx a la URL.
-// Usamos path /:restaurantId para evitar que MP corrompa el query.
+// Redirect after MercadoPago checkout (back_url).
+// Preapproval: ?preapproval_id=xxx | Checkout Pro: ?payment_id= o ?collection_id= y ?status=
 app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
   const restaurantId = req.params.restaurantId;
-  const preapprovalId = req.query.preapproval_id; // MP añade &preapproval_id=xxx (o ? si es la primera param)
+  const preapprovalId = req.query.preapproval_id;
+  const paymentStatus = req.query.status || req.query.collection_status;
+  const paymentId =
+    req.query.payment_id ||
+    (String(paymentStatus || "").toLowerCase() === "approved" ? req.query.collection_id : null);
   const appUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || "http://localhost:5175").replace(/\/$/, "");
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
   if (preapprovalId) params.set("preapprovalId", String(preapprovalId));
+  if (paymentId) params.set("paymentId", String(paymentId));
+  if (paymentStatus) params.set("paymentStatus", String(paymentStatus));
   params.set("returnFromCheckout", "1");
   const target = `${appUrl}/billing?${params.toString()}`;
   res.redirect(302, target);
@@ -128,6 +151,10 @@ app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
 app.get("/api/redirect-to-billing", (req, res) => {
   let restaurantId = req.query.restaurantId;
   let preapprovalId = req.query.preapproval_id;
+  const paymentStatus = req.query.status || req.query.collection_status;
+  const paymentId =
+    req.query.payment_id ||
+    (String(paymentStatus || "").toLowerCase() === "approved" ? req.query.collection_id : null);
   if (restaurantId && typeof restaurantId === "string") {
     const match = restaurantId.match(/^([^?&]+)\?preapproval_id=([^&]+)$/);
     if (match) {
@@ -141,6 +168,8 @@ app.get("/api/redirect-to-billing", (req, res) => {
   const params = new URLSearchParams();
   if (restaurantId) params.set("restaurantId", restaurantId);
   if (preapprovalId) params.set("preapprovalId", String(preapprovalId));
+  if (paymentId) params.set("paymentId", String(paymentId));
+  if (paymentStatus) params.set("paymentStatus", String(paymentStatus));
   params.set("returnFromCheckout", "1");
   res.redirect(302, `${appUrl}/billing?${params.toString()}`);
 });
@@ -193,9 +222,25 @@ app.get("/api/public/fx", async (req, res, next) => {
   }
 });
 
+app.get("/api/public/referrals/:orgId", async (req, res, next) => {
+  try {
+    const info = await referralService.getPublicReferrerInfo(req.params.orgId);
+    if (!info) {
+      return res.status(404).json({ error: "Código de referido no válido." });
+    }
+    res.json(info);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Hold system (soft-locks durante checkout)
 app.use("/api/public/restaurants", holdRestaurantRouter);
 app.use("/api/public/reservation-holds", publicHoldRouter);
+
+app.use("/api/public/restaurants/:slug", publicActivitiesRouter);
+app.use("/api/public/activity-session-holds", activityHoldRouter);
+app.use("/api/public/activity-bookings", activityBookingTokenRouter);
 
 // Public alias for user-front
 app.use("/api/public/restaurants", reservationRouter);
@@ -207,6 +252,7 @@ app.use("/api/restaurants", reservationRouter);
 app.use("/api/reservations", reservationRouter);
 app.use("/api/restaurant/:restaurantId", restaurantRouter);
 app.use("/api/restaurant/:restaurantId", billingRouter);
+app.use("/api/restaurant/:restaurantId/referrals", restaurantReferralsRouter);
 app.use("/api/restaurant/:restaurantId/zones", zoneRouter);
 app.use("/api/restaurant/:restaurantId/tables", tableRouter);
 app.use("/api/restaurant/:restaurantId/schedules", scheduleRouter);
@@ -218,6 +264,8 @@ app.use("/api/restaurant/:restaurantId", organizationNotificationRouter);
 app.use("/api/restaurant/:restaurantId/feedback", feedbackRestaurantRouter);
 app.use("/api/restaurant/:restaurantId/holds", holdStaffRouter);
 app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
+app.use("/api/restaurant/:restaurantId/activities", activitiesRouter);
+app.use("/api/restaurant/:restaurantId", activityBookingsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/places", placesRouter);
@@ -232,6 +280,11 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   logger.info({ port: PORT }, "SimpleReserva API running");
+  try {
+    assertMpEnvSafety();
+  } catch (e) {
+    logger.warn({ err: e.message }, "MercadoPago env safety check");
+  }
   startReminderJob();
   startDailySummaryJob();
   startTrialReminderJob();
@@ -240,4 +293,11 @@ app.listen(PORT, "0.0.0.0", () => {
   startReconciliationJob();
   startReservationHoldCleanupJob();
   startPostVisitFeedbackJob();
+  startReferralEvaluationJob();
+  startBillingRenewalReminderJob();
+  startManualPeriodOverdueJob();
+  startPlanChangeSchedulerJob();
+  startLastChanceLinkJob();
+  startBillingIntegrityJob();
+  startAddonRemovalJob();
 });

@@ -11,6 +11,8 @@ const whatsappService = require('../services/whatsappService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const r2LogosService = require('../services/r2LogosService');
 const { handleLogoUpload, uploadLogoMulter } = require('./upload.routes');
+const { validateEnableBookingPageIndexable, getBookingSeoAdminMeta } = require('../services/bookingSeoService');
+const { hasActiveAccess } = require('../services/subscriptionService');
 
 const router = express.Router();
 
@@ -94,7 +96,8 @@ router.get('/restaurants/:id', async (req, res, next) => {
 
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
-    res.json(restaurant);
+    const access = await hasActiveAccess(restaurant.organizationId);
+    res.json({ ...restaurant, bookingSeo: getBookingSeoAdminMeta(restaurant, access) });
   } catch (error) {
     next(error);
   }
@@ -102,14 +105,36 @@ router.get('/restaurants/:id', async (req, res, next) => {
 
 router.patch('/restaurants/:id', async (req, res, next) => {
   try {
-    const { isActive } = req.body;
+    const { isActive, bookingPageIndexable } = req.body;
+
+    const current = await prisma.restaurant.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!current) throw new NotFoundError('Restaurante no encontrado');
+
+    if (bookingPageIndexable === true) {
+      const check = await validateEnableBookingPageIndexable(current);
+      if (!check.ok) throw new ValidationError(check.error);
+    }
+
+    const data = {};
+    if (isActive !== undefined) data.isActive = Boolean(isActive);
+    if (bookingPageIndexable !== undefined) {
+      data.bookingPageIndexable = Boolean(bookingPageIndexable);
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw new ValidationError('No hay campos para actualizar');
+    }
 
     const restaurant = await prisma.restaurant.update({
       where: { id: req.params.id },
-      data: { isActive },
+      data,
     });
 
-    res.json(restaurant);
+    const access = await hasActiveAccess(restaurant.organizationId);
+    const bookingSeo = getBookingSeoAdminMeta(restaurant, access);
+    res.json({ ...restaurant, bookingSeo });
   } catch (error) {
     next(error);
   }
@@ -295,10 +320,12 @@ router.get('/organizations/:id', async (req, res, next) => {
         }),
       ]);
 
-    // Compute total tables per restaurant from zones
+    // Compute total tables per restaurant from zones + SEO admin metadata
+    const orgHasAccess = await hasActiveAccess(org.id);
     const restaurantsWithTableCount = org.restaurants.map(r => ({
       ...r,
       tablesCount: r.zones.reduce((sum, z) => sum + z._count.tables, 0),
+      bookingSeo: getBookingSeoAdminMeta(r, orgHasAccess),
     }));
 
     res.json({
@@ -470,6 +497,157 @@ router.post('/organizations/:id/period-summary/send', async (req, res, next) => 
 });
 
 /**
+ * GET /admin/organizations/:id/billing-emails/kinds?subscriptionId=
+ */
+router.get('/organizations/:id/billing-emails/kinds', async (req, res, next) => {
+  try {
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const { listKindsForOrganization } = require('../services/billing/billingEmailAdminService');
+    const kinds = await listKindsForOrganization(
+      req.params.id,
+      req.query.subscriptionId || undefined,
+    );
+    res.json({ kinds });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/organizations/:id/billing-emails/preview?kind=&subscriptionId=&dryRun=1
+ */
+router.get('/organizations/:id/billing-emails/preview', async (req, res, next) => {
+  try {
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, name: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const kind = req.query.kind;
+    if (!kind || typeof kind !== 'string') {
+      throw new ValidationError('kind requerido');
+    }
+
+    const { previewBillingEmail } = require('../services/billing/billingEmailAdminService');
+    const preview = await previewBillingEmail({
+      organizationId: req.params.id,
+      kind,
+      subscriptionId: req.query.subscriptionId || undefined,
+      dryRun: req.query.dryRun === '1' || req.query.dryRun === 'true',
+    });
+    res.json(preview);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /admin/organizations/:id/billing-emails/send
+ * Body: { kind, toEmail?, subscriptionId? }
+ */
+router.post('/organizations/:id/billing-emails/send', async (req, res, next) => {
+  try {
+    const org = await prisma.restaurantOrganization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const { kind, toEmail, subscriptionId } = req.body ?? {};
+    if (!kind || typeof kind !== 'string') {
+      throw new ValidationError('kind requerido');
+    }
+
+    const { sendBillingEmailFromAdmin } = require('../services/billing/billingEmailAdminService');
+    const result = await sendBillingEmailFromAdmin({
+      organizationId: req.params.id,
+      kind,
+      toEmail: typeof toEmail === 'string' ? toEmail.trim() : undefined,
+      subscriptionId: typeof subscriptionId === 'string' ? subscriptionId : undefined,
+      adminUserId: req.user?.id,
+    });
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/billing-ops-alerts
+ */
+router.get('/billing-ops-alerts', async (req, res, next) => {
+  try {
+    const { page, limit, skip } = parsePagination(req.query);
+    const where = {};
+    if (req.query.status) where.status = String(req.query.status);
+    if (req.query.severity) where.severity = String(req.query.severity);
+    if (req.query.organizationId) where.organizationId = String(req.query.organizationId);
+
+    const [items, total, openCriticalCount] = await Promise.all([
+      prisma.billingOpsAlert.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          organization: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.billingOpsAlert.count({ where }),
+      prisma.billingOpsAlert.count({
+        where: {
+          status: 'open',
+          severity: { in: ['warning', 'critical'] },
+        },
+      }),
+    ]);
+
+    res.json({
+      ...paginatedResponse(items, total, page, limit),
+      openCriticalCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PATCH /admin/billing-ops-alerts/:id
+ * Body: { status: 'resolved' | 'snoozed' }
+ */
+router.patch('/billing-ops-alerts/:id', async (req, res, next) => {
+  try {
+    const { status } = req.body ?? {};
+    if (!status || !['resolved', 'snoozed', 'open'].includes(status)) {
+      throw new ValidationError('status inválido');
+    }
+
+    const alert = await prisma.billingOpsAlert.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!alert) throw new NotFoundError('Alerta no encontrada');
+
+    const updated = await prisma.billingOpsAlert.update({
+      where: { id: req.params.id },
+      data: {
+        status,
+        resolvedAt: status === 'resolved' ? new Date() : null,
+        resolvedByUserId: status === 'resolved' ? req.user?.id : null,
+      },
+    });
+    res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /admin/organizations/:id/feedback-overview
  * Resumen de Experiencia post-visita por local de la organización.
  */
@@ -552,9 +730,10 @@ router.get('/organizations/:organizationId/custom-plan', async (req, res, next) 
 
 /**
  * POST /admin/organizations/:organizationId/assign-plan
- * Asigna un plan personalizado (no público) a una organización.
+ * Asigna un plan personalizado vía CustomPlanOffer (preferido).
  * Body: { planId: string } — ID del Plan en DB.
- *       { planId: null }   — elimina el plan personalizado.
+ *       { planId: null }   — elimina ofertas personalizadas de la org.
+ * @deprecated customPlanId en organización — usar PUT /admin/plans/:id/offers
  */
 router.post('/organizations/:organizationId/assign-plan', async (req, res, next) => {
   try {
@@ -567,16 +746,44 @@ router.post('/organizations/:organizationId/assign-plan', async (req, res, next)
     if (planId !== null && planId !== undefined) {
       const plan = await prisma.plan.findUnique({ where: { id: planId } });
       if (!plan) throw new NotFoundError('Plan no encontrado');
+
+      await prisma.customPlanOffer.upsert({
+        where: {
+          planId_organizationId: { planId, organizationId },
+        },
+        create: {
+          planId,
+          organizationId,
+          offeredById: req.user?.id ?? null,
+          selfServicePlanChanges: true,
+          selfServiceBillingStrategyChanges: true,
+        },
+        update: {
+          offeredById: req.user?.id ?? undefined,
+        },
+      });
+
+      await prisma.restaurantOrganization.update({
+        where: { id: organizationId },
+        data: { customPlanId: null },
+      });
+    } else {
+      await prisma.customPlanOffer.deleteMany({ where: { organizationId } });
+      await prisma.restaurantOrganization.update({
+        where: { id: organizationId },
+        data: { customPlanId: null },
+      });
     }
 
-    const updated = await prisma.restaurantOrganization.update({
-      where: { id: organizationId },
-      data: { customPlanId: planId ?? null },
-      include: { customPlan: true },
-    });
+    const offer = planId
+      ? await prisma.customPlanOffer.findFirst({
+          where: { organizationId, planId },
+          include: { plan: true },
+        })
+      : null;
 
     planService.invalidateCache(organizationId);
-    res.json({ customPlan: updated.customPlan ?? null });
+    res.json({ customPlan: offer?.plan ?? null, offer: offer ?? null });
   } catch (error) {
     next(error);
   }
@@ -653,7 +860,7 @@ router.post('/plans', async (req, res, next) => {
       'productSKU', 'name', 'description', 'type', 'isDefault',
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
-      'postVisitFeedback',
+      'postVisitFeedback', 'activitiesModule',
       'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
       'freeTrialLength', 'freeTrialLengthUnit',
       'comingSoon', 'comingSoonLabel'
@@ -699,7 +906,7 @@ router.patch('/plans/:id', async (req, res, next) => {
       'name', 'description', 'type', 'isDefault',
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
-      'postVisitFeedback',
+      'postVisitFeedback', 'activitiesModule',
       'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
       'freeTrialLength', 'freeTrialLengthUnit',
       'comingSoon', 'comingSoonLabel'
@@ -775,11 +982,18 @@ router.get('/plans/:id/offers', async (req, res, next) => {
 router.put('/plans/:id/offers', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { organizationIds } = req.body;
+    const { organizationIds, selfServicePlanChanges, selfServiceBillingStrategyChanges } = req.body;
 
     if (!Array.isArray(organizationIds)) {
       throw new ValidationError('organizationIds debe ser un array');
     }
+
+    const planChangesFlag =
+      typeof selfServicePlanChanges === 'boolean' ? selfServicePlanChanges : true;
+    const strategyChangesFlag =
+      typeof selfServiceBillingStrategyChanges === 'boolean'
+        ? selfServiceBillingStrategyChanges
+        : true;
 
     const plan = await prisma.plan.findUnique({ where: { id } });
     if (!plan) throw new NotFoundError('Plan no encontrado');
@@ -803,8 +1017,18 @@ router.put('/plans/:id/offers', async (req, res, next) => {
       for (const organizationId of organizationIds) {
         await tx.customPlanOffer.upsert({
           where: { planId_organizationId: { planId: id, organizationId } },
-          create: { planId: id, organizationId, offeredById },
-          update: { offeredById },
+          create: {
+            planId: id,
+            organizationId,
+            offeredById,
+            selfServicePlanChanges: planChangesFlag,
+            selfServiceBillingStrategyChanges: strategyChangesFlag,
+          },
+          update: {
+            offeredById,
+            selfServicePlanChanges: planChangesFlag,
+            selfServiceBillingStrategyChanges: strategyChangesFlag,
+          },
         });
       }
     });
@@ -2312,7 +2536,7 @@ router.post('/promo-codes/:id/disable', async (req, res, next) => {
 // ─── Reservations list ───────────────────────────────────────────
 
 const RESERVATION_SORT_ALLOWLIST = new Set([
-  'dateTime', 'createdAt', 'customerName', 'partySize', 'status', 'source', 'emailSent',
+  'dateTime', 'createdAt', 'customerName', 'partySize', 'status', 'source', 'emailSent', 'teamNotifySent',
 ]);
 
 router.get('/reservations', async (req, res, next) => {
@@ -2536,5 +2760,24 @@ router.post('/reservations/send-missing-emails', async (req, res, next) => {
 
 const adminFeedbackRouter = require('./adminFeedback.routes');
 router.use('/restaurants/:id/feedback', adminFeedbackRouter);
+
+router.use('/referrals', require('./adminReferral.routes'));
+
+// ─── Billing integrity (on-demand) ───────────────────────────────
+
+router.get('/billing/integrity', async (req, res, next) => {
+  try {
+    const { runBillingIntegrityChecks } = require('../services/billing/billingIntegrityService');
+    const results = await runBillingIntegrityChecks();
+    const hasIssues = results.some((r) => !r.ok);
+    res.status(hasIssues ? 200 : 200).json({
+      ok: !hasIssues,
+      checks: results,
+      runAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 module.exports = router;
