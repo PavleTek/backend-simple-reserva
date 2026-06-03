@@ -860,7 +860,7 @@ router.post('/plans', async (req, res, next) => {
       'productSKU', 'name', 'description', 'type', 'isDefault',
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
-      'postVisitFeedback',
+      'postVisitFeedback', 'activitiesModule',
       'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
       'freeTrialLength', 'freeTrialLengthUnit',
       'comingSoon', 'comingSoonLabel'
@@ -906,7 +906,7 @@ router.patch('/plans/:id', async (req, res, next) => {
       'name', 'description', 'type', 'isDefault',
       'maxRestaurants', 'maxZonesPerRestaurant', 'maxTables', 'maxTeamMembers',
       'whatsappFeatures', 'googleReserveIntegration', 'multipleMenu', 'prioritySupport',
-      'postVisitFeedback',
+      'postVisitFeedback', 'activitiesModule',
       'priceCLP', 'priceUSD', 'priceEUR', 'billingFrequency', 'billingFrequencyType',
       'freeTrialLength', 'freeTrialLengthUnit',
       'comingSoon', 'comingSoonLabel'
