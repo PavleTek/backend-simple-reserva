@@ -8,7 +8,7 @@
     "dev:all": "concurrently -n backend,user,admin,restaurant -c blue,cyan,magenta,yellow \"npm run dev\" \"npm --prefix ../user-front-simple-reserva run dev\" \"npm --prefix ../admin-front-simple-reserva run dev\" \"npm --prefix ../restaurant-front-simple-reserva run dev\"",
     "start": "node src/index.js",
     "build": "npx prisma generate",
-    "migrate": "npx prisma migrate deploy",
+    "migrate": "node scripts/migrate-deploy.js",
     "seed": "node prisma/seed.js",
     "railway-predeploy": "npm run migrate && npm run seed",
     "postinstall": "npm run build",
