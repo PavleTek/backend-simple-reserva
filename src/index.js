@@ -8,6 +8,7 @@ dotenv.config();
 
 const logger = require("./lib/logger");
 
+const { getPublicStats } = require("./services/publicStatsService");
 const prisma = require("./lib/prisma");
 const authRouter = require("./routes/auth.routes");
 const restaurantRouter = require("./routes/restaurant.routes");
@@ -201,6 +202,17 @@ app.get("/api/public/plans", async (req, res, next) => {
       },
     }));
     res.json(plans);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Métricas públicas acumuladas (landing home)
+app.get("/api/public/stats", async (req, res, next) => {
+  try {
+    const stats = await getPublicStats();
+    res.set("Cache-Control", "public, max-age=3600, s-maxage=3600");
+    res.json(stats);
   } catch (error) {
     next(error);
   }

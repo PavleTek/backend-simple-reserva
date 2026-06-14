@@ -63,7 +63,11 @@ async function getMarketingAnalytics(query) {
   });
 
   const ctaClickEvents = await prisma.marketingEvent.findMany({
-    where: { ...where, eventName: 'marketing.cta_click', ctaId: { not: null } },
+    where: {
+      ...where,
+      eventName: { in: ['marketing.cta_click', 'marketing.nav_click'] },
+      ctaId: { not: null },
+    },
     select: { ctaId: true, sessionId: true, properties: true },
   });
 
