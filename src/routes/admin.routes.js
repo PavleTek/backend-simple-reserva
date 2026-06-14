@@ -1759,6 +1759,15 @@ router.get('/booking-analytics', async (req, res, next) => {
 
 // ─── Marketing / Landing Analytics ───────────────────────────────
 
+router.get('/public-stats', async (req, res, next) => {
+  try {
+    const { getPublicStats } = require('../services/publicStatsService');
+    res.json(await getPublicStats());
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/marketing-analytics', async (req, res, next) => {
   try {
     const { getMarketingAnalytics } = require('../services/marketingAnalyticsService');
