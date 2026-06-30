@@ -311,7 +311,9 @@ async function canAddZone(restaurantId, includeTrial = true) {
   const maxZones = config.maxZonesPerRestaurant;
   if (maxZones == null) return { allowed: true }; // unlimited
 
-  const count = await prisma.zone.count({ where: { restaurantId } });
+  const count = await prisma.zone.count({
+    where: { restaurantId, isActive: true },
+  });
   if (count >= maxZones) {
     return {
       allowed: false,
@@ -334,7 +336,10 @@ async function canAddTable(restaurantId, includeTrial = true) {
   if (maxTables == null) return { allowed: true }; // unlimited
 
   const count = await prisma.restaurantTable.count({
-    where: { zone: { restaurantId } },
+    where: {
+      isActive: true,
+      zone: { restaurantId, isActive: true },
+    },
   });
   if (count >= maxTables) {
     return {
