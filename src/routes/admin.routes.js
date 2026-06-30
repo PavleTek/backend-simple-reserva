@@ -2789,4 +2789,18 @@ router.get('/billing/integrity', async (req, res, next) => {
   }
 });
 
+router.get('/ownership-transfers', async (req, res, next) => {
+  try {
+    const ownershipTransferService = require('../services/ownershipTransferService');
+    const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || '20'), 10) || 20));
+    const status = req.query.status ? String(req.query.status) : undefined;
+    const search = req.query.search ? String(req.query.search) : undefined;
+    const result = await ownershipTransferService.listTransfersAdmin({ page, limit, status, search });
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

@@ -661,6 +661,7 @@ async function notifyRestaurantNewReservation(options) {
 async function sendDailySummary(options) {
   const {
     email,
+    recipientName,
     restaurantName,
     count,
     firstTime,
@@ -673,10 +674,12 @@ async function sendDailySummary(options) {
   const {
     buildDailySummaryHtml,
     buildDailySummarySubject,
+    totalCovers,
   } = require('../templates/dailySummaryEmail');
   const { sendEmail } = require('./emailService');
 
-  const subject = buildDailySummarySubject(count, restaurantName);
+  const covers = totalCovers(reservations);
+  const subject = buildDailySummarySubject(count, restaurantName, firstTime, covers);
   const html = buildDailySummaryHtml({
     restaurantName,
     count,
@@ -684,6 +687,7 @@ async function sendDailySummary(options) {
     firstTime,
     panelUrl,
     reservations,
+    recipientName,
     assetBaseUrl: getEmailAssetBaseUrl(),
   });
 
@@ -698,6 +702,60 @@ async function sendDailySummary(options) {
     return true;
   } catch (err) {
     console.error('[Notification] Daily summary email error:', err.message);
+    return false;
+  }
+}
+
+async function sendReservationReminderEmail(options) {
+  const {
+    customerEmail,
+    restaurantName,
+    customerName,
+    dateTime,
+    partySize,
+    secureToken,
+    timezone,
+  } = options;
+  if (!customerEmail) {
+    console.log('[Notification] sendReservationReminderEmail: skipped — no customerEmail');
+    return false;
+  }
+
+  const {
+    buildReservationReminderHtml,
+    buildReservationReminderSubject,
+  } = require('../templates/reservationReminderEmail');
+  const { sendEmail } = require('./emailService');
+
+  const dt = new Date(dateTime);
+  const timeStr = formatTime(dt, timezone || undefined);
+  const baseUrl = getBaseUrl().replace(/\/$/, '');
+  const viewUrl = `${baseUrl}/reservation/${secureToken}`;
+
+  const html = buildReservationReminderHtml({
+    restaurantName,
+    customerName,
+    dateTime,
+    partySize,
+    viewUrl,
+    timezone: timezone || null,
+    assetBaseUrl: baseUrl,
+  });
+
+  try {
+    await sendEmail({
+      fromEmail: await resolveTransactionalFromEmail(),
+      toEmails: [customerEmail],
+      subject: buildReservationReminderSubject(restaurantName, timeStr),
+      content: html,
+      isHtml: true,
+    });
+    return true;
+  } catch (err) {
+    console.error('[Notification] sendReservationReminderEmail: FAILED', {
+      to: customerEmail,
+      message: err.message,
+    });
     return false;
   }
 }
@@ -1077,6 +1135,7 @@ module.exports = {
   sendDailySummary,
   sendPaymentFailureNotification,
   sendReservationConfirmationEmail,
+  sendReservationReminderEmail,
   sendCancellationNotification,
   notifyRestaurantWaitlistEntry,
   sendPostVisitFeedbackEmail,

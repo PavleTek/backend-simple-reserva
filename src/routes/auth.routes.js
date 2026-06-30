@@ -31,6 +31,7 @@ const promoCodeLimiter = rateLimit({
 const {
   login,
   register,
+  registerFromTransfer,
   addRestaurant,
   getRestaurantsTodaySummary,
   getProfile,
@@ -53,6 +54,7 @@ const {
 
 router.post('/login', loginLimiter, login);
 router.post('/register', registerLimiter, register);
+router.post('/register-from-transfer/:token', registerLimiter, registerFromTransfer);
 
 router.post('/promo-code/validate', promoCodeLimiter, async (req, res, next) => {
   try {

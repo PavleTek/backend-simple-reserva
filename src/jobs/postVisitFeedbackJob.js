@@ -19,20 +19,24 @@ const { ensureFeedbackRequestForReservation } = require('../services/feedbackEng
 
 const BATCH_SIZE = 200;
 
+/** Campos usados por el job; `enabled` es obligatorio para el loop de pendientes. */
+const SURVEY_JOB_SELECT = {
+  restaurantId: true,
+  enabled: true,
+  sendDelayMinutes: true,
+  sendWindowMinutes: true,
+  eligibilityMode: true,
+  excludeWalkIns: true,
+  minPartySize: true,
+  maxPartySize: true,
+  minDaysBetweenFeedbackRequests: true,
+};
+
 async function findCandidateReservations() {
   const now = new Date();
   const surveys = await prisma.feedbackSurvey.findMany({
     where: { enabled: true },
-    select: {
-      restaurantId: true,
-      sendDelayMinutes: true,
-      sendWindowMinutes: true,
-      eligibilityMode: true,
-      excludeWalkIns: true,
-      minPartySize: true,
-      maxPartySize: true,
-      minDaysBetweenFeedbackRequests: true,
-    },
+    select: SURVEY_JOB_SELECT,
   });
 
   if (surveys.length === 0) {
@@ -170,10 +174,12 @@ async function runPostVisitFeedback() {
         sentAt: null,
       },
       include: { reservation: true },
+      orderBy: { scheduledFor: 'asc' },
       take: BATCH_SIZE,
     });
 
     const now = new Date();
+    let pendingProcessed = 0;
     for (const req of pendingToSend) {
       if (!req.reservation) continue;
       const survey = surveyByRestaurant.get(req.restaurantId);
@@ -183,7 +189,19 @@ async function runPostVisitFeedback() {
       if (!planOk) continue;
 
       const windowInfo = evaluateSendWindowForReservation(req.reservation, survey, now);
-      if (!windowInfo.inWindow) continue;
+      if (!windowInfo.inWindow) {
+        if (windowInfo.expired) {
+          const canSend = await canSendFeedback(req.restaurantId);
+          const result = await processFeedbackRequest({
+            reservation: req.reservation,
+            survey,
+            canSend,
+          });
+          pendingProcessed++;
+          if (result.skipped) skipped++;
+        }
+        continue;
+      }
 
       const canSend = await canSendFeedback(req.restaurantId);
       const overrides =
@@ -197,13 +215,20 @@ async function runPostVisitFeedback() {
         canSend,
         adminOverrides: overrides,
       });
+      pendingProcessed++;
       if (result.sent) sent++;
       else if (result.skipped) skipped++;
     }
 
-    if (candidates.length > 0) {
+    if (candidates.length > 0 || pendingProcessed > 0) {
       logger.info(
-        { sent, skipped, expired, candidates: candidates.length },
+        {
+          sent,
+          skipped,
+          expired,
+          candidates: candidates.length,
+          pendingProcessed,
+        },
         '[FeedbackJob] post-visit feedback run'
       );
     }
@@ -220,4 +245,4 @@ function startPostVisitFeedbackJob() {
   logger.info({ schedule, tz: process.env.TZ || 'America/Santiago' }, '[FeedbackJob] scheduled');
 }
 
-module.exports = { startPostVisitFeedbackJob, runPostVisitFeedback };
+module.exports = { startPostVisitFeedbackJob, runPostVisitFeedback, SURVEY_JOB_SELECT };

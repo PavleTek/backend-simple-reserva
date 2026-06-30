@@ -34,6 +34,9 @@ model User {
   offeredPlans                  CustomPlanOffer[]
   reservationsConfirmed         Reservation[] @relation("ReservationConfirmedBy")
   reservationsUpdated           Reservation[] @relation("ReservationUpdatedBy")
+  transfersInitiated            OwnershipTransfer[] @relation("TransferInitiator")
+  transfersFromOwnership        OwnershipTransfer[] @relation("TransferFromOwner")
+  transfersAsTarget             OwnershipTransfer[] @relation("TransferTarget")
   
   @@index([role])
 }
@@ -70,6 +73,7 @@ model RestaurantOrganization {
   referralCredits ReferralCredit[]
   billingEmailLogs BillingEmailLog[]
   billingOpsAlerts BillingOpsAlert[]
+  ownershipTransfers OwnershipTransfer[]
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -468,6 +472,7 @@ model Reservation {
   customerPhone   String?
   customerEmail   String?
   emailSent       Boolean   @default(false)
+  reminderEmailSent Boolean @default(false)
   teamNotifySent        Boolean   @default(false)
   teamNotifySentAt      DateTime?
   teamNotifyRecipients  String[]  @default([])
@@ -1245,6 +1250,52 @@ model AuditLog {
   @@index([restaurantId])
   @@index([actorUserId])
   @@index([action])
+  @@index([createdAt])
+}
+
+enum OwnershipTransferStatus {
+  pending
+  accepted
+  declined
+  cancelled
+  expired
+}
+
+enum OutgoingOwnerDisposition {
+  manager
+  leave
+}
+
+model OwnershipTransfer {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  initiatedByUserId String?
+  initiatedBy       User?  @relation("TransferInitiator", fields: [initiatedByUserId], references: [id], onDelete: SetNull)
+  fromOwnerId       String?
+  fromOwner         User?  @relation("TransferFromOwner", fields: [fromOwnerId], references: [id], onDelete: SetNull)
+
+  targetEmail   String
+  targetUserId  String?
+  targetUser    User?    @relation("TransferTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  outgoingOwnerDisposition OutgoingOwnerDisposition @default(manager)
+  status        OwnershipTransferStatus  @default(pending)
+
+  tokenHash     String   @unique
+  expiresAt     DateTime
+  acceptedAt    DateTime?
+  declinedAt    DateTime?
+  cancelledAt   DateTime?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([organizationId, status])
+  @@index([targetUserId])
+  @@index([targetEmail])
+  @@index([status])
   @@index([createdAt])
 }
 

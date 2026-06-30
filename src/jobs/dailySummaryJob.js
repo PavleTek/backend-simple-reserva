@@ -1,5 +1,5 @@
 /**
- * Sends morning daily reservation summary to restaurant owners/admins.
+ * Sends morning daily reservation summary to restaurant team (notification prefs).
  * Runs daily at 08:00 Chile time.
  */
 
@@ -12,11 +12,8 @@ const { formatTime, formatDateDisplay } = require('../utils/dateFormat');
 const { getEffectiveTimezone } = require('../utils/timezone');
 const { buildReservationDayWhere } = require('../utils/reservationDateFilter');
 const { reservationsListUrl } = require('../utils/restaurantPanelUrl');
+const { buildNotificationSettingsResponse } = require('../services/reservationNotifyRecipients');
 
-/**
- * Fecha calendario "hoy" en la TZ del job (America/Santiago por defecto).
- * El resumen se arma por restaurante usando la TZ efectiva de cada local.
- */
 function getJobTimezone() {
   return process.env.TZ || 'America/Santiago';
 }
@@ -27,11 +24,9 @@ async function runDailySummary() {
       where: { isActive: true, isDeleted: false },
       include: {
         organization: {
-          include: {
+          select: {
+            id: true,
             owner: { select: { email: true, country: true } },
-            managers: {
-              include: { user: { select: { email: true } } },
-            },
           },
         },
       },
@@ -39,6 +34,7 @@ async function runDailySummary() {
 
     let sent = 0;
     for (const rest of restaurants) {
+      const organizationId = rest.organizationId;
       const ownerCountry = rest.organization?.owner?.country || 'CL';
       const timezone = getEffectiveTimezone(rest, ownerCountry);
       const todayYmd = DateTime.now().setZone(timezone).toFormat('yyyy-MM-dd');
@@ -52,6 +48,8 @@ async function runDailySummary() {
           dateTime: true,
           partySize: true,
           customerName: true,
+          notes: true,
+          table: { select: { label: true } },
         },
       });
 
@@ -65,28 +63,34 @@ async function runDailySummary() {
       const panelUrl = reservationsListUrl({ date: todayYmd });
       const dateDisplay = formatDateDisplay(
         DateTime.fromISO(todayYmd, { zone: timezone }).toJSDate(),
-        timezone
+        timezone,
       );
 
       const reservationItems = reservations.map((r) => ({
         time: formatTime(new Date(r.dateTime), timezone),
         partySize: r.partySize,
         customerName: r.customerName,
+        tableLabel: r.table?.label ?? null,
+        notes: r.notes ?? null,
       }));
 
-      const emails = new Set();
-      if (rest.organization?.owner?.email) {
-        emails.add(rest.organization.owner.email);
-      }
-      if (rest.organization?.managers) {
-        rest.organization.managers.forEach((m) => {
-          if (m.user?.email) emails.add(m.user.email);
-        });
+      let activeRecipients = [];
+      try {
+        const settings = await buildNotificationSettingsResponse(organizationId, rest.id);
+        activeRecipients = settings.activeRecipients || [];
+      } catch (err) {
+        logger.warn(
+          { err, restaurantId: rest.id, organizationId },
+          '[DailySummaryJob] could not load notification recipients',
+        );
       }
 
-      for (const email of emails) {
+      if (activeRecipients.length === 0) continue;
+
+      for (const recipient of activeRecipients) {
         const ok = await sendDailySummary({
-          email,
+          email: recipient.email,
+          recipientName: recipient.name,
           restaurantName: rest.name,
           count,
           firstTime,

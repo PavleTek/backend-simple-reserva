@@ -774,8 +774,10 @@ router.get('/billing/invoices/:invoiceId/pdf', authenticateRestaurantRoles(['res
     }
 
     const pdf = await generateReceiptPdf(receipt, receipt.organization, receipt.plan);
+    const datePart = receipt.paymentDate.toISOString().slice(0, 10);
+    const shortId = receipt.id.slice(-8).toUpperCase();
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="recibo-${receipt.id}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="SimpleReserva-comprobante-${datePart}-${shortId}.pdf"`);
     res.send(pdf);
   } catch (error) {
     next(error);
