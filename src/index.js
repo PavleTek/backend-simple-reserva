@@ -126,6 +126,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
+app.get("/logo-full-480w.png", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "assets", "brand", "logo-full-480w.png"));
+});
 
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "SimpleReserva API" });

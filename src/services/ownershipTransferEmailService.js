@@ -12,7 +12,7 @@ const {
 } = require('../templates/ownershipTransferEmail');
 
 function getAssetBaseUrl() {
-  return process.env.EMAIL_ASSET_BASE_URL || process.env.FRONTEND_LANDING_PAGE_URL || '';
+  return process.env.EMAIL_ASSET_BASE_URL || process.env.BACKEND_PUBLIC_URL || process.env.FRONTEND_LANDING_PAGE_URL || '';
 }
 
 function getPanelUrl() {
