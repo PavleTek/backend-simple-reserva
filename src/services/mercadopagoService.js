@@ -249,7 +249,7 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
   }
 
   const buildBody = (email) => ({
-    reason: `SimpleReserva ${config.name} - ${organization.name}`,
+    reason: `SimpleReserva ${config.name} - ${organization.name}`.substring(0, 40),
     external_reference: externalRef,
     payer_email: email,
     status: 'pending',
