@@ -112,9 +112,60 @@ function computeTableFloorStatus(tableReservations, now, bufferMs = 0) {
   return { status, currentReservation, nextReservation };
 }
 
+/**
+ * Aplica el estado derivado 'blocked' a las mesas vinculadas de una mesa gatillo
+ * que en este momento tiene una reserva ocupando el salón (occupied/late_arrival)
+ * y cumple el umbral `minPartySize` de la regla. No pisa un estado de ocupación
+ * real (occupied/late_arrival) de la propia mesa bloqueada.
+ *
+ * @param {Array<{id: string, label: string, status: string, currentReservation: object|null}>} tableStatuses
+ * @param {Array<{triggerTableId: string, blockedTableId: string, minPartySize: number|null}>} blockRules
+ * @returns {typeof tableStatuses} - el mismo array, mutado in place
+ */
+function applyBlockedStatus(tableStatuses, blockRules) {
+  if (!blockRules?.length) return tableStatuses;
+
+  const statusById = new Map(tableStatuses.map((t) => [t.id, t]));
+  const rulesByTrigger = new Map();
+  for (const rule of blockRules) {
+    const list = rulesByTrigger.get(rule.triggerTableId) || [];
+    list.push(rule);
+    rulesByTrigger.set(rule.triggerTableId, list);
+  }
+
+  for (const trigger of tableStatuses) {
+    if (trigger.status !== 'occupied' && trigger.status !== 'late_arrival') continue;
+    const rules = rulesByTrigger.get(trigger.id);
+    if (!rules) continue;
+    const active = trigger.currentReservation;
+    if (!active) continue;
+
+    for (const rule of rules) {
+      if (rule.minPartySize != null && (active.partySize ?? 0) < rule.minPartySize) continue;
+      const blockedEntry = statusById.get(rule.blockedTableId);
+      if (!blockedEntry) continue;
+      if (blockedEntry.status === 'occupied' || blockedEntry.status === 'late_arrival') continue;
+
+      blockedEntry.status = 'blocked';
+      blockedEntry.blockedBy = {
+        tableId: trigger.id,
+        tableLabel: trigger.label,
+        reservationId: active.id,
+        customerName: active.customerName,
+        partySize: active.partySize,
+        dateTime: active.dateTime,
+        dateTimeEnd: active.dateTimeEnd,
+      };
+    }
+  }
+
+  return tableStatuses;
+}
+
 module.exports = {
   LATE_GRACE_MINUTES,
   RESERVATION_SOON_MINUTES,
   computeTableFloorStatus,
   reservationIsWalkIn,
+  applyBlockedStatus,
 };

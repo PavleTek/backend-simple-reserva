@@ -2,7 +2,7 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { pickTable, parseReservations, msUntilNextReservation } = require('./capacity');
+const { pickTable, countFreeTables, parseReservations, parseHolds, msUntilNextReservation } = require('./capacity');
 
 function makeTable(id, capacity, sortOrder = 0) {
   return {
@@ -58,6 +58,89 @@ describe('pickTable', () => {
       [mesa], 2, T(0), T(60), 0, parsedRes, [], null, null
     );
     assert.equal(result, null, 'Mesa con arrived solapado debe estar bloqueada');
+  });
+});
+
+describe('mesas vinculadas (TableBlockRule)', () => {
+  const mesaEvento = makeTable('mesa-evento', 300, 1);
+  const a1 = makeTable('a1', 6, 2);
+  const a2 = makeTable('a2', 6, 3);
+  const blockRules = [
+    { triggerTableId: 'mesa-evento', blockedTableId: 'a1', minPartySize: null },
+    { triggerTableId: 'mesa-evento', blockedTableId: 'a2', minPartySize: 20 },
+  ];
+
+  test('countFreeTables: mesa vinculada queda ocupada mientras la mesa gatillo tiene una reserva activa', () => {
+    const parsedRes = parseReservations([
+      { tableId: 'mesa-evento', startUtc: T(0).toISOString(), durationMinutes: 120, partySize: 70 },
+    ]);
+    const free = countFreeTables(
+      [a1], T(30), T(90), 0, parsedRes, [], null, [],
+      { partySize: 6, blockRules, allTables: [mesaEvento, a1, a2] }
+    );
+    assert.equal(free, 0, 'a1 debe estar bloqueada por la reserva de mesa-evento');
+  });
+
+  test('countFreeTables: mesa vinculada con umbral no se bloquea si la reserva del gatillo es chica', () => {
+    const parsedRes = parseReservations([
+      { tableId: 'mesa-evento', startUtc: T(0).toISOString(), durationMinutes: 120, partySize: 8 },
+    ]);
+    const free = countFreeTables(
+      [a2], T(30), T(90), 0, parsedRes, [], null, [],
+      { partySize: 4, blockRules, allTables: [mesaEvento, a1, a2] }
+    );
+    assert.equal(free, 1, 'a2 solo se bloquea si la reserva del gatillo alcanza 20 personas');
+  });
+
+  test('pickTable es recíproco: la mesa gatillo no está disponible si una mesa vinculada requerida está ocupada', () => {
+    // a1 tiene una reserva directa que solapa el slot deseado.
+    const parsedRes = parseReservations([
+      { tableId: 'a1', startUtc: T(0).toISOString(), durationMinutes: 90, partySize: 4 },
+    ]);
+    const selected = pickTable(
+      [mesaEvento, a1, a2], 70, T(0), T(90), 0, parsedRes, [], null, null,
+      { blockRules }
+    );
+    assert.equal(selected, null, 'mesa-evento requiere a1 y a2 libres para 70 personas; a1 está ocupada');
+  });
+
+  test('pickTable acepta la mesa gatillo cuando todas sus mesas vinculadas requeridas están libres', () => {
+    const selected = pickTable(
+      [mesaEvento, a1, a2], 70, T(0), T(90), 0, [], [], null, null,
+      { blockRules }
+    );
+    assert.equal(selected?.id, 'mesa-evento');
+  });
+
+  test('pickTable: por debajo del umbral, la regla de a2 no aplica y no bloquea la mesa gatillo', () => {
+    const parsedRes = parseReservations([
+      { tableId: 'a2', startUtc: T(0).toISOString(), durationMinutes: 90, partySize: 4 },
+    ]);
+    // Party size 8 < minPartySize 20 de la regla hacia a2 → a2 no es requerida, solo a1.
+    const selected = pickTable(
+      [mesaEvento, a1, a2], 8, T(0), T(90), 0, parsedRes, [], null, null,
+      { blockRules }
+    );
+    assert.equal(selected?.id, 'mesa-evento');
+  });
+
+  test('un hold activo en la mesa vinculada también bloquea la mesa gatillo (bidireccional)', () => {
+    const parsedHolds = parseHolds([
+      { tableId: 'a1', startUtc: T(0).toISOString(), durationMinutes: 90, holdToken: 'h1', partySize: 4 },
+    ]);
+    const selected = pickTable(
+      [mesaEvento, a1, a2], 70, T(0), T(90), 0, [], parsedHolds, null, null,
+      { blockRules }
+    );
+    assert.equal(selected, null);
+  });
+
+  test('sin blockRules, comportamiento idéntico al motor v3 (sin cambios)', () => {
+    const selected = pickTable(
+      [mesaEvento, a1, a2], 70, T(0), T(90), 0, [], [], null, null,
+      {}
+    );
+    assert.equal(selected?.id, 'mesa-evento');
   });
 });
 

@@ -48,8 +48,6 @@ async function getAvailableTablesForSlot({
   const allTables = await prisma.restaurantTable.findMany({
     where: {
       isActive: true,
-      minCapacity: { lte: size },
-      maxCapacity: { gte: size },
       zone: { restaurantId, isActive: true },
     },
     include: { zone: { select: { id: true, name: true, sortOrder: true } } },
@@ -72,10 +70,10 @@ async function getAvailableTablesForSlot({
     whereReservations.id = { not: excludeReservationId };
   }
 
-  const [dayReservations, blockedSlots, activeHolds] = await Promise.all([
+  const [dayReservations, blockedSlots, activeHolds, blockRules] = await Promise.all([
     prisma.reservation.findMany({
       where: whereReservations,
-      select: { id: true, tableId: true, dateTime: true, durationMinutes: true },
+      select: { id: true, tableId: true, dateTime: true, durationMinutes: true, partySize: true },
     }),
     prisma.blockedSlot.findMany({
       where: {
@@ -95,9 +93,13 @@ async function getAvailableTablesForSlot({
               lte: new Date(dateTime.getTime() + 4 * 60 * 60000),
             },
           },
-          select: { tableId: true, dateTime: true, durationMinutes: true, holdToken: true },
+          select: { tableId: true, dateTime: true, durationMinutes: true, holdToken: true, partySize: true },
         })
       : [],
+    prisma.tableBlockRule.findMany({
+      where: { restaurantId },
+      select: { triggerTableId: true, blockedTableId: true, minPartySize: true },
+    }),
   ]);
 
   if (blockedSlots.length > 0) {
@@ -108,12 +110,14 @@ async function getAvailableTablesForSlot({
     tableId: r.tableId,
     startUtc: r.dateTime.toISOString(),
     durationMinutes: r.durationMinutes,
+    partySize: r.partySize,
   }));
   const holdsRaw = activeHolds.map((h) => ({
     tableId: h.tableId,
     startUtc: h.dateTime.toISOString(),
     durationMinutes: h.durationMinutes,
     holdToken: h.holdToken,
+    partySize: h.partySize,
   }));
 
   const parsedRes = parseReservations(reservationsRaw);
@@ -142,6 +146,8 @@ async function getAvailableTablesForSlot({
       parsedRes,
       parsedHolds,
       null,
+      [],
+      { partySize: size, blockRules, allTables: tablesMapped }
     );
     if (free > 0) {
       const full = allTables.find((t) => t.id === table.id);

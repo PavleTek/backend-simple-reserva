@@ -4,7 +4,13 @@ const { authenticateToken, authorizeRestaurant, authenticateRestaurantRoles } = 
 const { hashPassword } = require('../utils/password');
 const { NotFoundError, ValidationError, ForbiddenError } = require('../utils/errors');
 const planService = require('../services/planService');
-const { ROLES, ROLES_OWNER, ROLES_TEAM_VIEW } = require('../auth/roles');
+const {
+  ROLES,
+  ROLES_OWNER,
+  ROLES_TEAM_VIEW,
+  ROLES_TEAM_MANAGE,
+  ASSIGNABLE_ROLES,
+} = require('../auth/roles');
 const { writeAuditLog } = require('../services/auditLogService');
 
 const router = express.Router({ mergeParams: true });
@@ -95,7 +101,7 @@ router.get(
 
 router.post(
   '/',
-  authenticateRestaurantRoles(ROLES_OWNER),
+  authenticateRestaurantRoles(ROLES_TEAM_MANAGE),
   async (req, res, next) => {
     try {
       const {
@@ -106,10 +112,17 @@ router.post(
         restaurantIds,
         role: inviteRole,
       } = req.body;
-      const { restaurantId } = req.activeRestaurant;
+      const { restaurantId, role: actorRole } = req.activeRestaurant;
 
       const memberRole =
         inviteRole === ROLES.HOST ? ROLES.HOST : ROLES.MANAGER;
+
+      // Enforce role hierarchy: an actor may only create roles that are
+      // explicitly assignable to their role (never an owner).
+      const assignableRoles = ASSIGNABLE_ROLES[actorRole] || [];
+      if (!assignableRoles.includes(memberRole)) {
+        throw new ForbiddenError('No puedes crear miembros con este rol');
+      }
 
       const restaurantIdsToAdd =
         Array.isArray(restaurantIds) && restaurantIds.length > 0
@@ -128,11 +141,47 @@ router.post(
 
       const restaurant = await prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        select: { organizationId: true },
+        select: { organizationId: true, organization: { select: { ownerId: true } } },
       });
 
+      if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
+
+      const ownerId = restaurant.organization.ownerId;
+
+      // Restrict target locations to those the actor is allowed to manage.
+      // Owners/super_admins may assign any location in the org; managers are
+      // limited to the locations they themselves are assigned to.
+      let allowedRestaurantIds;
+      if (actorRole === ROLES.MANAGER) {
+        const actorManager = await prisma.organizationManager.findUnique({
+          where: {
+            organizationId_userId: {
+              organizationId: restaurant.organizationId,
+              userId: req.user.id,
+            },
+          },
+          include: { restaurantAssignments: { select: { restaurantId: true } } },
+        });
+        allowedRestaurantIds = new Set(
+          (actorManager?.restaurantAssignments || []).map((ra) => ra.restaurantId),
+        );
+      } else {
+        const orgRestaurants = await prisma.restaurant.findMany({
+          where: { organizationId: restaurant.organizationId },
+          select: { id: true },
+        });
+        allowedRestaurantIds = new Set(orgRestaurants.map((r) => r.id));
+      }
+
+      const outOfScope = restaurantIdsToAdd.filter(
+        (rid) => !allowedRestaurantIds.has(rid),
+      );
+      if (outOfScope.length > 0) {
+        throw new ForbiddenError('No tienes acceso a uno o más locales seleccionados');
+      }
+
       for (const rid of restaurantIdsToAdd) {
-        const canAdd = await planService.canAddTeamMember(req.user.id, rid, true);
+        const canAdd = await planService.canAddTeamMember(ownerId, rid, true);
         if (!canAdd.allowed) {
           throw new ValidationError(canAdd.reason || 'Límite de miembros alcanzado');
         }

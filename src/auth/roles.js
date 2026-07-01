@@ -23,6 +23,22 @@ const ROLES_OWNER = [ROLES.OWNER];
 /** Team listing (not invite). */
 const ROLES_TEAM_VIEW = [ROLES.OWNER, ROLES.MANAGER];
 
+/** Roles that may invite/create team members. */
+const ROLES_TEAM_MANAGE = [ROLES.OWNER, ROLES.MANAGER];
+
+/**
+ * Which roles a given actor role may assign when creating a team member.
+ * Owners create managers/hosts. Managers may only create hosts — they cannot
+ * create other managers, nor owners. Nobody can create an owner through the
+ * team endpoint.
+ */
+const ASSIGNABLE_ROLES = {
+  [ROLES.SUPER_ADMIN]: [ROLES.MANAGER, ROLES.HOST],
+  [ROLES.OWNER]: [ROLES.MANAGER, ROLES.HOST],
+  [ROLES.MANAGER]: [ROLES.HOST],
+  [ROLES.HOST]: [],
+};
+
 /** Feedback dashboard: summary, responses, alerts (read + resolve alerts). */
 const ROLES_FEEDBACK_VIEW = [ROLES.OWNER, ROLES.MANAGER];
 
@@ -43,6 +59,8 @@ module.exports = {
   ROLES_CONFIG_VIEW,
   ROLES_OWNER,
   ROLES_TEAM_VIEW,
+  ROLES_TEAM_MANAGE,
+  ASSIGNABLE_ROLES,
   ROLES_FEEDBACK_VIEW,
   ROLES_FEEDBACK_SETTINGS,
   RESTAURANT_ROLE_LABELS,

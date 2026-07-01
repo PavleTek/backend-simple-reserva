@@ -245,6 +245,7 @@ model Restaurant {
   feedbackAlerts            FeedbackAlert[]
   activities                Activity[]
   activityBookings          ActivityBooking[]
+  tableBlockRules           TableBlockRule[]
 
   @@index([organizationId])
   @@index([isActive])
@@ -363,8 +364,30 @@ model RestaurantTable {
 
   reservations  Reservation[]
   holds         ReservationHold[]
+  blockRulesAsTrigger TableBlockRule[] @relation("BlockRuleTrigger")
+  blockRulesAsBlocked TableBlockRule[] @relation("BlockRuleBlocked")
 
   @@index([zoneId])
+}
+
+/// Regla de bloqueo mesa→mesas: cuando `triggerTable` recibe una reserva/hold activo
+/// de `partySize` >= minPartySize (o cualquiera si es null), `blockedTable` queda
+/// bloqueada durante ese mismo intervalo. Relación directa, sin cascada entre reglas.
+model TableBlockRule {
+  id             String          @id @default(cuid())
+  restaurantId   String
+  restaurant     Restaurant      @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  triggerTableId String
+  triggerTable   RestaurantTable @relation("BlockRuleTrigger", fields: [triggerTableId], references: [id], onDelete: Cascade)
+  blockedTableId String
+  blockedTable   RestaurantTable @relation("BlockRuleBlocked", fields: [blockedTableId], references: [id], onDelete: Cascade)
+  /// null = la regla aplica sin importar el tamaño de la reserva
+  minPartySize   Int?
+  createdAt      DateTime        @default(now())
+
+  @@unique([triggerTableId, blockedTableId])
+  @@index([restaurantId])
+  @@index([blockedTableId])
 }
 
 model Schedule {

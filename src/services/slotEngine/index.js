@@ -129,6 +129,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
     reservationWindows,
     activeHolds,
     pacingRules,
+    blockRules,
   ] = await Promise.all([
     prisma.restaurantTable.findMany({
       where: {
@@ -152,7 +153,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
     }),
     prisma.reservation.findMany({
       where: reservationWhere,
-      select: { tableId: true, dateTime: true, durationMinutes: true },
+      select: { tableId: true, dateTime: true, durationMinutes: true, partySize: true },
     }),
     prisma.reservationWindow.findMany({
       where: { restaurantId: restaurant.id, dayOfWeek },
@@ -167,11 +168,15 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
             expiresAt: { gt: now },
             dateTime: { gte: windowStart, lte: dayEnd },
           },
-          select: { tableId: true, dateTime: true, durationMinutes: true, holdToken: true },
+          select: { tableId: true, dateTime: true, durationMinutes: true, holdToken: true, partySize: true },
         })
       : Promise.resolve([]),
     prisma.pacingRule.findMany({
       where: { restaurantId: restaurant.id },
+    }),
+    prisma.tableBlockRule.findMany({
+      where: { restaurantId: restaurant.id },
+      select: { triggerTableId: true, blockedTableId: true, minPartySize: true },
     }),
   ]);
 
@@ -242,6 +247,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       tableId: r.tableId,
       startUtc: r.dateTime.toISOString(),
       durationMinutes: r.durationMinutes,
+      partySize: r.partySize,
     })),
     blockingSessions: blockingSessionsRaw,
     activeHolds: activeHolds.map((h) => ({
@@ -249,11 +255,17 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       startUtc: h.dateTime.toISOString(),
       durationMinutes: h.durationMinutes,
       holdToken: h.holdToken,
+      partySize: h.partySize,
     })),
     pacingRules: pacingRules.map((p) => ({
       dayOfWeek: p.dayOfWeek,
       maxCoversPerSlot: p.maxCoversPerSlot,
       maxReservationsPerSlot: p.maxReservationsPerSlot,
+    })),
+    blockRules: blockRules.map((r) => ({
+      triggerTableId: r.triggerTableId,
+      blockedTableId: r.blockedTableId,
+      minPartySize: r.minPartySize,
     })),
     serverNowUtc: serverNow.toISOString(),
     isToday: dateStr === todayLocal,
@@ -285,6 +297,7 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
     timezone,
     date,
     blockingSessions,
+    blockRules,
   } = snapshot;
 
   if (!schedule) return { slots: [], reason: 'no_schedule' };
@@ -357,7 +370,8 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
       parsedRes,
       parsedHoldsArr,
       excludeHoldToken,
-      blockingSessions ?? []
+      blockingSessions ?? [],
+      { partySize, blockRules: blockRules ?? [], allTables: tables }
     );
     if (openTables === 0) continue;
 
