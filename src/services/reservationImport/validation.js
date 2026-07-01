@@ -17,7 +17,7 @@ const {
   parsePartySize,
   durationFromEnd,
 } = require('./normalize');
-const { DEFAULT_OPTIONS, MAX_ROWS } = require('./constants');
+const { DEFAULT_OPTIONS, MAX_ROWS, IMPORT_UNKNOWN_CUSTOMER_NAME, DEFAULT_IMPORT_PARTY_SIZE } = require('./constants');
 
 const ACTIVE_TABLE_STATUSES = ['confirmed', 'arrived'];
 
@@ -29,8 +29,11 @@ function contactKey(row, strategy) {
   return email || phone || null;
 }
 
-function buildNaturalKey(restaurantId, dateTime, contact, tableId) {
-  return `${restaurantId}|${dateTime.toISOString()}|${contact || ''}|${tableId || ''}`;
+function buildNaturalKey(restaurantId, dateTime, contact, tableId, partySize, customerName) {
+  if (contact) {
+    return `${restaurantId}|${dateTime.toISOString()}|${contact}|${tableId || ''}`;
+  }
+  return `${restaurantId}|${dateTime.toISOString()}|${partySize}|${tableId || ''}|${customerName || ''}`;
 }
 
 async function loadRestaurantContext(restaurantId) {
@@ -109,11 +112,17 @@ async function validateRow(rawRow, rowNumber, ctx, options, existingKeys, fileDu
   if (!date) errors.push({ field: 'date', reason: 'fecha_invalida' });
   if (!startTime) errors.push({ field: 'startTime', reason: 'hora_inicio_invalida' });
 
-  const customerName = String(rawRow.customerName || '').trim();
-  if (!customerName) errors.push({ field: 'customerName', reason: 'nombre_requerido' });
+  const customerNameRaw = String(rawRow.customerName || '').trim();
+  const customerName = customerNameRaw || IMPORT_UNKNOWN_CUSTOMER_NAME;
+  if (!customerNameRaw) {
+    warnings.push({ field: 'customerName', reason: 'nombre_por_defecto' });
+  }
 
-  const partySize = parsePartySize(rawRow.partySize);
-  if (!partySize) errors.push({ field: 'partySize', reason: 'comensales_invalidos' });
+  let partySize = parsePartySize(rawRow.partySize);
+  if (!partySize) {
+    partySize = DEFAULT_IMPORT_PARTY_SIZE;
+    warnings.push({ field: 'partySize', reason: 'comensales_por_defecto' });
+  }
 
   const emailResult = normalizeEmail(rawRow.customerEmail);
   if (emailResult?.invalid) warnings.push({ field: 'customerEmail', reason: 'email_invalido' });
@@ -122,15 +131,14 @@ async function validateRow(rawRow, rowNumber, ctx, options, existingKeys, fileDu
 
   const { restaurant, timezone, maxTableCapacity } = ctx;
 
-  if (restaurant.requireEmail && !customerEmail) {
-    errors.push({ field: 'customerEmail', reason: 'email_requerido' });
-  }
-  if (restaurant.requirePhoneNumber && !customerPhone) {
-    errors.push({ field: 'customerPhone', reason: 'telefono_requerido' });
+  // Migración: no exigimos email/teléfono aunque el restaurante los pida en reserva web
+  if (!customerEmail && !customerPhone && !customerNameRaw) {
+    warnings.push({ field: 'customerName', reason: 'sin_datos_cliente' });
   }
 
-  const status = mapStatus(rawRow.status);
-  if (!status) errors.push({ field: 'status', reason: 'estado_invalido' });
+  const statusRaw = String(rawRow.status || '').trim();
+  const status = statusRaw ? mapStatus(rawRow.status) : 'confirmed';
+  if (statusRaw && !status) errors.push({ field: 'status', reason: 'estado_invalido' });
 
   if (errors.length) {
     return { ok: false, errors, warnings, rowNumber };
@@ -193,7 +201,14 @@ async function validateRow(rawRow, rowNumber, ctx, options, existingKeys, fileDu
   if (tableWarning) warnings.push({ field: 'tableLabel', reason: tableWarning });
 
   const rowContact = contactKey({ customerEmail, customerPhone }, options.matchingStrategy || 'both');
-  const naturalKey = buildNaturalKey(restaurant.id, dateTime, rowContact, tableId);
+  const naturalKey = buildNaturalKey(
+    restaurant.id,
+    dateTime,
+    rowContact,
+    tableId,
+    partySize,
+    customerName,
+  );
 
   if (fileDuplicateKeys.has(naturalKey)) {
     return { ok: false, skip: true, reason: 'duplicado_en_archivo', rowNumber, warnings };
@@ -337,6 +352,8 @@ async function loadExistingKeys(restaurantId, strategy) {
       dateTime: true,
       customerEmail: true,
       customerPhone: true,
+      customerName: true,
+      partySize: true,
       tableId: true,
     },
   });
@@ -347,7 +364,16 @@ async function loadExistingKeys(restaurantId, strategy) {
       { customerEmail: r.customerEmail, customerPhone: r.customerPhone },
       strategy,
     );
-    keys.add(buildNaturalKey(restaurantId, r.dateTime, contact, r.tableId));
+    keys.add(
+      buildNaturalKey(
+        restaurantId,
+        r.dateTime,
+        contact,
+        r.tableId,
+        r.partySize,
+        r.customerName,
+      ),
+    );
   }
   return keys;
 }

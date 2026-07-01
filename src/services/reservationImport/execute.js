@@ -4,12 +4,19 @@ const prisma = require('../../lib/prisma');
 const { CHUNK_SIZE, ROLLBACK_DAYS } = require('./constants');
 const { readBuffer, uploadBuffer, importFileKey } = require('./storage');
 const { recomputeAnalyticsForDates } = require('./analytics');
+const { getEffectiveTimezone } = require('../../utils/timezone');
+const { notifyRestaurantNewReservation } = require('../notificationService');
 
+/**
+ * Past / cancelled / completed: sin emails ni alertas.
+ * Future confirmed: sin confirmación al cliente; recordatorio al cliente si aplica;
+ * alerta al equipo según config (source=imported, misma regla que manual).
+ */
 function buildNotificationFlags(payload, options) {
-  const isFuture = payload.isFuture;
   const notifyReminders = options.notifyFutureReminders !== false;
+  const isFutureConfirmed = payload.isFuture && payload.status === 'confirmed';
 
-  if (!isFuture) {
+  if (!isFutureConfirmed) {
     return {
       emailSent: true,
       reminderEmailSent: true,
@@ -21,8 +28,8 @@ function buildNotificationFlags(payload, options) {
   return {
     emailSent: true,
     reminderEmailSent: notifyReminders ? false : true,
-    teamNotifySent: true,
-    teamNotifySkipReason: 'imported',
+    teamNotifySent: false,
+    teamNotifySkipReason: null,
   };
 }
 
@@ -44,6 +51,49 @@ function toCreateData(payload, importId, options) {
     source: 'imported',
     ...flags,
   };
+}
+
+async function notifyTeamForImportedFutureReservations(importRecord) {
+  const restaurant = await prisma.restaurant.findUnique({
+    where: { id: importRecord.restaurantId },
+    select: {
+      id: true,
+      name: true,
+      organizationId: true,
+      timezone: true,
+      organization: { include: { owner: { select: { country: true } } } },
+    },
+  });
+  if (!restaurant) return;
+
+  const timezone = getEffectiveTimezone(restaurant, restaurant.organization?.owner?.country || 'CL');
+
+  const rows = await prisma.reservation.findMany({
+    where: {
+      importId: importRecord.id,
+      teamNotifySent: false,
+      status: 'confirmed',
+      dateTime: { gt: new Date() },
+    },
+  });
+
+  for (const r of rows) {
+    await notifyRestaurantNewReservation({
+      reservationId: r.id,
+      source: 'imported',
+      organizationId: restaurant.organizationId,
+      restaurantId: restaurant.id,
+      restaurantName: restaurant.name,
+      customerName: r.customerName,
+      customerPhone: r.customerPhone,
+      customerEmail: r.customerEmail,
+      dateTime: r.dateTime,
+      partySize: r.partySize,
+      timezone,
+    }).catch((err) => {
+      console.error('[ReservationImport] Team notify failed:', r.id, err.message);
+    });
+  }
 }
 
 async function loadValidatedPayloads(importRecord) {
@@ -68,7 +118,6 @@ async function processImportBatch(importRecord) {
   const offset = importRecord.importedRows || 0;
   const toProcess = allPayloads.slice(offset);
 
-  const businessDates = new Set();
   let imported = importRecord.importedRows || 0;
   let failed = importRecord.failedRows || 0;
 
@@ -97,6 +146,8 @@ async function processImportBatch(importRecord) {
       data: { importedRows: imported, failedRows: failed },
     });
   }
+
+  await notifyTeamForImportedFutureReservations(importRecord);
 
   if (options.affectAnalytics) {
     const dateRows = await prisma.reservation.findMany({
@@ -139,4 +190,5 @@ module.exports = {
   saveValidatedPayloads,
   loadValidatedPayloads,
   processImportBatch,
+  notifyTeamForImportedFutureReservations,
 };

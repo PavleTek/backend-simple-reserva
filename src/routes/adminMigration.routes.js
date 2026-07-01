@@ -9,7 +9,7 @@ const { NotFoundError, ValidationError } = require('../utils/errors');
 const { writeAuditLog } = require('../services/auditLogService');
 const importService = require('../services/reservationImport');
 const { uploadBuffer, importFileKey, readBuffer } = require('../services/reservationImport/storage');
-const { MAX_FILE_BYTES, RESERVATION_FIELDS, DEFAULT_OPTIONS } = require('../services/reservationImport/constants');
+const { MAX_FILE_BYTES, RESERVATION_FIELDS, RESERVATION_STATUS_OPTIONS, DEFAULT_OPTIONS, DEFAULT_IMPORT_PARTY_SIZE, IMPORT_UNKNOWN_CUSTOMER_NAME } = require('../services/reservationImport/constants');
 
 const router = express.Router();
 const upload = multer({
@@ -32,6 +32,12 @@ router.get('/template.csv', (_req, res, next) => {
 router.get('/fields', (_req, res) => {
   res.json({
     fields: RESERVATION_FIELDS,
+    statusOptions: RESERVATION_STATUS_OPTIONS,
+    defaults: {
+      partySize: DEFAULT_IMPORT_PARTY_SIZE,
+      customerName: IMPORT_UNKNOWN_CUSTOMER_NAME,
+      status: 'confirmed',
+    },
     defaultOptions: DEFAULT_OPTIONS,
     unsupportedFields: [
       'ID externo de reserva',
@@ -40,6 +46,14 @@ router.get('/fields', (_req, res) => {
       'Precio',
       'Estado de pago',
     ],
+    notificationPolicy: {
+      past: 'Sin emails ni alertas',
+      futureConfirmed: {
+        customerConfirmation: false,
+        customerReminder: 'Según toggle de importación (default: sí, si hay email/teléfono)',
+        teamAlert: 'Según configuración de notificaciones del restaurante (igual que reserva manual)',
+      },
+    },
   });
 });
 
@@ -199,7 +213,7 @@ router.patch('/:id/mapping', async (req, res, next) => {
       throw new ValidationError('columnMapping es obligatorio');
     }
 
-    const required = ['date', 'startTime', 'customerName', 'partySize'];
+    const required = ['date', 'startTime'];
     for (const key of required) {
       if (!columnMapping[key]) {
         throw new ValidationError(`Falta mapear el campo obligatorio: ${key}`);

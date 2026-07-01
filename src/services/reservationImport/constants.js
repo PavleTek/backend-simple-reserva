@@ -6,14 +6,27 @@ const RESERVATION_FIELDS = [
   { key: 'endTime', label: 'Hora fin', required: false },
   { key: 'durationMinutes', label: 'Duración (minutos)', required: false },
   { key: 'status', label: 'Estado', required: false },
-  { key: 'customerName', label: 'Nombre cliente', required: true },
+  { key: 'customerName', label: 'Nombre cliente', required: false },
   { key: 'customerPhone', label: 'Teléfono', required: false },
   { key: 'customerEmail', label: 'Email', required: false },
-  { key: 'partySize', label: 'Comensales', required: true },
+  { key: 'partySize', label: 'Comensales', required: false },
   { key: 'tableLabel', label: 'Mesa', required: false },
   { key: 'zoneName', label: 'Zona', required: false },
   { key: 'notes', label: 'Notas', required: false },
 ];
+
+/** Valores aceptados en columna estado (vacío = confirmed) */
+const RESERVATION_STATUS_OPTIONS = [
+  { csv: 'confirmed', label: 'Confirmada', mapsTo: 'confirmed', when: 'Default si la celda está vacía' },
+  { csv: 'confirmada / confirmado', label: 'Confirmada', mapsTo: 'confirmed', when: 'Reserva activa' },
+  { csv: 'pending / pendiente', label: 'Pendiente → confirmada', mapsTo: 'confirmed', when: 'Se importa como confirmada' },
+  { csv: 'cancelled / cancelada', label: 'Cancelada', mapsTo: 'cancelled', when: 'Histórico o futuro cancelado' },
+  { csv: 'completed / completada', label: 'Completada', mapsTo: 'completed', when: 'Solo reservas pasadas' },
+  { csv: 'no_show / no asistio', label: 'No-show', mapsTo: 'no_show', when: 'Solo reservas pasadas' },
+];
+
+const IMPORT_UNKNOWN_CUSTOMER_NAME = 'Cliente (importado)';
+const DEFAULT_IMPORT_PARTY_SIZE = 2;
 
 const HEADER_ALIASES = {
   date: ['fecha', 'fecha_reserva', 'date', 'dia'],
@@ -77,6 +90,9 @@ const DEFAULT_OPTIONS = {
 
 module.exports = {
   RESERVATION_FIELDS,
+  RESERVATION_STATUS_OPTIONS,
+  IMPORT_UNKNOWN_CUSTOMER_NAME,
+  DEFAULT_IMPORT_PARTY_SIZE,
   HEADER_ALIASES,
   STATUS_MAP,
   IMPORT_STATUSES,

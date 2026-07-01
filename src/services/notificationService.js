@@ -594,7 +594,8 @@ async function notifyRestaurantNewReservation(options) {
 
   const shouldNotifyTeam =
     (source === 'web' && notify.onWeb) ||
-    (source === 'manual' && notify.onManual);
+    (source === 'manual' && notify.onManual) ||
+    (source === 'imported' && notify.onManual);
 
   if (!shouldNotifyTeam) {
     console.log('[Notification] notifyRestaurantNewReservation: skipped by settings', {

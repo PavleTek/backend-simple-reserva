@@ -6,26 +6,40 @@ Usa este archivo como referencia para migrar reservas desde otro sistema (Agenda
 
 En el panel admin: **Operación → Migraciones → Nueva migración → Descargar plantilla CSV**.
 
-## Columnas soportadas
+## Columnas mínimas
 
-| Columna CSV | Obligatorio | Descripción | Ejemplo |
-|-------------|-------------|-------------|---------|
-| `fecha` | Sí | Fecha de la reserva (`YYYY-MM-DD`) | `2026-01-15` |
-| `hora_inicio` | Sí | Hora de inicio (`HH:mm`, 24 h) | `19:30` |
-| `hora_fin` | No | Hora de fin; alternativa a duración | `21:30` |
-| `duracion_minutos` | No | Minutos de duración; si falta, usa la del restaurante | `90` |
-| `estado` | No | `confirmed`, `pending`, `cancelled`, `completed`, `no_show` (default: `confirmed`) | `confirmed` |
-| `nombre_cliente` | Sí | Nombre del comensal | `Juan Pérez` |
-| `telefono` | Según config | Teléfono con código país | `+56912345678` |
-| `email` | Según config | Correo del comensal | `juan@ejemplo.cl` |
-| `comensales` | Sí | Número de personas (entero ≥ 1) | `4` |
-| `mesa` | No | Etiqueta de mesa existente en SimpleReserva | `Mesa 1` |
-| `zona` | No | Nombre de zona (ayuda a ubicar la mesa) | `Sala principal` |
-| `notas` | No | Notas visibles en la reserva | `Cumpleaños` |
+Solo **fecha** y **hora_inicio** son obligatorias. Todo lo demás es opcional: importamos con los datos que tengas, aunque vengan incompletos del sistema anterior.
+
+| Columna CSV | ¿Obligatorio? | Si falta… |
+|-------------|---------------|-----------|
+| `fecha` | **Sí** | Fila inválida |
+| `hora_inicio` | **Sí** | Fila inválida |
+| `hora_fin` | No | Se calcula duración o se usa la del restaurante |
+| `duracion_minutos` | No | Default del restaurante |
+| `estado` | No | `confirmed` |
+| `nombre_cliente` | No | `Cliente (importado)` |
+| `telefono` | No | Vacío |
+| `email` | No | Vacío |
+| `comensales` | No | `2` |
+| `mesa` / `zona` | No | Sin mesa asignada (histórico) o auto-asignación (futuro) |
+| `notas` | No | Vacío |
+
+## Estados (`estado`) — qué poner en el CSV
+
+Deja la celda **vacía** si no sabes el estado: se importa como **confirmada**.
+
+| Valor en CSV | Resultado en SimpleReserva | Cuándo usarlo |
+|--------------|----------------------------|---------------|
+| *(vacío)* | `confirmed` | No sabes el estado / reserva activa |
+| `confirmed`, `confirmada`, `confirmado` | `confirmed` | Reserva confirmada |
+| `pending`, `pendiente` | `confirmed` | Pendiente en sistema viejo → confirmada acá |
+| `cancelled`, `cancelada`, `cancelado` | `cancelled` | Cancelada |
+| `completed`, `completada`, `completado` | `completed` | **Solo pasado** — ya se atendió |
+| `no_show`, `no asistio`, `no asistió` | `no_show` | **Solo pasado** — no llegó |
+
+`completed` y `no_show` en fechas futuras se rechazan en validación.
 
 ## Alias de columnas (auto-detectados)
-
-El sistema también reconoce encabezados en inglés o variantes comunes:
 
 - `date`, `fecha_reserva` → fecha
 - `start_time`, `hora`, `time` → hora_inicio
@@ -33,37 +47,31 @@ El sistema también reconoce encabezados en inglés o variantes comunes:
 - `duration`, `duracion` → duracion_minutos
 - `status`, `estado_reserva` → estado
 - `customer_name`, `cliente`, `nombre` → nombre_cliente
-- `phone`, `telefono_cliente`, `celular` → telefono
+- `phone`, `celular` → telefono
 - `customer_email`, `correo` → email
 - `party_size`, `personas`, `pax` → comensales
 - `table`, `mesa_nombre` → mesa
 - `zone`, `area` → zona
 - `notes`, `observaciones` → notas
 
+## Notificaciones al importar
+
+| Tipo de reserva | Cliente | Equipo (restaurante) |
+|-----------------|---------|----------------------|
+| **Pasada** | Nada | Nada |
+| **Futura confirmada** | Sin email de confirmación (ya pudo enviarlo el sistema anterior). Recordatorio al cliente **sí**, si está activo en la migración y hay email/teléfono | Alerta según **configuración de notificaciones** del restaurante (misma regla que reserva manual) |
+| **Futura cancelada / completada** | Nada | Nada |
+
 ## Lo que SimpleReserva **no** almacena hoy
 
-Estos campos de otros sistemas **no se importan** (puedes ponerlos en `notas` si necesitas conservarlos como texto):
+Puedes pegar info extra en `notas`:
 
-- ID externo de reserva
-- Servicio / tratamiento / menú específico
-- Profesional / colaborador asignado
-- Precio o estado de pago
+- ID externo, servicio, profesional, precio, pago
 
-## Reglas importantes
+## Reglas útiles
 
-1. **Zona horaria**: se usa la del restaurante (`America/Santiago` por defecto en Chile).
-2. **Reservas pasadas**: no bloquean disponibilidad; no envían confirmaciones.
-3. **Reservas futuras confirmadas**: se validan contra mesas disponibles; no se envía email de confirmación al importar (evita spam).
-4. **Recordatorios**: las reservas futuras pueden recibir recordatorio el día anterior (configurable al importar).
-5. **Duplicados**: por defecto se omiten filas que coinciden con una reserva existente (misma fecha/hora + email o teléfono).
-6. **Codificación**: guarda el CSV en UTF-8. Excel: “Guardar como CSV UTF-8”.
-
-## Estados válidos
-
-| Valor en CSV | Significado en SimpleReserva |
-|--------------|------------------------------|
-| `confirmed` / `confirmada` | Confirmada |
-| `pending` / `pendiente` | Se importa como confirmada |
-| `cancelled` / `cancelada` | Cancelada |
-| `completed` / `completada` | Completada (solo pasado) |
-| `no_show` / `no asistio` | No-show (solo pasado) |
+1. Zona horaria: la del restaurante (`America/Santiago` en Chile).
+2. Reservas pasadas: no bloquean mesas; cero emails.
+3. Reservas futuras confirmadas: validación de disponibilidad.
+4. Duplicados: se omiten si coinciden fecha/hora + contacto (o fecha/hora + comensales + mesa si no hay contacto).
+5. CSV en UTF-8.
