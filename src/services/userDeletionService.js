@@ -1,5 +1,6 @@
 const prisma = require('../lib/prisma');
 const mercadopagoService = require('./mercadopagoService');
+const { cancelPendingForOrganization } = require('./ownershipTransferService');
 
 /**
  * Cascading admin user deletion.
@@ -93,6 +94,8 @@ async function deleteUserAsAdmin({ userId, confirmEmail, actingUser }) {
 
   const managerUserIds = org.managers.map((m) => m.userId);
   const now = new Date();
+
+  await cancelPendingForOrganization(org.id);
 
   const result = await prisma.$transaction(async (tx) => {
     // Deactivate all active subscriptions for the org in the DB.

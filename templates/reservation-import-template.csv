@@ -1,0 +1,7 @@
+fecha,hora_inicio,hora_fin,duracion_minutos,estado,nombre_cliente,telefono,email,comensales,mesa,zona,notas
+2026-01-15,19:30,21:30,,confirmed,Juan Pérez,+56912345678,juan@ejemplo.cl,2,Mesa 1,Sala principal,Cumpleaños — torta propia
+2026-01-16,20:00,,90,,María González,+56987654321,maria@ejemplo.cl,4,,Terraza,Solo teléfono y email
+2026-01-10,13:00,,60,completed,Pedro Soto,,,2,Mesa 3,Sala principal,Pasada — sin contacto
+2026-02-20,21:00,,,,,,ana@ejemplo.cl,2,,,Futura — solo email
+2026-03-01,20:00,,,,,,,2,,,Mínimo: solo fecha hora y comensales (comensales default 2 si vacío)
+2026-01-08,20:30,,,cancelled,Carlos Díaz,+56933334444,carlos@ejemplo.cl,3,,,Estado cancelada

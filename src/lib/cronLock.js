@@ -33,6 +33,7 @@ const JOB_LOCK_KEYS = {
   lastChanceLink:       1_100_007,
   referralEvaluation:   1_100_008,
   billingIntegrity:     1_100_009,
+  reservationImport:    1_100_010,
 };
 
 function isSingleRunnerEnabled() {

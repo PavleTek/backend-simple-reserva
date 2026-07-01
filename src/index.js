@@ -17,6 +17,8 @@ const tableRouter = require("./routes/table.routes");
 const scheduleRouter = require("./routes/schedule.routes");
 const reservationRouter = require("./routes/reservation.routes");
 const teamRouter = require("./routes/team.routes");
+const ownershipTransferRouter = require("./routes/ownershipTransfer.routes");
+const ownershipTransferPublicRouter = require("./routes/ownershipTransferPublic.routes");
 const menuRouter = require("./routes/menu.routes");
 const reservationWindowRouter = require("./routes/reservationWindow.routes");
 const bookingAcceptanceRouter = require("./routes/bookingAcceptance.routes");
@@ -51,6 +53,8 @@ const { startPlanChangeSchedulerJob } = require("./jobs/planChangeSchedulerJob")
 const { startLastChanceLinkJob } = require("./jobs/lastChanceLinkJob");
 const { startBillingIntegrityJob } = require("./jobs/billingIntegrityJob");
 const { startAddonRemovalJob } = require("./jobs/addonRemovalJob");
+const { startOwnershipTransferExpiryJob } = require("./jobs/ownershipTransferExpiryJob");
+const { startReservationImportJob } = require("./jobs/reservationImportJob");
 const { assertMpEnvSafety } = require("./lib/mercadopagoEnv");
 const { publicRouter: feedbackPublicRouter, restaurantRouter: feedbackRestaurantRouter } = require("./routes/feedback.routes");
 const { publicRestaurantRouter: holdRestaurantRouter, publicHoldRouter, staffRouter: holdStaffRouter } = require("./routes/reservationHold.routes");
@@ -123,6 +127,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
+app.get("/logo-full-480w.png", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "assets", "brand", "logo-full-480w.png"));
+});
 
 app.get("/", (req, res) => {
   res.json({ status: "ok", service: "SimpleReserva API" });
@@ -260,6 +267,7 @@ app.use("/api/public/reservations", reservationRouter);
 app.use("/api/public/feedback", feedbackPublicRouter);
 
 app.use("/api/auth", authRouter);
+app.use("/api/ownership-transfer", ownershipTransferPublicRouter);
 app.use("/api/restaurants", reservationRouter);
 app.use("/api/reservations", reservationRouter);
 app.use("/api/restaurant/:restaurantId", restaurantRouter);
@@ -269,6 +277,7 @@ app.use("/api/restaurant/:restaurantId/zones", zoneRouter);
 app.use("/api/restaurant/:restaurantId/tables", tableRouter);
 app.use("/api/restaurant/:restaurantId/schedules", scheduleRouter);
 app.use("/api/restaurant/:restaurantId/team", teamRouter);
+app.use("/api/restaurant/:restaurantId/ownership-transfer", ownershipTransferRouter);
 app.use("/api/restaurant/:restaurantId/menus", menuRouter);
 app.use("/api/restaurant/:restaurantId/reservation-windows", reservationWindowRouter);
 app.use("/api/restaurant/:restaurantId/booking-acceptance", bookingAcceptanceRouter);
@@ -312,4 +321,6 @@ app.listen(PORT, "0.0.0.0", () => {
   startLastChanceLinkJob();
   startBillingIntegrityJob();
   startAddonRemovalJob();
+  startOwnershipTransferExpiryJob();
+  startReservationImportJob();
 });

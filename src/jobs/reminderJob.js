@@ -1,56 +1,108 @@
 /**
- * Sends day-before reminder SMS for confirmed reservations.
+ * Sends day-before reminders to guests (email + optional SMS/WhatsApp).
  * Runs daily at 10:00 Chile time (configurable).
  */
 
 const cron = require('node-cron');
+const { DateTime } = require('luxon');
 const prisma = require('../lib/prisma');
 const logger = require('../lib/logger');
-const { sendReservationReminder } = require('../services/notificationService');
+const {
+  sendReservationReminder,
+  sendReservationReminderEmail,
+} = require('../services/notificationService');
 const { canSendReminders } = require('../services/subscriptionService');
+const { getEffectiveTimezone } = require('../utils/timezone');
+const { buildReservationDayWhere } = require('../utils/reservationDateFilter');
 
-function getTomorrowDateRange() {
-  const now = new Date();
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(0, 0, 0, 0);
-  const tomorrowEnd = new Date(tomorrow);
-  tomorrowEnd.setDate(tomorrowEnd.getDate() + 1);
-  return { start: tomorrow, end: tomorrowEnd };
+function getJobTimezone() {
+  return process.env.TZ || 'America/Santiago';
 }
 
 async function runReminders() {
   try {
-  const { start, end } = getTomorrowDateRange();
-  const reservations = await prisma.reservation.findMany({
-    where: {
-      status: 'confirmed',
-      dateTime: { gte: start, lt: end },
-    },
-    include: {
-      restaurant: { select: { name: true } },
-    },
-  });
-
-  let sent = 0;
-  for (const r of reservations) {
-    const allowed = await canSendReminders(r.restaurantId);
-    if (!allowed) continue;
-
-    const ok = await sendReservationReminder({
-      customerPhone: r.customerPhone,
-      restaurantName: r.restaurant.name,
-      dateTime: r.dateTime,
-      partySize: r.partySize,
-      secureToken: r.secureToken,
-      restaurantId: r.restaurantId,
+    const restaurants = await prisma.restaurant.findMany({
+      where: { isActive: true, isDeleted: false },
+      include: {
+        organization: {
+          select: {
+            owner: { select: { country: true } },
+          },
+        },
+      },
     });
-    if (ok) sent++;
-  }
 
-  if (reservations.length > 0) {
-    logger.info({ sent, total: reservations.length }, '[ReminderJob] reminders sent for tomorrow');
-  }
+    let sentEmail = 0;
+    let sentPhone = 0;
+    let total = 0;
+
+    for (const rest of restaurants) {
+      const allowed = await canSendReminders(rest.id);
+      if (!allowed) continue;
+
+      const ownerCountry = rest.organization?.owner?.country || 'CL';
+      const timezone = getEffectiveTimezone(rest, ownerCountry);
+      const tomorrowYmd = DateTime.now().setZone(timezone).plus({ days: 1 }).toFormat('yyyy-MM-dd');
+
+      const reservations = await prisma.reservation.findMany({
+        where: buildReservationDayWhere(rest.id, tomorrowYmd, timezone, {
+          status: 'confirmed',
+        }),
+        select: {
+          id: true,
+          customerName: true,
+          customerPhone: true,
+          customerEmail: true,
+          dateTime: true,
+          partySize: true,
+          secureToken: true,
+          reminderEmailSent: true,
+          restaurant: { select: { name: true } },
+        },
+      });
+
+      total += reservations.length;
+
+      for (const r of reservations) {
+        if (r.customerEmail && !r.reminderEmailSent) {
+          const emailOk = await sendReservationReminderEmail({
+            customerEmail: r.customerEmail,
+            customerName: r.customerName,
+            restaurantName: r.restaurant.name,
+            dateTime: r.dateTime,
+            partySize: r.partySize,
+            secureToken: r.secureToken,
+            timezone,
+          });
+          if (emailOk) {
+            sentEmail++;
+            await prisma.reservation.update({
+              where: { id: r.id },
+              data: { reminderEmailSent: true },
+            });
+          }
+        }
+
+        if (r.customerPhone) {
+          const phoneOk = await sendReservationReminder({
+            customerPhone: r.customerPhone,
+            restaurantName: r.restaurant.name,
+            dateTime: r.dateTime,
+            partySize: r.partySize,
+            secureToken: r.secureToken,
+            restaurantId: rest.id,
+          });
+          if (phoneOk) sentPhone++;
+        }
+      }
+    }
+
+    if (total > 0) {
+      logger.info(
+        { total, sentEmail, sentPhone },
+        '[ReminderJob] reminders sent for tomorrow',
+      );
+    }
   } catch (err) {
     logger.error({ err }, '[ReminderJob] failed');
   }
@@ -59,9 +111,9 @@ async function runReminders() {
 function startReminderJob() {
   const schedule = process.env.REMINDER_CRON || '0 10 * * *';
   cron.schedule(schedule, runReminders, {
-    timezone: process.env.TZ || 'America/Santiago',
+    timezone: getJobTimezone(),
   });
-  logger.info({ schedule, tz: process.env.TZ || 'America/Santiago' }, '[ReminderJob] scheduled');
+  logger.info({ schedule, tz: getJobTimezone() }, '[ReminderJob] scheduled');
 }
 
 module.exports = { startReminderJob, runReminders };

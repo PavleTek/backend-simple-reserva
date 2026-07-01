@@ -10,6 +10,49 @@ const { validateNoOverlap } = require('../lib/floorPlanUtils');
 const ALLOWED_SHAPES = new Set(['square', 'rectangular', 'round']);
 const ALLOWED_ROTATION = new Set([0, 90, 180, 270]);
 
+function shapeDimensions(shape) {
+  if (shape === 'rectangular') return { width: 2, height: 1 };
+  return { width: 1, height: 1 };
+}
+
+function validateCapacityRange(minCapacity, maxCapacity) {
+  const minC = minCapacity ?? 1;
+  const maxC = maxCapacity;
+  if (maxC === undefined) {
+    throw new ValidationError('Se requiere maxCapacity');
+  }
+  if (minC > maxC) {
+    throw new ValidationError('La capacidad mínima no puede ser mayor que la máxima.');
+  }
+  return { minC, maxC };
+}
+
+function validateShape(shape) {
+  if (shape !== undefined && !ALLOWED_SHAPES.has(shape)) {
+    throw new ValidationError('Forma de mesa no válida.');
+  }
+}
+
+function buildBatchLabels(prefix, startNumber, count, existingLabels) {
+  const used = new Set(existingLabels.map((l) => String(l).trim().toLowerCase()));
+  const base = String(prefix ?? 'M').trim() || 'M';
+  const start = Number.isFinite(Number(startNumber)) ? Math.max(1, Number(startNumber)) : 1;
+  const labels = [];
+  let n = start;
+  while (labels.length < count) {
+    const candidate = `${base}${n}`;
+    if (!used.has(candidate.toLowerCase())) {
+      labels.push(candidate);
+      used.add(candidate.toLowerCase());
+    }
+    n += 1;
+    if (n > start + count + 500) {
+      throw new ValidationError('No se pudieron generar nombres únicos para todas las mesas.');
+    }
+  }
+  return labels;
+}
+
 const router = express.Router({ mergeParams: true });
 
 router.use(authenticateToken);
@@ -31,6 +74,72 @@ router.get('/zone/:zoneId', authenticateRestaurantRoles(ROLES_CONFIG_VIEW), asyn
     });
 
     res.json(tables);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/zone/:zoneId/batch-create', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
+  try {
+    const zone = await prisma.zone.findUnique({
+      where: { id: req.params.zoneId },
+    });
+
+    if (!zone || zone.restaurantId !== req.activeRestaurant.restaurantId) {
+      throw new NotFoundError('Zona no encontrada');
+    }
+
+    const {
+      count,
+      labelPrefix,
+      startNumber,
+      minCapacity,
+      maxCapacity,
+      shape,
+    } = req.body;
+
+    const tableCount = parseInt(count, 10);
+    if (!Number.isFinite(tableCount) || tableCount < 1 || tableCount > 50) {
+      throw new ValidationError('La cantidad debe ser entre 1 y 50 mesas.');
+    }
+
+    const canAdd = await planService.canAddTables(zone.restaurantId, tableCount, true);
+    if (!canAdd.allowed) {
+      throw new ValidationError(canAdd.reason || 'Límite de mesas alcanzado');
+    }
+
+    const resolvedShape = shape !== undefined ? shape : 'square';
+    validateShape(resolvedShape);
+    const { minC, maxC } = validateCapacityRange(minCapacity, maxCapacity);
+    const { width, height } = shapeDimensions(resolvedShape);
+
+    const existing = await prisma.restaurantTable.findMany({
+      where: { zoneId: req.params.zoneId, isActive: true },
+      select: { label: true, sortOrder: true },
+      orderBy: { sortOrder: 'desc' },
+    });
+    const labels = buildBatchLabels(labelPrefix, startNumber, tableCount, existing.map((t) => t.label));
+    const baseSort = (existing[0]?.sortOrder ?? -1) + 1;
+
+    const created = await prisma.$transaction(
+      labels.map((label, index) =>
+        prisma.restaurantTable.create({
+          data: {
+            zoneId: req.params.zoneId,
+            label,
+            minCapacity: minC,
+            maxCapacity: maxC,
+            sortOrder: baseSort + index,
+            shape: resolvedShape,
+            width,
+            height,
+          },
+        }),
+      ),
+    );
+
+    await incrementDataVersion(req.activeRestaurant.restaurantId);
+    res.status(201).json({ created, count: created.length });
   } catch (error) {
     next(error);
   }
@@ -120,9 +229,9 @@ router.post('/zone/:zoneId', authenticateRestaurantRoles(ROLES_CONFIG), async (r
         ...(posX !== undefined && { posX }),
         ...(posY !== undefined && { posY }),
         ...(rotation !== undefined && { rotation: Number(rotation) }),
-        ...(shape !== undefined && { shape }),
-        ...(width !== undefined && { width: w }),
-        ...(height !== undefined && { height: h }),
+        shape: shape !== undefined ? shape : 'square',
+        width: shape !== undefined ? shapeDimensions(shape).width : w,
+        height: shape !== undefined ? shapeDimensions(shape).height : h,
       },
     });
 
@@ -243,6 +352,126 @@ router.put('/zone/:zoneId/layout', authenticateRestaurantRoles(ROLES_CONFIG), as
 
     await incrementDataVersion(req.activeRestaurant.restaurantId);
     res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch('/batch-update', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
+  try {
+    const { tableIds, minCapacity, maxCapacity, shape } = req.body;
+    if (!Array.isArray(tableIds) || tableIds.length === 0) {
+      throw new ValidationError('Se requiere tableIds como array no vacío');
+    }
+    if (
+      minCapacity === undefined &&
+      maxCapacity === undefined &&
+      shape === undefined
+    ) {
+      throw new ValidationError('Indica al menos capacidad o forma para actualizar.');
+    }
+
+    validateShape(shape);
+
+    const tables = await prisma.restaurantTable.findMany({
+      where: {
+        id: { in: tableIds },
+        isActive: true,
+        zone: { restaurantId: req.activeRestaurant.restaurantId, isActive: true },
+      },
+      include: { zone: true },
+    });
+
+    if (tables.length !== tableIds.length) {
+      throw new ValidationError('Una o más mesas no pertenecen a este local.');
+    }
+
+    const updates = tables.map((table) => {
+      const nextMin = minCapacity !== undefined ? Number(minCapacity) : table.minCapacity;
+      const nextMax = maxCapacity !== undefined ? Number(maxCapacity) : table.maxCapacity;
+      if (nextMin > nextMax) {
+        throw new ValidationError(`Capacidad inválida en mesa «${table.label}».`);
+      }
+      const nextShape = shape !== undefined ? shape : table.shape;
+      const dims = shape !== undefined ? shapeDimensions(nextShape) : { width: table.width, height: table.height };
+      return {
+        id: table.id,
+        data: {
+          minCapacity: nextMin,
+          maxCapacity: nextMax,
+          ...(shape !== undefined && { shape: nextShape, width: dims.width, height: dims.height }),
+        },
+      };
+    });
+
+    await prisma.$transaction(
+      updates.map(({ id, data }) =>
+        prisma.restaurantTable.update({ where: { id }, data }),
+      ),
+    );
+
+    await incrementDataVersion(req.activeRestaurant.restaurantId);
+    res.json({ updated: updates.length });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/batch-delete', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
+  try {
+    const { tableIds } = req.body;
+    if (!Array.isArray(tableIds) || tableIds.length === 0) {
+      throw new ValidationError('Se requiere tableIds como array no vacío');
+    }
+
+    const tables = await prisma.restaurantTable.findMany({
+      where: {
+        id: { in: tableIds },
+        isActive: true,
+        zone: { restaurantId: req.activeRestaurant.restaurantId, isActive: true },
+      },
+      select: { id: true, label: true },
+    });
+
+    if (tables.length !== tableIds.length) {
+      throw new ValidationError('Una o más mesas no pertenecen a este local.');
+    }
+
+    const blocked = [];
+    for (const table of tables) {
+      // eslint-disable-next-line no-await-in-loop
+      const futureCount = await prisma.reservation.count({
+        where: {
+          tableId: table.id,
+          status: 'confirmed',
+          dateTime: { gte: new Date() },
+        },
+      });
+      if (futureCount > 0) {
+        blocked.push({ label: table.label, futureCount });
+      }
+    }
+
+    if (blocked.length > 0) {
+      const detail = blocked
+        .map((b) => `«${b.label}» (${b.futureCount} reserva(s) futura(s))`)
+        .join(', ');
+      throw new ValidationError(
+        `No se pueden eliminar mesas con reservas futuras: ${detail}. Cancela o reasigna primero.`,
+      );
+    }
+
+    await prisma.$transaction(
+      tableIds.map((id) =>
+        prisma.restaurantTable.update({
+          where: { id },
+          data: { isActive: false },
+        }),
+      ),
+    );
+
+    await incrementDataVersion(req.activeRestaurant.restaurantId);
+    res.json({ deleted: tableIds.length });
   } catch (error) {
     next(error);
   }

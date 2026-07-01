@@ -38,6 +38,49 @@ router.get('/', authenticateRestaurantRoles(ROLES_CONFIG_VIEW), async (req, res,
   }
 });
 
+router.post('/reorder', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
+  try {
+    const { restaurantId } = req.activeRestaurant;
+    const { orderedIds } = req.body;
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      throw new ValidationError('orderedIds debe ser un arreglo no vacío');
+    }
+    const existing = await prisma.zone.findMany({
+      where: { restaurantId, isActive: true },
+      select: { id: true },
+    });
+    const existingIds = new Set(existing.map((z) => z.id));
+    if (orderedIds.length !== existingIds.size || orderedIds.some((id) => !existingIds.has(id))) {
+      throw new ValidationError('La lista de orden no coincide con las zonas del local');
+    }
+    await prisma.$transaction(
+      orderedIds.map((id, index) =>
+        prisma.zone.update({
+          where: { id },
+          data: { sortOrder: index },
+        }),
+      ),
+    );
+    await incrementDataVersion(restaurantId);
+    const zones = await prisma.zone.findMany({
+      where: { restaurantId, isActive: true },
+      orderBy: { sortOrder: 'asc' },
+      include: {
+        tables: {
+          where: { isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+        },
+        fixtures: {
+          orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        },
+      },
+    });
+    res.json(zones);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, next) => {
   try {
     const { name, description, sortOrder, smokingZone, petFriendly } = req.body;
@@ -52,12 +95,19 @@ router.post('/', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res, nex
       throw new ValidationError(canAdd.reason || 'Límite de zonas alcanzado');
     }
 
+    const last = await prisma.zone.findFirst({
+      where: { restaurantId, isActive: true },
+      orderBy: { sortOrder: 'desc' },
+      select: { sortOrder: true },
+    });
+    const nextSort = (last?.sortOrder ?? -1) + 1;
+
     const zone = await prisma.zone.create({
       data: {
         restaurantId,
         name,
         description: description || null,
-        sortOrder: sortOrder ?? 0,
+        sortOrder: sortOrder ?? nextSort,
         ...(smokingZone !== undefined && { smokingZone: Boolean(smokingZone) }),
         ...(petFriendly !== undefined && { petFriendly: Boolean(petFriendly) }),
       },

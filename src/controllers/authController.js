@@ -1434,9 +1434,59 @@ const touchRestaurantDashboardActivity = async (req, res) => {
   }
 };
 
+const registerFromTransfer = async (req, res, next) => {
+  try {
+    const { token } = req.params;
+    const { password, name, lastName } = req.body || {};
+    const ownershipTransferService = require('../services/ownershipTransferService');
+
+    const transfer = await ownershipTransferService.getTransferByTokenForRegistration(token);
+    const email = transfer.targetEmail;
+
+    const pwdError = getPasswordPolicyError(password);
+    if (pwdError) {
+      throw new ValidationError(pwdError);
+    }
+
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      throw new ValidationError('Ya existe una cuenta con este correo. Inicia sesión para aceptar la transferencia.');
+    }
+
+    const hashedPassword = await hashPassword(password);
+    const user = await prisma.user.create({
+      data: {
+        email,
+        name: name || null,
+        lastName: lastName || null,
+        hashedPassword,
+        role: 'restaurant_manager',
+        country: 'CL',
+      },
+    });
+
+    await prisma.ownershipTransfer.update({
+      where: { id: transfer.id },
+      data: { targetUserId: user.id },
+    });
+
+    const userWithoutPassword = stripUser(user);
+    const jwtToken = generateToken(userWithoutPassword);
+
+    res.status(201).json({
+      token: jwtToken,
+      user: userWithoutPassword,
+      transferToken: token,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   login,
   register,
+  registerFromTransfer,
   addRestaurant,
   getRestaurantsTodaySummary,
   getProfile,

@@ -34,6 +34,9 @@ model User {
   offeredPlans                  CustomPlanOffer[]
   reservationsConfirmed         Reservation[] @relation("ReservationConfirmedBy")
   reservationsUpdated           Reservation[] @relation("ReservationUpdatedBy")
+  transfersInitiated            OwnershipTransfer[] @relation("TransferInitiator")
+  transfersFromOwnership        OwnershipTransfer[] @relation("TransferFromOwner")
+  transfersAsTarget             OwnershipTransfer[] @relation("TransferTarget")
   
   @@index([role])
 }
@@ -70,6 +73,7 @@ model RestaurantOrganization {
   referralCredits ReferralCredit[]
   billingEmailLogs BillingEmailLog[]
   billingOpsAlerts BillingOpsAlert[]
+  ownershipTransfers OwnershipTransfer[]
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -458,16 +462,56 @@ model BlockedSlot {
   @@index([restaurantId, startDatetime, endDatetime])
 }
 
+model ReservationImport {
+  id                     String    @id @default(cuid())
+  organizationId         String
+  restaurantId           String
+  createdByUserId        String?
+  status                 String    @default("uploaded") // uploaded|validated|queued|processing|completed|failed|rolling_back|rolled_back
+  source                 String    @default("csv")
+  fileKey                String?
+  fileName               String?
+  fileSize               Int?
+  validatedFileKey       String?
+  columnMapping          Json?
+  options                Json?
+  totalRows              Int       @default(0)
+  validRows              Int       @default(0)
+  invalidRows            Int       @default(0)
+  importedRows           Int       @default(0)
+  skippedRows            Int       @default(0)
+  failedRows             Int       @default(0)
+  summary                Json?
+  errorReportKey         String?
+  retryCount             Int       @default(0)
+  lastError              String?
+  rollbackAvailableUntil DateTime?
+  startedAt              DateTime?
+  completedAt            DateTime?
+  rolledBackAt           DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  reservations           Reservation[]
+
+  @@index([organizationId])
+  @@index([restaurantId, status])
+  @@index([status])
+}
+
 model Reservation {
   id              String    @id @default(cuid())
   restaurantId    String
   restaurant      Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   tableId         String?
   table           RestaurantTable? @relation(fields: [tableId], references: [id], onDelete: SetNull)
+  importId        String?
+  import          ReservationImport? @relation(fields: [importId], references: [id], onDelete: SetNull)
   customerName    String
   customerPhone   String?
   customerEmail   String?
   emailSent       Boolean   @default(false)
+  reminderEmailSent Boolean @default(false)
   teamNotifySent        Boolean   @default(false)
   teamNotifySentAt      DateTime?
   teamNotifyRecipients  String[]  @default([])
@@ -477,7 +521,7 @@ model Reservation {
   businessDate    DateTime? @db.Date
   durationMinutes Int
   status          String    @default("confirmed") // "confirmed", "cancelled", "completed", "no_show"
-  source          String    @default("web")      // "web" (public booking), "manual" (admin panel), "phone"
+  source          String    @default("web")      // "web" (public booking), "manual" (admin panel), "phone", "imported"
   notes           String?
   secureToken     String    @unique @default(cuid())
   confirmedByUserId String?
@@ -496,6 +540,7 @@ model Reservation {
   @@index([secureToken])
   @@index([confirmedByUserId])
   @@index([updatedByUserId])
+  @@index([importId])
 }
 
 enum ActivityCapacityMode {
@@ -1245,6 +1290,52 @@ model AuditLog {
   @@index([restaurantId])
   @@index([actorUserId])
   @@index([action])
+  @@index([createdAt])
+}
+
+enum OwnershipTransferStatus {
+  pending
+  accepted
+  declined
+  cancelled
+  expired
+}
+
+enum OutgoingOwnerDisposition {
+  manager
+  leave
+}
+
+model OwnershipTransfer {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  initiatedByUserId String?
+  initiatedBy       User?  @relation("TransferInitiator", fields: [initiatedByUserId], references: [id], onDelete: SetNull)
+  fromOwnerId       String?
+  fromOwner         User?  @relation("TransferFromOwner", fields: [fromOwnerId], references: [id], onDelete: SetNull)
+
+  targetEmail   String
+  targetUserId  String?
+  targetUser    User?    @relation("TransferTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  outgoingOwnerDisposition OutgoingOwnerDisposition @default(manager)
+  status        OwnershipTransferStatus  @default(pending)
+
+  tokenHash     String   @unique
+  expiresAt     DateTime
+  acceptedAt    DateTime?
+  declinedAt    DateTime?
+  cancelledAt   DateTime?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([organizationId, status])
+  @@index([targetUserId])
+  @@index([targetEmail])
+  @@index([status])
   @@index([createdAt])
 }
 
