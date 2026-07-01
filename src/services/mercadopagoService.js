@@ -22,6 +22,8 @@ const {
 const CURRENCY = 'CLP';
 const MIN_AMOUNT_CLP = 950; // MP rechaza montos menores con 400/500
 const IVA_RATE = 0.19; // IVA Chile
+// MP trata "reason" como descripción corta; nombres de organización largos hacían fallar el create.
+const MP_REASON_MAX_LENGTH = 30;
 
 let preApprovalClient = null;
 /** Evita reutilizar cliente de MP si cambia el access token resuelto por entorno. */
@@ -155,6 +157,12 @@ function resolvePayerEmailForPreapproval(loginEmail, billingEmailFromOrg) {
   return '';
 }
 
+/** Construye un "reason" corto y seguro para el preapproval (sin nombre de organización). */
+function buildSubscriptionReason(planName) {
+  const base = `SimpleReserva ${planName || ''}`.trim();
+  return base.slice(0, MP_REASON_MAX_LENGTH).trim();
+}
+
 function getClient() {
   const accessToken = getMercadoPagoAccessToken();
   if (!accessToken) {
@@ -249,7 +257,7 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
   }
 
   const buildBody = (email) => ({
-    reason: `SimpleReserva ${config.name} - ${organization.name}`,
+    reason: buildSubscriptionReason(config.name),
     external_reference: externalRef,
     payer_email: email,
     status: 'pending',
