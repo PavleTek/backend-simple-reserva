@@ -20,7 +20,15 @@
  * - maxCoversPerSlot: max personas totales reservadas (confirmed + holds activos) en el cupo.
  * - maxReservationsPerSlot: max reservas totales en el cupo.
  * - Si no hay PacingRule, solo se chequea disponibilidad de mesas.
+ *
+ * Mesas vinculadas (TableBlockRule, opcional):
+ * - Si `blockRules` se provee, una mesa gatillo con reserva/hold activo bloquea sus
+ *   mesas vinculadas para ese intervalo (ver blockRules.js). Es recíproco: la mesa
+ *   gatillo tampoco está disponible si alguna de sus mesas vinculadas requeridas
+ *   está ocupada. Comportamiento 100% opt-in — sin blockRules, no hay cambios.
  */
+
+const { getDerivedBlockedTableIds, getRequiredLinkedTableIds } = require('./blockRules');
 
 /**
  * Determina si dos intervalos [s1,e1) y [s2,e2) se solapan.
@@ -83,16 +91,78 @@ function getCandidateTables(tables, partySize, zoneId) {
 }
 
 /**
+ * Verifica si una mesa está libre de reservas/holds directos (sin considerar
+ * sesiones de actividad ni mesas vinculadas — esos se chequean por separado).
+ *
+ * @param {string} tableId
+ * @param {Date} slotStart @param {Date} slotEnd @param {number} bufferMs
+ * @param {Array<{ tableId: string|null; start: Date; end: Date }>} parsedReservations
+ * @param {Array<{ tableId: string; start: Date; end: Date; holdToken: string }>} parsedHolds
+ * @param {string|null} excludeHoldToken
+ * @returns {boolean}
+ */
+function isDirectlyFree(tableId, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken) {
+  const reservationConflict = parsedReservations.some((r) => {
+    if (r.tableId !== tableId) return false;
+    const rEnd = new Date(r.end.getTime() + bufferMs);
+    return overlaps(slotStart, slotEnd, r.start, rEnd);
+  });
+  if (reservationConflict) return false;
+
+  const holdConflict = parsedHolds.some((h) => {
+    if (h.tableId !== tableId) return false;
+    if (excludeHoldToken && h.holdToken === excludeHoldToken) return false;
+    return overlaps(slotStart, slotEnd, h.start, h.end);
+  });
+  return !holdConflict;
+}
+
+/**
+ * Determina si alguna de las mesas vinculadas requeridas por `tableId` (para aceptar
+ * `partySize`) está ocupada — ya sea por reserva/hold directo, sesión bloqueante o
+ * bloqueo derivado de otra mesa gatillo. Sin blockRules, siempre retorna false.
+ */
+function hasLinkedTableConflict(
+  tableId,
+  partySize,
+  slotStart,
+  slotEnd,
+  bufferMs,
+  parsedReservations,
+  parsedHolds,
+  excludeHoldToken,
+  blockingSessions,
+  blockRules,
+  derivedBlockedIds,
+  tableById
+) {
+  if (!blockRules?.length) return false;
+  const requiredLinked = getRequiredLinkedTableIds(tableId, partySize, blockRules);
+  return requiredLinked.some((linkedId) => {
+    const linkedTable = tableById.get(linkedId);
+    if (linkedTable && isTableBlockedBySessions(linkedTable, slotStart, slotEnd, blockingSessions)) return true;
+    if (derivedBlockedIds.has(linkedId)) return true;
+    return !isDirectlyFree(linkedId, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken);
+  });
+}
+
+/**
  * Cuántas mesas candidatas están libres para un slot dado.
- * Considera reservas confirmadas, holds activos (no expirados) y buffer.
+ * Considera reservas confirmadas, holds activos (no expirados), buffer, sesiones
+ * bloqueantes y — si se provee `opts.blockRules` — mesas vinculadas (bidireccional).
  *
  * @param {Array<{ id: string }>} candidateTables
  * @param {Date} slotStart
  * @param {Date} slotEnd
  * @param {number} bufferMs
- * @param {Array<{ tableId: string|null; start: Date; end: Date }>} parsedReservations
- * @param {Array<{ tableId: string; start: Date; end: Date; holdToken: string }>} parsedHolds
+ * @param {Array<{ tableId: string|null; start: Date; end: Date; partySize?: number|null }>} parsedReservations
+ * @param {Array<{ tableId: string; start: Date; end: Date; holdToken: string; partySize?: number|null }>} parsedHolds
  * @param {string|null} [excludeHoldToken] - hold propio del usuario (se excluye)
+ * @param {Array<{ startAt: Date; endAt: Date; blockScope?: string; zoneIds?: string[] }>} [blockingSessions]
+ * @param {{ partySize?: number|null; blockRules?: Array<object>; allTables?: Array<object> }} [opts]
+ *   partySize: tamaño del grupo (necesario para evaluar reglas de bloqueo con umbral).
+ *   blockRules: reglas TableBlockRule del restaurante.
+ *   allTables: lista completa de mesas (para resolver mesas vinculadas que no sean candidatas). Default: candidateTables.
  * @returns {number} - cantidad de mesas libres
  */
 function countFreeTables(
@@ -103,24 +173,31 @@ function countFreeTables(
   parsedReservations,
   parsedHolds,
   excludeHoldToken = null,
-  blockingSessions = []
+  blockingSessions = [],
+  opts = {}
 ) {
+  const { partySize = null, blockRules = [], allTables = candidateTables } = opts;
+  const tableById = new Map(allTables.map((t) => [t.id, t]));
+  const derivedBlockedIds = getDerivedBlockedTableIds(
+    parsedReservations,
+    parsedHolds,
+    blockRules,
+    slotStart,
+    slotEnd,
+    excludeHoldToken
+  );
+
   let free = 0;
   for (const table of candidateTables) {
     if (isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions)) continue;
-    const reservationConflict = parsedReservations.some((r) => {
-      if (r.tableId !== table.id) return false;
-      const rEnd = new Date(r.end.getTime() + bufferMs);
-      return overlaps(slotStart, slotEnd, r.start, rEnd);
-    });
-    if (reservationConflict) continue;
-
-    const holdConflict = parsedHolds.some((h) => {
-      if (h.tableId !== table.id) return false;
-      if (excludeHoldToken && h.holdToken === excludeHoldToken) return false;
-      return overlaps(slotStart, slotEnd, h.start, h.end);
-    });
-    if (holdConflict) continue;
+    if (derivedBlockedIds.has(table.id)) continue;
+    if (!isDirectlyFree(table.id, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken)) continue;
+    if (
+      hasLinkedTableConflict(
+        table.id, partySize, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds,
+        excludeHoldToken, blockingSessions, blockRules, derivedBlockedIds, tableById
+      )
+    ) continue;
 
     free++;
   }
@@ -140,8 +217,9 @@ function countFreeTables(
  * @param {Array<{ tableId: string; start: Date; end: Date; holdToken: string }>} parsedHolds
  * @param {string|null} preferredZoneId
  * @param {string|null} [excludeHoldToken]
- * @param {{ preferOpenEnded?: boolean }} [opts]
+ * @param {{ preferOpenEnded?: boolean; blockRules?: Array<object> }} [opts]
  *   preferOpenEnded: true → prioriza mesas con más tiempo libre después del slot (ideal para walk-ins).
+ *   blockRules: reglas TableBlockRule del restaurante (mesas vinculadas, bidireccional).
  * @param {Array<{ startAt: Date; endAt: Date; blockScope?: string; zoneIds?: string[] }>} [blockingSessions]
  * @returns {typeof tables[0] | null}
  */
@@ -155,25 +233,31 @@ function pickTable(
   parsedHolds,
   preferredZoneId,
   excludeHoldToken = null,
-  { preferOpenEnded = false } = {},
+  { preferOpenEnded = false, blockRules = [] } = {},
   blockingSessions = []
 ) {
   const candidates = getCandidateTables(tables, partySize, null);
+  const tableById = new Map(tables.map((t) => [t.id, t]));
+  const derivedBlockedIds = getDerivedBlockedTableIds(
+    parsedReservations,
+    parsedHolds,
+    blockRules,
+    slotStart,
+    slotEnd,
+    excludeHoldToken
+  );
+
   const free = candidates.filter((t) => {
     if (isTableBlockedBySessions(t, slotStart, slotEnd, blockingSessions)) return false;
-    const reservationConflict = parsedReservations.some((r) => {
-      if (r.tableId !== t.id) return false;
-      const rEnd = new Date(r.end.getTime() + bufferMs);
-      return overlaps(slotStart, slotEnd, r.start, rEnd);
-    });
-    if (reservationConflict) return false;
-
-    const holdConflict = parsedHolds.some((h) => {
-      if (h.tableId !== t.id) return false;
-      if (excludeHoldToken && h.holdToken === excludeHoldToken) return false;
-      return overlaps(slotStart, slotEnd, h.start, h.end);
-    });
-    return !holdConflict;
+    if (derivedBlockedIds.has(t.id)) return false;
+    if (!isDirectlyFree(t.id, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken)) return false;
+    if (
+      hasLinkedTableConflict(
+        t.id, partySize, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds,
+        excludeHoldToken, blockingSessions, blockRules, derivedBlockedIds, tableById
+      )
+    ) return false;
+    return true;
   });
 
   if (free.length === 0) return null;
@@ -248,22 +332,23 @@ function checkPacing(pacingRules, dayOfWeek, confirmedCovers, confirmedReservati
 
 /**
  * Convierte array de reservas raw a formato normalizado.
- * @param {Array<{ tableId: string|null; startUtc: string; durationMinutes: number }>} reservations
+ * @param {Array<{ tableId: string|null; startUtc: string; durationMinutes: number; partySize?: number }>} reservations
  * @param {number} bufferMs - se usa en la comparación, no en el mapeo
- * @returns {Array<{ tableId: string|null; start: Date; end: Date }>}
+ * @returns {Array<{ tableId: string|null; start: Date; end: Date; partySize: number|null }>}
  */
 function parseReservations(reservations) {
   return reservations.map((r) => ({
     tableId: r.tableId,
     start: new Date(r.startUtc),
     end: new Date(new Date(r.startUtc).getTime() + r.durationMinutes * 60000),
+    partySize: r.partySize ?? null,
   }));
 }
 
 /**
  * Convierte array de holds raw a formato normalizado.
- * @param {Array<{ tableId: string; startUtc: string; durationMinutes: number; holdToken: string }>} holds
- * @returns {Array<{ tableId: string; start: Date; end: Date; holdToken: string }>}
+ * @param {Array<{ tableId: string; startUtc: string; durationMinutes: number; holdToken: string; partySize?: number }>} holds
+ * @returns {Array<{ tableId: string; start: Date; end: Date; holdToken: string; partySize: number|null }>}
  */
 function parseHolds(holds) {
   return holds.map((h) => ({
@@ -271,6 +356,7 @@ function parseHolds(holds) {
     start: new Date(h.startUtc),
     end: new Date(new Date(h.startUtc).getTime() + h.durationMinutes * 60000),
     holdToken: h.holdToken,
+    partySize: h.partySize ?? null,
   }));
 }
 
@@ -283,4 +369,5 @@ module.exports = {
   parseReservations,
   parseHolds,
   msUntilNextReservation,
+  isDirectlyFree,
 };

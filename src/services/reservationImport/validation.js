@@ -44,6 +44,7 @@ async function loadRestaurantContext(restaurantId) {
       durationRules: true,
       reservationWindows: true,
       pacingRules: true,
+      tableBlockRules: true,
       schedules: { where: { isActive: true } },
       zones: {
         where: { isActive: true },
@@ -253,7 +254,7 @@ async function validateRow(rawRow, rowNumber, ctx, options, existingKeys, fileDu
         status: { in: ACTIVE_TABLE_STATUSES },
         dateTime: { gte: windowStart, lte: windowEnd },
       },
-      select: { tableId: true, dateTime: true, durationMinutes: true },
+      select: { tableId: true, dateTime: true, durationMinutes: true, partySize: true },
     });
 
     const blockingSessions = await loadBlockingSessionsForDay(
@@ -266,6 +267,13 @@ async function validateRow(rawRow, rowNumber, ctx, options, existingKeys, fileDu
       tableId: r.tableId,
       startUtc: r.dateTime.toISOString(),
       durationMinutes: r.durationMinutes,
+      partySize: r.partySize,
+    }));
+
+    const blockRules = ctx.restaurant.tableBlockRules.map((r) => ({
+      triggerTableId: r.triggerTableId,
+      blockedTableId: r.blockedTableId,
+      minPartySize: r.minPartySize,
     }));
 
     const validation = validateSlotForBooking({
@@ -292,6 +300,7 @@ async function validateRow(rawRow, rowNumber, ctx, options, existingKeys, fileDu
       excludeHoldToken: null,
       dayOfWeek,
       blockingSessions,
+      blockRules,
     });
 
     if (!validation.valid && !assignedTableId) {
@@ -312,7 +321,7 @@ async function validateRow(rawRow, rowNumber, ctx, options, existingKeys, fileDu
         parseHolds([]),
         null,
         null,
-        {},
+        { blockRules },
         blockingSessions,
       );
       if (selected) assignedTableId = selected.id;

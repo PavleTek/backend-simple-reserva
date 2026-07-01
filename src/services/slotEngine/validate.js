@@ -27,6 +27,7 @@ function validateSlotForBooking({
   excludeHoldToken = null,
   dayOfWeek,
   blockingSessions = [],
+  blockRules = [],
 }) {
   if (!schedule) {
     return { valid: false, reason: 'no_schedule' };
@@ -84,7 +85,8 @@ function validateSlotForBooking({
     parsedRes,
     parsedHolds,
     excludeHoldToken,
-    blockingSessions
+    blockingSessions,
+    { partySize, blockRules, allTables: tables }
   );
   if (freeTables === 0) {
     return { valid: false, reason: 'no_tables_available' };

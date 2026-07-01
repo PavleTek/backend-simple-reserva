@@ -9,18 +9,27 @@ const { validateNoOverlap } = require('../lib/floorPlanUtils');
 
 const ALLOWED_SHAPES = new Set(['square', 'rectangular', 'round']);
 const ALLOWED_ROTATION = new Set([0, 90, 180, 270]);
+const MAX_TABLE_CAPACITY = 300;
 
 function shapeDimensions(shape) {
   if (shape === 'rectangular') return { width: 2, height: 1 };
   return { width: 1, height: 1 };
 }
 
+function validateCapacityValue(value, label) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1 || n > MAX_TABLE_CAPACITY) {
+    throw new ValidationError(`${label} debe estar entre 1 y ${MAX_TABLE_CAPACITY}.`);
+  }
+  return n;
+}
+
 function validateCapacityRange(minCapacity, maxCapacity) {
-  const minC = minCapacity ?? 1;
-  const maxC = maxCapacity;
-  if (maxC === undefined) {
+  if (maxCapacity === undefined) {
     throw new ValidationError('Se requiere maxCapacity');
   }
+  const minC = validateCapacityValue(minCapacity ?? 1, 'La capacidad mínima');
+  const maxC = validateCapacityValue(maxCapacity, 'La capacidad máxima');
   if (minC > maxC) {
     throw new ValidationError('La capacidad mínima no puede ser mayor que la máxima.');
   }
@@ -176,10 +185,7 @@ router.post('/zone/:zoneId', authenticateRestaurantRoles(ROLES_CONFIG), async (r
       throw new ValidationError('Se requiere label y maxCapacity');
     }
 
-    const minC = minCapacity ?? 1;
-    if (minC > maxCapacity) {
-      throw new ValidationError('La capacidad mínima no puede ser mayor que la máxima.');
-    }
+    const { minC, maxC } = validateCapacityRange(minCapacity, maxCapacity);
 
     if (shape !== undefined && !ALLOWED_SHAPES.has(shape)) {
       throw new ValidationError('Forma de mesa no válida.');
@@ -224,7 +230,7 @@ router.post('/zone/:zoneId', authenticateRestaurantRoles(ROLES_CONFIG), async (r
         zoneId: req.params.zoneId,
         label,
         minCapacity: minC,
-        maxCapacity,
+        maxCapacity: maxC,
         sortOrder: nextSort,
         ...(posX !== undefined && { posX }),
         ...(posY !== undefined && { posY }),
@@ -387,8 +393,8 @@ router.patch('/batch-update', authenticateRestaurantRoles(ROLES_CONFIG), async (
     }
 
     const updates = tables.map((table) => {
-      const nextMin = minCapacity !== undefined ? Number(minCapacity) : table.minCapacity;
-      const nextMax = maxCapacity !== undefined ? Number(maxCapacity) : table.maxCapacity;
+      const nextMin = minCapacity !== undefined ? validateCapacityValue(minCapacity, 'La capacidad mínima') : table.minCapacity;
+      const nextMax = maxCapacity !== undefined ? validateCapacityValue(maxCapacity, 'La capacidad máxima') : table.maxCapacity;
       if (nextMin > nextMax) {
         throw new ValidationError(`Capacidad inválida en mesa «${table.label}».`);
       }
@@ -500,8 +506,8 @@ router.patch('/:id', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res,
       height,
     } = req.body;
 
-    const nextMin = minCapacity !== undefined ? minCapacity : table.minCapacity;
-    const nextMax = maxCapacity !== undefined ? maxCapacity : table.maxCapacity;
+    const nextMin = minCapacity !== undefined ? validateCapacityValue(minCapacity, 'La capacidad mínima') : table.minCapacity;
+    const nextMax = maxCapacity !== undefined ? validateCapacityValue(maxCapacity, 'La capacidad máxima') : table.maxCapacity;
     if (nextMin > nextMax) {
       throw new ValidationError('La capacidad mínima no puede ser mayor que la máxima.');
     }
@@ -548,8 +554,8 @@ router.patch('/:id', authenticateRestaurantRoles(ROLES_CONFIG), async (req, res,
       where: { id: req.params.id },
       data: {
         ...(label !== undefined && { label }),
-        ...(minCapacity !== undefined && { minCapacity }),
-        ...(maxCapacity !== undefined && { maxCapacity }),
+        ...(minCapacity !== undefined && { minCapacity: nextMin }),
+        ...(maxCapacity !== undefined && { maxCapacity: nextMax }),
         ...(Object.prototype.hasOwnProperty.call(req.body, 'posX') && { posX }),
         ...(Object.prototype.hasOwnProperty.call(req.body, 'posY') && { posY }),
         ...(rotation !== undefined && { rotation: Number(rotation) }),
