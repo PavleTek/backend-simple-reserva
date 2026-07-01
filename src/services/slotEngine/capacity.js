@@ -360,6 +360,106 @@ function parseHolds(holds) {
   }));
 }
 
+function getConflictingLinkedTableLabels(
+  tableId,
+  partySize,
+  slotStart,
+  slotEnd,
+  bufferMs,
+  parsedReservations,
+  parsedHolds,
+  excludeHoldToken,
+  blockingSessions,
+  blockRules,
+  tableById
+) {
+  if (!blockRules?.length) return [];
+  const requiredLinked = getRequiredLinkedTableIds(tableId, partySize, blockRules);
+  if (requiredLinked.length === 0) return [];
+
+  const derivedBlockedIds = getDerivedBlockedTableIds(
+    parsedReservations,
+    parsedHolds,
+    blockRules,
+    slotStart,
+    slotEnd,
+    excludeHoldToken
+  );
+
+  return requiredLinked
+    .filter((linkedId) => {
+      const linkedTable = tableById.get(linkedId);
+      if (linkedTable && isTableBlockedBySessions(linkedTable, slotStart, slotEnd, blockingSessions)) return true;
+      if (derivedBlockedIds.has(linkedId)) return true;
+      return !isDirectlyFree(linkedId, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken);
+    })
+    .map((id) => tableById.get(id)?.label || id);
+}
+
+function formatTableLabelList(labels) {
+  if (labels.length === 0) return '';
+  if (labels.length === 1) return labels[0];
+  return `${labels.slice(0, -1).join(', ')} y ${labels[labels.length - 1]}`;
+}
+
+/**
+ * Mensaje de error legible cuando una mesa concreta no puede reservarse en un cupo.
+ */
+function buildTableBookingConflictMessage(
+  table,
+  partySize,
+  slotStart,
+  slotEnd,
+  bufferMs,
+  parsedReservations,
+  parsedHolds,
+  excludeHoldToken,
+  blockingSessions,
+  blockRules,
+  allTables
+) {
+  const tableById = new Map(allTables.map((t) => [t.id, t]));
+
+  if (isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions)) {
+    return 'Esa mesa no está disponible por una actividad en ese horario.';
+  }
+
+  const derivedBlockedIds = getDerivedBlockedTableIds(
+    parsedReservations,
+    parsedHolds,
+    blockRules,
+    slotStart,
+    slotEnd,
+    excludeHoldToken
+  );
+  if (derivedBlockedIds.has(table.id)) {
+    return 'Esa mesa está bloqueada por otra reserva en ese horario. Elige otra mesa o cambia la hora.';
+  }
+
+  if (!isDirectlyFree(table.id, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken)) {
+    return 'Esa mesa ya está reservada en ese horario. Elige otra mesa o cambia la hora.';
+  }
+
+  const conflictingLabels = getConflictingLinkedTableLabels(
+    table.id,
+    partySize,
+    slotStart,
+    slotEnd,
+    bufferMs,
+    parsedReservations,
+    parsedHolds,
+    excludeHoldToken,
+    blockingSessions,
+    blockRules,
+    tableById
+  );
+  if (conflictingLabels.length > 0) {
+    return `No se puede reservar ${table.label}: las mesas vinculadas ${formatTableLabelList(conflictingLabels)} tienen reservas en ese horario.`;
+  }
+
+  return 'Esa mesa no está disponible en ese horario. Elige otra mesa o cambia la hora.';
+}
+
 module.exports = {
   overlaps,
   getCandidateTables,
@@ -370,4 +470,5 @@ module.exports = {
   parseHolds,
   msUntilNextReservation,
   isDirectlyFree,
+  buildTableBookingConflictMessage,
 };
