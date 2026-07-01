@@ -353,6 +353,46 @@ async function canAddTable(restaurantId, includeTrial = true) {
 }
 
 /**
+ * Check if restaurant can add `count` tables (batch create).
+ */
+async function canAddTables(restaurantId, count, includeTrial = true) {
+  const n = Number(count);
+  if (!Number.isFinite(n) || n < 1) {
+    return { allowed: false, reason: 'Indica cuántas mesas quieres crear (mínimo 1).' };
+  }
+  const config = await resolvePlanConfigForRestaurant(restaurantId, includeTrial);
+  if (!config) return { allowed: false, reason: 'Sin plan activo' };
+
+  const currentCount = await prisma.restaurantTable.count({
+    where: {
+      isActive: true,
+      zone: { restaurantId, isActive: true },
+    },
+  });
+
+  const maxTables = config.maxTables;
+  if (maxTables == null) {
+    return { allowed: true, currentCount, maxTables: null, remaining: null };
+  }
+
+  const remaining = maxTables - currentCount;
+  if (n > remaining) {
+    const reason =
+      remaining <= 0
+        ? `Tu plan permite hasta ${maxTables} mesas. Actualiza tu plan para agregar más.`
+        : `Solo puedes agregar ${remaining} mesa(s) más (plan: ${maxTables}, actuales: ${currentCount}).`;
+    return {
+      allowed: false,
+      reason,
+      currentCount,
+      maxTables,
+      remaining: Math.max(0, remaining),
+    };
+  }
+  return { allowed: true, currentCount, maxTables, remaining };
+}
+
+/**
  * Check if owner can add another team member to a restaurant.
  */
 async function canAddTeamMember(ownerId, restaurantId, includeTrial = true) {
@@ -415,6 +455,7 @@ module.exports = {
   canAddLocation,
   canAddZone,
   canAddTable,
+  canAddTables,
   canAddTeamMember,
   invalidateCache,
   toMercadoPagoFrequency,

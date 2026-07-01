@@ -54,6 +54,7 @@ const { startLastChanceLinkJob } = require("./jobs/lastChanceLinkJob");
 const { startBillingIntegrityJob } = require("./jobs/billingIntegrityJob");
 const { startAddonRemovalJob } = require("./jobs/addonRemovalJob");
 const { startOwnershipTransferExpiryJob } = require("./jobs/ownershipTransferExpiryJob");
+const { startReservationImportJob } = require("./jobs/reservationImportJob");
 const { assertMpEnvSafety } = require("./lib/mercadopagoEnv");
 const { publicRouter: feedbackPublicRouter, restaurantRouter: feedbackRestaurantRouter } = require("./routes/feedback.routes");
 const { publicRestaurantRouter: holdRestaurantRouter, publicHoldRouter, staffRouter: holdStaffRouter } = require("./routes/reservationHold.routes");
@@ -321,4 +322,5 @@ app.listen(PORT, "0.0.0.0", () => {
   startBillingIntegrityJob();
   startAddonRemovalJob();
   startOwnershipTransferExpiryJob();
+  startReservationImportJob();
 });

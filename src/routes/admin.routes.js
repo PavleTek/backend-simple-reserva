@@ -2771,6 +2771,7 @@ const adminFeedbackRouter = require('./adminFeedback.routes');
 router.use('/restaurants/:id/feedback', adminFeedbackRouter);
 
 router.use('/referrals', require('./adminReferral.routes'));
+router.use('/migrations', require('./adminMigration.routes'));
 
 // ─── Billing integrity (on-demand) ───────────────────────────────
 
