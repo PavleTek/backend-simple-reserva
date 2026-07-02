@@ -346,6 +346,40 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
       userMsg = 'MercadoPago no disponible. Verifica MERCADOPAGO_ACCESS_TOKEN.';
     }
 
+    // Alerta para el admin: cualquier falla al crear el preapproval bloquea el cobro de un
+    // cliente. No asumimos que ya conocemos la causa (MP cambia validaciones sin avisar,
+    // como pasó con el límite de 40 caracteres en "reason"): siempre dejamos rastro con el
+    // mensaje crudo de MP para poder diagnosticar casos nuevos.
+    try {
+      const { createOpsAlert } = require('./billing/billingEmailService');
+      let suggestedAction;
+      if (policyBlocked) {
+        suggestedAction =
+          'Revisar en el panel de MP (mercadopago.cl/developers/panel/app) que el producto "Suscripciones" '
+          + 'esté activo para esa app y que se esté usando el Access Token de producción de ESA app. '
+          + 'Si ya está activo, abrir ticket a soporte MP adjuntando este detalle y la hora exacta.';
+      } else if (payerCountryMismatch) {
+        suggestedAction = `Pedir al cliente un correo con cuenta de Mercado Pago Chile (mercadopago.cl); "${payerEmailForBody}" está asociado a MP de otro país.`;
+      } else {
+        suggestedAction =
+          'Es probable que MercadoPago haya cambiado una validación de su API (ver el mensaje de MP en el detalle). '
+          + 'Revisar y ajustar el código en createSubscription (mercadopagoService.js) si corresponde, luego pedir al cliente que reintente.';
+      }
+      await createOpsAlert({
+        organizationId,
+        kind: 'checkout_creation_failed',
+        severity: 'critical',
+        title: `No se pudo crear la suscripción en MP — ${organization.name}`,
+        detail: `plan=${planSKU} · status=${finalStatus ?? 's/d'} · MP dijo: "${finalMsg}"`,
+        suggestedAction,
+        mpStatus: finalStatus != null ? String(finalStatus) : null,
+        mpStatusDetail: finalMsg,
+        dedupeKey: `org:${organizationId}:checkout_creation_failed:${new Date().toISOString().slice(0, 13)}`,
+      });
+    } catch (alertErr) {
+      console.error('[MercadoPago] No se pudo crear ops alert de checkout_creation_failed:', alertErr?.message ?? alertErr);
+    }
+
     const e = new Error(userMsg);
     e.cause = err;
     e.mpPolicyBlocked = policyBlocked;
@@ -672,6 +706,13 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     }
   } catch (refErr) {
     console.warn('[MercadoPago] activateOrganizationSubscription referral hooks failed:', refErr?.message ?? refErr);
+  }
+
+  try {
+    const { resolveBillingAlerts } = require('./billing/billingEmailService');
+    await resolveBillingAlerts(organizationId, ['checkout_creation_failed']);
+  } catch (alertErr) {
+    console.warn('[MercadoPago] activateOrganizationSubscription resolveBillingAlerts falló:', alertErr?.message ?? alertErr);
   }
 }
 
