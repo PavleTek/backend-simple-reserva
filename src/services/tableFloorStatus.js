@@ -1,5 +1,7 @@
 'use strict';
 
+const { applySwaps } = require('./slotEngine/blockRules');
+
 const LATE_GRACE_MINUTES = 10;
 const RESERVATION_SOON_MINUTES = 60;
 
@@ -120,9 +122,11 @@ function computeTableFloorStatus(tableReservations, now, bufferMs = 0) {
  *
  * @param {Array<{id: string, label: string, status: string, currentReservation: object|null}>} tableStatuses
  * @param {Array<{triggerTableId: string, blockedTableId: string, minPartySize: number|null}>} blockRules
+ * @param {Map<string, Array<{originalTableId: string, substituteTableId: string}>>} [swapsByReservationId] -
+ *   sustituciones puntuales (ReservationTableSwap) de la reserva activa, por reservation.id.
  * @returns {typeof tableStatuses} - el mismo array, mutado in place
  */
-function applyBlockedStatus(tableStatuses, blockRules) {
+function applyBlockedStatus(tableStatuses, blockRules, swapsByReservationId = null) {
   if (!blockRules?.length) return tableStatuses;
 
   const statusById = new Map(tableStatuses.map((t) => [t.id, t]));
@@ -139,10 +143,12 @@ function applyBlockedStatus(tableStatuses, blockRules) {
     if (!rules) continue;
     const active = trigger.currentReservation;
     if (!active) continue;
+    const swaps = active.id ? swapsByReservationId?.get(active.id) : null;
 
     for (const rule of rules) {
       if (rule.minPartySize != null && (active.partySize ?? 0) < rule.minPartySize) continue;
-      const blockedEntry = statusById.get(rule.blockedTableId);
+      const [resolvedBlockedId] = swaps ? applySwaps([rule.blockedTableId], swaps) : [rule.blockedTableId];
+      const blockedEntry = statusById.get(resolvedBlockedId);
       if (!blockedEntry) continue;
       if (blockedEntry.status === 'occupied' || blockedEntry.status === 'late_arrival') continue;
 

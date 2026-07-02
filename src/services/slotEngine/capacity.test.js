@@ -2,7 +2,14 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { pickTable, countFreeTables, parseReservations, parseHolds, msUntilNextReservation } = require('./capacity');
+const {
+  pickTable,
+  countFreeTables,
+  parseReservations,
+  parseHolds,
+  msUntilNextReservation,
+  getLinkedTableConflictDetails,
+} = require('./capacity');
 
 function makeTable(id, capacity, sortOrder = 0) {
   return {
@@ -141,6 +148,96 @@ describe('mesas vinculadas (TableBlockRule)', () => {
       {}
     );
     assert.equal(selected?.id, 'mesa-evento');
+  });
+});
+
+describe('sustituciones puntuales (ReservationTableSwap)', () => {
+  const mesaEvento = makeTable('mesa-evento', 300, 1);
+  const a1 = makeTable('a1', 6, 2);
+  const a2 = makeTable('a2', 6, 3);
+  const a6 = makeTable('a6', 6, 4);
+  const blockRules = [
+    { triggerTableId: 'mesa-evento', blockedTableId: 'a1', minPartySize: null },
+    { triggerTableId: 'mesa-evento', blockedTableId: 'a2', minPartySize: null },
+  ];
+  const allTables = [mesaEvento, a1, a2, a6];
+
+  test('countFreeTables: con swapsByReservationId, la mesa sustituta queda ocupada y la original libre', () => {
+    // La reserva del evento (res-1) sustituyó a1 por a6 porque a1 ya tenía otra reserva.
+    const parsedRes = parseReservations([
+      { id: 'res-1', tableId: 'mesa-evento', startUtc: T(0).toISOString(), durationMinutes: 120, partySize: 70 },
+    ]);
+    const swapsByReservationId = new Map([
+      ['res-1', [{ originalTableId: 'a1', substituteTableId: 'a6' }]],
+    ]);
+
+    const freeA1 = countFreeTables(
+      [a1], T(30), T(90), 0, parsedRes, [], null, [],
+      { partySize: 6, blockRules, allTables, swapsByReservationId }
+    );
+    assert.equal(freeA1, 1, 'a1 quedó libre: el evento la sustituyó por a6');
+
+    const freeA6 = countFreeTables(
+      [a6], T(30), T(90), 0, parsedRes, [], null, [],
+      { partySize: 6, blockRules, allTables, swapsByReservationId }
+    );
+    assert.equal(freeA6, 0, 'a6 quedó bloqueada: es la sustituta del evento');
+  });
+
+  test('countFreeTables: proposedSwaps evita exigir la mesa original ya ocupada por otra reserva', () => {
+    // a1 tiene una reserva propia que no se puede mover; el evento propone sustituir a1 por a6.
+    const parsedRes = parseReservations([
+      { id: 'res-a1', tableId: 'a1', startUtc: T(0).toISOString(), durationMinutes: 90, partySize: 4 },
+    ]);
+    const proposedSwaps = [{ originalTableId: 'a1', substituteTableId: 'a6' }];
+
+    const freeEventoSinSwap = countFreeTables(
+      [mesaEvento], T(0), T(90), 0, parsedRes, [], null, [],
+      { partySize: 70, blockRules, allTables }
+    );
+    assert.equal(freeEventoSinSwap, 0, 'sin swap, mesa-evento requiere a1 libre y está ocupada');
+
+    const freeEventoConSwap = countFreeTables(
+      [mesaEvento], T(0), T(90), 0, parsedRes, [], null, [],
+      { partySize: 70, blockRules, allTables, proposedSwaps }
+    );
+    assert.equal(freeEventoConSwap, 1, 'con swap, mesa-evento ya no requiere a1 sino a6 (libre)');
+  });
+
+  test('pickTable: swapsByReservationId hace que la mesa sustituta no sea asignable a otra reserva', () => {
+    const parsedRes = parseReservations([
+      { id: 'res-1', tableId: 'mesa-evento', startUtc: T(0).toISOString(), durationMinutes: 120, partySize: 70 },
+    ]);
+    const swapsByReservationId = new Map([
+      ['res-1', [{ originalTableId: 'a1', substituteTableId: 'a6' }]],
+    ]);
+
+    const selected = pickTable(
+      [a1, a6], 4, T(30), T(90), 0, parsedRes, [], null, null,
+      { blockRules, swapsByReservationId }
+    );
+    assert.equal(selected?.id, 'a1', 'a1 sigue libre; la mesa ocupada por el evento ahora es a6');
+  });
+
+  test('getLinkedTableConflictDetails: reporta conflicto que desaparece al aplicar el swap propuesto', () => {
+    const parsedRes = parseReservations([
+      { id: 'res-a1', tableId: 'a1', startUtc: T(0).toISOString(), durationMinutes: 90, partySize: 4 },
+    ]);
+    const tableById = new Map(allTables.map((t) => [t.id, t]));
+
+    const withoutSwap = getLinkedTableConflictDetails(
+      'mesa-evento', 70, T(0), T(90), 0, parsedRes, [], null, [], blockRules, tableById
+    );
+    assert.equal(withoutSwap.length, 1);
+    assert.equal(withoutSwap[0].tableId, 'a1');
+    assert.equal(withoutSwap[0].reason, 'reservation');
+    assert.equal(withoutSwap[0].blockingReservationId, 'res-a1');
+
+    const proposedSwaps = [{ originalTableId: 'a1', substituteTableId: 'a6' }];
+    const withSwap = getLinkedTableConflictDetails(
+      'mesa-evento', 70, T(0), T(90), 0, parsedRes, [], null, [], blockRules, tableById, null, proposedSwaps
+    );
+    assert.equal(withSwap.length, 0, 'al sustituir a1 por a6 (libre), el conflicto se resuelve');
   });
 });
 

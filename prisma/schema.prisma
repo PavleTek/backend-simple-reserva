@@ -366,6 +366,8 @@ model RestaurantTable {
   holds         ReservationHold[]
   blockRulesAsTrigger TableBlockRule[] @relation("BlockRuleTrigger")
   blockRulesAsBlocked TableBlockRule[] @relation("BlockRuleBlocked")
+  tableSwapsAsOriginal   ReservationTableSwap[] @relation("TableSwapOriginal")
+  tableSwapsAsSubstitute ReservationTableSwap[] @relation("TableSwapSubstitute")
 
   @@index([zoneId])
 }
@@ -388,6 +390,26 @@ model TableBlockRule {
   @@unique([triggerTableId, blockedTableId])
   @@index([restaurantId])
   @@index([blockedTableId])
+}
+
+/// Sustitución puntual de una mesa vinculada para UNA reserva específica: en vez de
+/// bloquear `originalTable` (la mesa que indicaría TableBlockRule por defecto),
+/// esta reserva bloquea `substituteTable`. Se usa cuando `originalTable` ya tiene
+/// una reserva propia que no se puede mover y el staff elige otra mesa libre en su
+/// lugar — solo afecta a esta reserva, no cambia la configuración general.
+model ReservationTableSwap {
+  id                String          @id @default(cuid())
+  reservationId     String
+  reservation       Reservation     @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  originalTableId   String
+  originalTable     RestaurantTable @relation("TableSwapOriginal", fields: [originalTableId], references: [id], onDelete: Cascade)
+  substituteTableId String
+  substituteTable   RestaurantTable @relation("TableSwapSubstitute", fields: [substituteTableId], references: [id], onDelete: Cascade)
+  createdAt         DateTime        @default(now())
+
+  @@unique([reservationId, originalTableId])
+  @@index([reservationId])
+  @@index([substituteTableId])
 }
 
 model Schedule {
@@ -557,6 +579,8 @@ model Reservation {
   activityBooking ActivityBooking?
 
   feedbackRequest FeedbackRequest?
+
+  tableSwaps      ReservationTableSwap[]
 
   @@index([restaurantId, dateTime, status])
   @@index([restaurantId, businessDate, status])

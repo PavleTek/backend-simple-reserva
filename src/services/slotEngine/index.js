@@ -38,6 +38,7 @@ const {
   parseHolds,
 } = require('./capacity');
 const { validateSlotForBooking } = require('./validate');
+const { loadSwapsByReservationId } = require('../reservationTableSwaps');
 const { ACTIVE_TABLE_STATUSES } = require('../../lib/reservationStatuses');
 const { loadBlockingSessionsForDay } = require('../activitySessionService');
 
@@ -153,7 +154,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
     }),
     prisma.reservation.findMany({
       where: reservationWhere,
-      select: { tableId: true, dateTime: true, durationMinutes: true, partySize: true },
+      select: { id: true, tableId: true, dateTime: true, durationMinutes: true, partySize: true },
     }),
     prisma.reservationWindow.findMany({
       where: { restaurantId: restaurant.id, dayOfWeek },
@@ -181,6 +182,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
   ]);
 
   const blockingSessionsRaw = await loadBlockingSessionsForDay(restaurant.id, dayStart, dayEnd);
+  const swapsByReservationId = await loadSwapsByReservationId(reservations.map((r) => r.id));
 
   const serverNow = nowInTimezone(timezone).toJSDate();
   const todayLocal = nowInTimezone(timezone).toFormat('yyyy-MM-dd');
@@ -244,6 +246,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       endUtc: bs.endDatetime.toISOString(),
     })),
     reservations: reservations.map((r) => ({
+      id: r.id,
       tableId: r.tableId,
       startUtc: r.dateTime.toISOString(),
       durationMinutes: r.durationMinutes,
@@ -267,6 +270,7 @@ async function loadDaySnapshot(restaurant, { dateStr, timezone }) {
       blockedTableId: r.blockedTableId,
       minPartySize: r.minPartySize,
     })),
+    swapsByReservationId,
     serverNowUtc: serverNow.toISOString(),
     isToday: dateStr === todayLocal,
   };
@@ -298,6 +302,7 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
     date,
     blockingSessions,
     blockRules,
+    swapsByReservationId,
   } = snapshot;
 
   if (!schedule) return { slots: [], reason: 'no_schedule' };
@@ -371,7 +376,7 @@ function computeAvailability(snapshot, { partySize, zoneId, now, walkIn = false,
       parsedHoldsArr,
       excludeHoldToken,
       blockingSessions ?? [],
-      { partySize, blockRules: blockRules ?? [], allTables: tables }
+      { partySize, blockRules: blockRules ?? [], allTables: tables, swapsByReservationId }
     );
     if (openTables === 0) continue;
 
