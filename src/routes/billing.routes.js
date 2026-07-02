@@ -93,6 +93,10 @@ async function resolvePayerEmailForCheckout(organizationId, bodyEmail, loginEmai
 }
 
 function handleBillingRouteError(error, res, next, respondMp) {
+  if (error.code === 'billing_lock_conflict') {
+    res.status(409).json({ error: error.code, message: error.message });
+    return;
+  }
   if (error.statusCode === 400) {
     res.status(400).json({ error: error.message });
     return;
