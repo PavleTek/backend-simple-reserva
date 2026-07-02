@@ -336,14 +336,23 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
 
     let userMsg = finalMsg;
     const payerCountryMismatch = isMercadoPagoDifferentCountriesError(err, finalBody);
+    // Confirmado en producción (2/jul): un 500 genérico de MP en este endpoint casi siempre
+    // ocurre porque payer_email no tiene cuenta de Mercado Pago válida — en vez de un 400
+    // claro, su API (segmento "legacy") responde con este error opaco. NO es un problema de
+    // nuestro access token (ya lo validamos arriba con GET /users/me antes de llegar aquí).
+    const genericServerError =
+      !policyBlocked && !payerCountryMismatch &&
+      (finalStatus === 500 || String(finalMsg).toLowerCase().includes('internal'));
     if (policyBlocked) {
       userMsg = 'Mercado Pago no autorizó crear la suscripción (configuración de cuenta). Contacta a soporte.';
     } else if (payerCountryMismatch) {
       userMsg =
         `El correo ${payerEmailForBody} está asociado a Mercado Pago de otro país. ` +
         'Indica otro correo con cuenta en mercadopago.cl (Chile) e intenta de nuevo.';
-    } else if (finalStatus === 500 || String(finalMsg).toLowerCase().includes('internal')) {
-      userMsg = 'MercadoPago no disponible. Verifica MERCADOPAGO_ACCESS_TOKEN.';
+    } else if (genericServerError) {
+      userMsg =
+        'Mercado Pago no pudo procesar el correo de pago indicado. Verifica que sea el correo de tu cuenta ' +
+        'en mercadopago.cl e intenta de nuevo, o usa Pago mensual manual.';
     }
 
     // Alerta para el admin: cualquier falla al crear el preapproval bloquea el cobro de un
@@ -360,6 +369,13 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
           + 'Si ya está activo, abrir ticket a soporte MP adjuntando este detalle y la hora exacta.';
       } else if (payerCountryMismatch) {
         suggestedAction = `Pedir al cliente un correo con cuenta de Mercado Pago Chile (mercadopago.cl); "${payerEmailForBody}" está asociado a MP de otro país.`;
+      } else if (genericServerError) {
+        suggestedAction =
+          `Causa más probable (confirmado en prod): "${payerEmailForBody}" no tiene cuenta de Mercado Pago válida — `
+          + 'en vez de un error claro, la API de MP responde 500 genérico. Pide al cliente el correo de su cuenta '
+          + 'en mercadopago.cl y reintenta, o sugiere Pago mensual manual (no requiere cuenta MP). '
+          + 'Si el correo sí tiene cuenta MP Chile y el error persiste, es probable que MP haya cambiado otra '
+          + 'validación de su API; revisar el mensaje crudo arriba.';
       } else {
         suggestedAction =
           'Es probable que MercadoPago haya cambiado una validación de su API (ver el mensaje de MP en el detalle). '
@@ -384,6 +400,7 @@ async function createSubscription(organizationId, ownerId, payerEmail, planSKU =
     e.cause = err;
     e.mpPolicyBlocked = policyBlocked;
     e.mpPayerCountryMismatch = payerCountryMismatch;
+    e.mpGenericServerError = genericServerError;
     throw e;
   }
 }

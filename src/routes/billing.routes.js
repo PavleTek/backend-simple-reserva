@@ -131,6 +131,14 @@ function isSamePlanRenewalScheduled(sub, scheduledSub) {
 /** Respuesta HTTP para fallos al crear preapproval en MP (checkout / change-plan / reactivate). */
 function respondMercadoPagoCheckoutError(error, res, next) {
   const { PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
+  if (error.mpGenericServerError) {
+    res.status(502).json({
+      error: 'checkout_mp_generic_error',
+      message: error.message,
+      alternatePaymentProvider: PAYMENT_PROVIDER_MP_CHECKOUT_PRO,
+    });
+    return;
+  }
   if (error.message?.includes('MERCADOPAGO_ACCESS_TOKEN')) {
     res.status(503).json({ error: 'Configuración de pagos no disponible. Contacta a soporte.' });
     return;
