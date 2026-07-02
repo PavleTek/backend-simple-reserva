@@ -21,6 +21,7 @@ const {
   getActivateOptionsForPreapproval,
 } = require('../services/mercadopagoService');
 const { applyBillingEvent } = require('../services/billing/billingStateService');
+const { shouldEnterGraceFromRejectedPayment } = require('../services/billing/paymentFailureDetection');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const referralService = require('../services/referralService');
@@ -602,7 +603,7 @@ router.post('/mercadopago', express.json({
             });
             const activeSub = await prisma.subscription.findFirst({
               where: { organizationId, isActiveSubscription: true },
-              select: { id: true },
+              select: { id: true, status: true, billingStrategy: true, mercadopagoPreapprovalId: true },
               orderBy: { createdAt: 'desc' },
             });
             const { handleCheckoutPaymentRejected } = require('../services/billing/billingEmailService');
@@ -613,6 +614,21 @@ router.post('/mercadopago', express.json({
               orgName: org?.name || organizationId,
               ownerEmail: org?.owner?.email,
             });
+
+            // MP no cambia el status del preapproval cuando un cobro recurrente falla
+            // (solo reintenta por su cuenta); no podemos esperar esa señal para entrar
+            // a periodo de gracia. Si esto es una renovación de una sub ya activa (y no
+            // un primer intento de alta/cambio de plan en curso), reaccionar ahora mismo.
+            const pendingCheckout = await prisma.checkoutSession.findFirst({
+              where: { organizationId, status: 'pending', expiresAt: { gt: new Date() } },
+              select: { id: true },
+            });
+            if (shouldEnterGraceFromRejectedPayment({ activeSub, hasPendingCheckout: !!pendingCheckout })) {
+              await applyBillingEvent(organizationId, 'PAYMENT_FAILED', {
+                preapprovalId: activeSub.mercadopagoPreapprovalId,
+              });
+              console.log('[Webhook] MercadoPago payment rejected on active subscription → grace period:', organizationId);
+            }
           } catch (rejectErr) {
             console.error('[Webhook] Preapproval payment rejected notify:', rejectErr?.message ?? rejectErr);
           }
