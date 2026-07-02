@@ -9,6 +9,8 @@
  * Detects:
  *  1. Multi-active subs per org (violates partial unique index — should never happen)
  *  2. Automatic zombie: active + null preapproval + past currentPeriodEnd
+ *  2b. Automatic overdue: active + preapproval vigente + currentPeriodEnd vencido hace >2 días
+ *      sin pasar a grace (backstop si reconciliationJob no corrió o falló para esa sub)
  *  3. Grace/cancelled past gracePeriodEndsAt still active (cron missed)
  *  4. Trial past trialEndsAt still active (cron missed)
  *  5. Available ReferralCredit past expiresAt (expiry job missed)
@@ -49,6 +51,25 @@ const CHECKS = [
           currentPeriodEnd: { lt: now },
         },
         select: { id: true, organizationId: true, currentPeriodEnd: true, startDate: true },
+      });
+      return { count: rows.length, rows };
+    },
+  },
+  {
+    name: 'automatic_active_overdue_no_grace',
+    severity: 'critical',
+    title: 'Suscripciones automáticas activas con periodo vencido hace más de 2 días sin pasar a grace',
+    async run() {
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const rows = await prisma.subscription.findMany({
+        where: {
+          status: 'active',
+          isActiveSubscription: true,
+          billingStrategy: 'automatic_recurring',
+          mercadopagoPreapprovalId: { not: null },
+          currentPeriodEnd: { lt: twoDaysAgo },
+        },
+        select: { id: true, organizationId: true, currentPeriodEnd: true, mercadopagoPreapprovalId: true },
       });
       return { count: rows.length, rows };
     },

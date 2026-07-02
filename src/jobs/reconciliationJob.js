@@ -26,6 +26,10 @@ const {
   getActivateOptionsForPreapproval,
 } = require('../services/mercadopagoService');
 const { handlePreapprovalCancelledOrExpired } = require('../services/billing/handlePreapprovalTerminalStatus');
+const { decideOverdueAutomaticSubAction } = require('../services/billing/paymentFailureDetection');
+const { parseMpRetrySchedule } = require('../services/billing/retryScheduleService');
+const { computePeriodEnd } = require('../lib/billingPeriod');
+const { withMpRetry } = require('../lib/mpRetry');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutProService');
 const { parseExternalReferenceV2 } = require('../lib/externalReferenceV2');
@@ -78,9 +82,9 @@ async function runReconciliation() {
       // Checkout Pro session: buscar pagos aprobados por external_reference en MP
       if (session.mercadopagoPreferenceId) {
         try {
-          const searchRes = await paymentClient.search({
+          const searchRes = await withMpRetry(() => paymentClient.search({
             options: { external_reference: session.id, limit: 5 },
-          });
+          }));
           const approvedPayment = searchRes?.results?.find((p) => p.status === 'approved');
           if (approvedPayment) {
             const cpResult = await mercadopagoCheckoutProService.processCheckoutProPayment(approvedPayment);
@@ -106,7 +110,7 @@ async function runReconciliation() {
     }
 
     try {
-      const mpSub = await preApprovalClient.get({ id: session.mercadopagoPreapprovalId });
+      const mpSub = await withMpRetry(() => preApprovalClient.get({ id: session.mercadopagoPreapprovalId }));
       const status = mpSub?.status;
 
       if (status === 'authorized' || status === 'approved') {
@@ -194,7 +198,7 @@ async function runReconciliation() {
   for (const sub of activeSubs) {
     await sleep(100);
     try {
-      const mpSub = await preApprovalClient.get({ id: sub.mercadopagoPreapprovalId });
+      const mpSub = await withMpRetry(() => preApprovalClient.get({ id: sub.mercadopagoPreapprovalId }));
       const mpStatus = mpSub?.status;
 
       if (mpStatus === 'cancelled' || mpStatus === 'expired') {
@@ -203,15 +207,42 @@ async function runReconciliation() {
         await handlePreapprovalCancelledOrExpired(sub.organizationId, sub.mercadopagoPreapprovalId, mpStatus);
         console.error(`[Reconciliation] ERROR: Sub ${sub.id} activa localmente pero MP dice ${mpStatus}. Aplicado terminal handler. org=${sub.organizationId}`);
       } else if (mpStatus === 'payment_required') {
-        // Solo entrar grace si aun no esta en grace
+        // Nota: la API actual de MP no documenta este status para preapproval (solo
+        // pending|authorized|paused|cancelled); se deja como red de seguridad por si
+        // MP lo reintroduce. La detección real de mora está en la rama de abajo.
         const currentSub = await prisma.subscription.findUnique({ where: { id: sub.id } });
         if (currentSub?.status === 'active') {
           const { enterGracePeriod } = require('../services/mercadopagoService');
           await enterGracePeriod(sub.organizationId);
           console.error(`[Reconciliation] ERROR: Sub ${sub.id} con payment_required en MP. Entrando grace period. org=${sub.organizationId}`);
         }
+      } else if (mpStatus === 'authorized' || mpStatus === 'approved') {
+        // MP no cambia el status del preapproval cuando falla un cobro recurrente (solo
+        // reintenta internamente hasta 4 veces en ~10 días); por eso anclamos la
+        // detección de mora al currentPeriodEnd propio en vez de a un status de MP.
+        const { lastChargedAt } = parseMpRetrySchedule(mpSub);
+        const decision = decideOverdueAutomaticSubAction({
+          mpStatus: 'authorized',
+          currentPeriodEnd: sub.currentPeriodEnd,
+          lastChargedDate: lastChargedAt ? new Date(lastChargedAt) : null,
+          now,
+        });
+        if (decision.action === 'sync_period_end') {
+          const plan = await prisma.plan.findUnique({ where: { id: sub.planId } });
+          const nextPeriod = plan ? computePeriodEnd(new Date(lastChargedAt), plan) : null;
+          if (nextPeriod) {
+            await prisma.subscription.update({ where: { id: sub.id }, data: { currentPeriodEnd: nextPeriod } });
+            console.warn(`[Reconciliation] Sub ${sub.id}: currentPeriodEnd desincronizado (MP sí cobró), corregido. org=${sub.organizationId}`);
+          }
+        } else if (decision.action === 'enter_grace') {
+          const currentSub = await prisma.subscription.findUnique({ where: { id: sub.id } });
+          if (currentSub?.status === 'active') {
+            const { enterGracePeriod } = require('../services/mercadopagoService');
+            await enterGracePeriod(sub.organizationId);
+            console.error(`[Reconciliation] ERROR: Sub ${sub.id} vencida (currentPeriodEnd=${sub.currentPeriodEnd?.toISOString()}) sin cobro nuevo en MP. Entrando grace period. org=${sub.organizationId}`);
+          }
+        }
       }
-      // MP status authorized/approved: todo OK, no tocar
     } catch (err) {
       console.error(`[Reconciliation] Error verificando sub ${sub.id}:`, err?.message);
     }
@@ -240,7 +271,7 @@ async function runReconciliation() {
   for (const sSub of scheduledSubs) {
     await sleep(100);
     try {
-      const mpSub = await preApprovalClient.get({ id: sSub.mercadopagoPreapprovalId });
+      const mpSub = await withMpRetry(() => preApprovalClient.get({ id: sSub.mercadopagoPreapprovalId }));
       const mpStatus = mpSub?.status;
 
       if (mpStatus === 'authorized' || mpStatus === 'approved') {
@@ -289,7 +320,7 @@ async function runReconciliation() {
     await sleep(100);
     try {
       if (event.mpEventType === 'subscription_preapproval' || event.mpEventType === 'subscription_authorized_payment') {
-        const mpSub = await preApprovalClient.get({ id: event.mpDataId });
+        const mpSub = await withMpRetry(() => preApprovalClient.get({ id: event.mpDataId }));
         const externalRef = mpSub?.external_reference;
         if (!externalRef) continue;
 
@@ -340,7 +371,7 @@ async function runReconciliation() {
         console.log(`[Reconciliation] Reintento exitoso para webhook ${event.id} (${event.mpEventType})`);
 
       } else if (event.mpEventType === 'payment') {
-        const mpPayment = await paymentClient.get({ id: event.mpDataId });
+        const mpPayment = await withMpRetry(() => paymentClient.get({ id: event.mpDataId }));
         if (mpPayment.status === 'approved') {
           const externalRef = mpPayment?.external_reference;
           if (!externalRef) continue;
