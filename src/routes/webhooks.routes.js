@@ -24,6 +24,7 @@ const { applyBillingEvent } = require('../services/billing/billingStateService')
 const { shouldEnterGraceFromRejectedPayment } = require('../services/billing/paymentFailureDetection');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
+const { withMpRetry } = require('../lib/mpRetry');
 const referralService = require('../services/referralService');
 const { parseExternalReference } = require('../lib/billingProviders');
 const { parseExternalReferenceV2 } = require('../lib/externalReferenceV2');
@@ -200,10 +201,10 @@ router.post('/mercadopago', express.json({
         let preapprovalId = dataId;
         if (type === 'subscription_authorized_payment') {
           try {
-            const apRes = await fetch(
+            const apRes = await withMpRetry(() => fetch(
               `https://api.mercadopago.com/v1/authorized_payments/${dataId}`,
               { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } },
-            );
+            ));
             const apData = await apRes.json();
             const resolvedPreapprovalId = apData?.preapproval_id;
             if (!resolvedPreapprovalId) {
@@ -228,7 +229,7 @@ router.post('/mercadopago', express.json({
         const preApproval = new PreApproval(client);
         let mpSub;
         try {
-          mpSub = await preApproval.get({ id: preapprovalId });
+          mpSub = await withMpRetry(() => preApproval.get({ id: preapprovalId }));
         } catch (err) {
           console.error('[Webhook] MercadoPago get preapproval failed:', err?.message ?? err);
           await prisma.webhookEvent.update({
@@ -345,7 +346,7 @@ router.post('/mercadopago', express.json({
         const payment = new Payment(client);
         let mpPayment;
         try {
-          mpPayment = await payment.get({ id: paymentId });
+          mpPayment = await withMpRetry(() => payment.get({ id: paymentId }));
         } catch (err) {
           console.error('[Webhook] MercadoPago get payment failed:', err?.message ?? err);
           await prisma.webhookEvent.update({

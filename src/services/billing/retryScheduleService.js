@@ -1,6 +1,7 @@
 'use strict';
 
 const { getMercadoPagoAccessToken } = require('../../lib/mercadopagoEnv');
+const { withMpRetry } = require('../../lib/mpRetry');
 
 /**
  * Extrae fechas de cobro del summarized de un preapproval de MP ya obtenido
@@ -39,7 +40,7 @@ async function fetchMpRetrySchedule(preapprovalId) {
     const { MercadoPagoConfig, PreApproval } = require('mercadopago');
     const client = new MercadoPagoConfig({ accessToken });
     const preApproval = new PreApproval(client);
-    const mpSub = await preApproval.get({ id: preapprovalId });
+    const mpSub = await withMpRetry(() => preApproval.get({ id: preapprovalId }));
     return parseMpRetrySchedule(mpSub);
   } catch (err) {
     console.warn('[retrySchedule] fetch failed:', err?.message);
