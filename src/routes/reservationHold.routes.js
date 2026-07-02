@@ -133,6 +133,7 @@ publicRestaurantRouter.post('/:slug/reservation-holds', async (req, res, next) =
           dayOfWeek,
           blockingSessions: snapshot.blockingSessions ?? [],
           blockRules: snapshot.blockRules ?? [],
+          swapsByReservationId: snapshot.swapsByReservationId,
         });
 
         if (!validation.valid) {
@@ -167,7 +168,7 @@ publicRestaurantRouter.post('/:slug/reservation-holds', async (req, res, next) =
           parsedHoldsArr,
           zoneId || null,
           null,
-          { blockRules: snapshot.blockRules ?? [] },
+          { blockRules: snapshot.blockRules ?? [], swapsByReservationId: snapshot.swapsByReservationId },
           snapshot.blockingSessions ?? []
         );
 

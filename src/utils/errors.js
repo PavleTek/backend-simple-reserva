@@ -30,10 +30,23 @@ class ForbiddenError extends AppError {
   }
 }
 
+/**
+ * Conflicto de mesa vinculada resoluble: además del mensaje, lleva el detalle de qué
+ * mesas chocan y qué se puede hacer (mover la reserva que bloquea, o sustituir la mesa)
+ * para que el cliente pueda ofrecer una resolución en vez de un error genérico.
+ */
+class TableConflictError extends AppError {
+  constructor(message, conflicts = []) {
+    super(message, 409);
+    this.conflicts = conflicts;
+  }
+}
+
 module.exports = {
   AppError,
   NotFoundError,
   ValidationError,
   UnauthorizedError,
-  ForbiddenError
+  ForbiddenError,
+  TableConflictError
 };

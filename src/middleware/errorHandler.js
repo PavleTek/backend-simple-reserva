@@ -7,7 +7,9 @@ const errorHandler = (err, req, res, _next) => {
   );
 
   if (err.isOperational) {
-    res.status(err.statusCode).json({ error: err.message });
+    const body = { error: err.message };
+    if (err.conflicts) body.conflicts = err.conflicts;
+    res.status(err.statusCode).json(body);
     return;
   }
 

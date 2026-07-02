@@ -11,6 +11,7 @@ const {
 } = require('../services/slotEngine/index');
 const { pickTable, parseReservations, parseHolds } = require('../services/slotEngine/capacity');
 const { validateBookingPolicies } = require('../services/slotEngine/policies');
+const { loadSwapsByReservationId } = require('../services/reservationTableSwaps');
 const { loadBlockingSessionsForDay } = require('../services/activitySessionService');
 const { ACTIVE_TABLE_STATUSES } = require('../lib/reservationStatuses');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -209,8 +210,9 @@ router.patch('/token/:secureToken', async (req, res, next) => {
             dateTime: { gte: windowStart, lte: windowEnd },
             id: { not: reservation.id },
           },
-          select: { tableId: true, dateTime: true, durationMinutes: true, partySize: true },
+          select: { id: true, tableId: true, dateTime: true, durationMinutes: true, partySize: true },
         });
+        const swapsByReservationId = await loadSwapsByReservationId(dayReservations.map((r) => r.id));
 
         const blockingSessions = await loadBlockingSessionsForDay(
           restaurant.id,
@@ -228,6 +230,7 @@ router.patch('/token/:secureToken', async (req, res, next) => {
           zone: { id: t.zone.id, sortOrder: t.zone.sortOrder ?? 0 },
         }));
         const reservationsRaw = dayReservations.map((r) => ({
+          id: r.id,
           tableId: r.tableId,
           startUtc: r.dateTime.toISOString(),
           durationMinutes: r.durationMinutes,
@@ -268,6 +271,7 @@ router.patch('/token/:secureToken', async (req, res, next) => {
           dayOfWeek,
           blockingSessions,
           blockRules,
+          swapsByReservationId,
         });
 
         if (!validation.valid) {
@@ -293,7 +297,7 @@ router.patch('/token/:secureToken', async (req, res, next) => {
           parseHolds(holdsRaw),
           null,
           null,
-          { blockRules }
+          { blockRules, swapsByReservationId }
         );
         if (!selectedTable) throw new ValidationError('No hay disponibilidad en este horario');
 
@@ -499,7 +503,7 @@ router.post('/', async (req, res, next) => {
                   status: { in: ACTIVE_TABLE_STATUSES },
                   dateTime: { gte: new Date(hold.dateTime.getTime() - lb), lte: holdEnd },
                 },
-                select: { tableId: true, dateTime: true, durationMinutes: true, partySize: true },
+                select: { id: true, tableId: true, dateTime: true, durationMinutes: true, partySize: true },
               }),
               tx.reservationHold.findMany({
                 where: {
@@ -511,6 +515,7 @@ router.post('/', async (req, res, next) => {
                 select: { tableId: true, dateTime: true, durationMinutes: true, holdToken: true, partySize: true },
               }),
             ]);
+            const swapsByReservationId = await loadSwapsByReservationId(conflictingReservations.map((r) => r.id));
             const { countFreeTables } = require('../services/slotEngine/capacity');
             const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
             const stillFree = countFreeTables(
@@ -519,14 +524,14 @@ router.post('/', async (req, res, next) => {
               holdEnd,
               bufferMs,
               parseReservations(conflictingReservations.map((r) => ({
-                tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes, partySize: r.partySize,
+                id: r.id, tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes, partySize: r.partySize,
               }))),
               parseHolds(conflictingHolds.map((h) => ({
                 tableId: h.tableId, startUtc: h.dateTime.toISOString(), durationMinutes: h.durationMinutes, holdToken: h.holdToken, partySize: h.partySize,
               }))),
               holdToken,
               [],
-              { partySize: size, blockRules: holdBlockRules }
+              { partySize: size, blockRules: holdBlockRules, swapsByReservationId }
             );
             if (stillFree === 0) {
               throw new ValidationError('Esa mesa quedó bloqueada por otra reserva. Por favor intenta de nuevo.');
@@ -619,8 +624,9 @@ router.post('/', async (req, res, next) => {
             status: { in: ACTIVE_TABLE_STATUSES },
             dateTime: { gte: windowStart, lte: windowEnd },
           },
-          select: { tableId: true, dateTime: true, durationMinutes: true, partySize: true },
+          select: { id: true, tableId: true, dateTime: true, durationMinutes: true, partySize: true },
         });
+        const swapsByReservationId = await loadSwapsByReservationId(dayReservations.map((r) => r.id));
 
         const blockingSessions = await loadBlockingSessionsForDay(
           restaurant.id,
@@ -638,6 +644,7 @@ router.post('/', async (req, res, next) => {
           zone: { id: t.zone.id, sortOrder: t.zone.sortOrder ?? 0 },
         }));
         const reservationsRaw = dayReservations.map((r) => ({
+          id: r.id,
           tableId: r.tableId,
           startUtc: r.dateTime.toISOString(),
           durationMinutes: r.durationMinutes,
@@ -674,6 +681,7 @@ router.post('/', async (req, res, next) => {
           dayOfWeek,
           blockingSessions,
           blockRules,
+          swapsByReservationId,
         });
 
         if (!validation.valid) {
@@ -705,7 +713,7 @@ router.post('/', async (req, res, next) => {
           parseHolds(holdsRaw),
           zonePref,
           null,
-          { blockRules },
+          { blockRules, swapsByReservationId },
           blockingSessions
         );
         if (!selectedTable) throw new ValidationError('No hay mesas disponibles en este horario');

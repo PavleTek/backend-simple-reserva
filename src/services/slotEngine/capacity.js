@@ -121,6 +121,9 @@ function isDirectlyFree(tableId, slotStart, slotEnd, bufferMs, parsedReservation
  * Determina si alguna de las mesas vinculadas requeridas por `tableId` (para aceptar
  * `partySize`) está ocupada — ya sea por reserva/hold directo, sesión bloqueante o
  * bloqueo derivado de otra mesa gatillo. Sin blockRules, siempre retorna false.
+ *
+ * @param {Array<{originalTableId: string, substituteTableId: string}>} [proposedSwaps] -
+ *   sustituciones propuestas/persistidas para la reserva de `tableId` (no de otras mesas gatillo).
  */
 function hasLinkedTableConflict(
   tableId,
@@ -134,10 +137,11 @@ function hasLinkedTableConflict(
   blockingSessions,
   blockRules,
   derivedBlockedIds,
-  tableById
+  tableById,
+  proposedSwaps = []
 ) {
   if (!blockRules?.length) return false;
-  const requiredLinked = getRequiredLinkedTableIds(tableId, partySize, blockRules);
+  const requiredLinked = getRequiredLinkedTableIds(tableId, partySize, blockRules, proposedSwaps);
   return requiredLinked.some((linkedId) => {
     const linkedTable = tableById.get(linkedId);
     if (linkedTable && isTableBlockedBySessions(linkedTable, slotStart, slotEnd, blockingSessions)) return true;
@@ -159,10 +163,12 @@ function hasLinkedTableConflict(
  * @param {Array<{ tableId: string; start: Date; end: Date; holdToken: string; partySize?: number|null }>} parsedHolds
  * @param {string|null} [excludeHoldToken] - hold propio del usuario (se excluye)
  * @param {Array<{ startAt: Date; endAt: Date; blockScope?: string; zoneIds?: string[] }>} [blockingSessions]
- * @param {{ partySize?: number|null; blockRules?: Array<object>; allTables?: Array<object> }} [opts]
+ * @param {{ partySize?: number|null; blockRules?: Array<object>; allTables?: Array<object>; swapsByReservationId?: Map; proposedSwaps?: Array<object> }} [opts]
  *   partySize: tamaño del grupo (necesario para evaluar reglas de bloqueo con umbral).
  *   blockRules: reglas TableBlockRule del restaurante.
  *   allTables: lista completa de mesas (para resolver mesas vinculadas que no sean candidatas). Default: candidateTables.
+ *   swapsByReservationId: sustituciones puntuales (ReservationTableSwap) de otras reservas gatillo activas, por reservation.id.
+ *   proposedSwaps: sustituciones propuestas/persistidas SOLO si `candidateTables` es una única mesa gatillo explícita.
  * @returns {number} - cantidad de mesas libres
  */
 function countFreeTables(
@@ -176,7 +182,7 @@ function countFreeTables(
   blockingSessions = [],
   opts = {}
 ) {
-  const { partySize = null, blockRules = [], allTables = candidateTables } = opts;
+  const { partySize = null, blockRules = [], allTables = candidateTables, swapsByReservationId = null, proposedSwaps = [] } = opts;
   const tableById = new Map(allTables.map((t) => [t.id, t]));
   const derivedBlockedIds = getDerivedBlockedTableIds(
     parsedReservations,
@@ -184,7 +190,8 @@ function countFreeTables(
     blockRules,
     slotStart,
     slotEnd,
-    excludeHoldToken
+    excludeHoldToken,
+    swapsByReservationId
   );
 
   let free = 0;
@@ -195,7 +202,7 @@ function countFreeTables(
     if (
       hasLinkedTableConflict(
         table.id, partySize, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds,
-        excludeHoldToken, blockingSessions, blockRules, derivedBlockedIds, tableById
+        excludeHoldToken, blockingSessions, blockRules, derivedBlockedIds, tableById, proposedSwaps
       )
     ) continue;
 
@@ -217,9 +224,10 @@ function countFreeTables(
  * @param {Array<{ tableId: string; start: Date; end: Date; holdToken: string }>} parsedHolds
  * @param {string|null} preferredZoneId
  * @param {string|null} [excludeHoldToken]
- * @param {{ preferOpenEnded?: boolean; blockRules?: Array<object> }} [opts]
+ * @param {{ preferOpenEnded?: boolean; blockRules?: Array<object>; swapsByReservationId?: Map }} [opts]
  *   preferOpenEnded: true → prioriza mesas con más tiempo libre después del slot (ideal para walk-ins).
  *   blockRules: reglas TableBlockRule del restaurante (mesas vinculadas, bidireccional).
+ *   swapsByReservationId: sustituciones puntuales (ReservationTableSwap) activas, por reservation.id.
  * @param {Array<{ startAt: Date; endAt: Date; blockScope?: string; zoneIds?: string[] }>} [blockingSessions]
  * @returns {typeof tables[0] | null}
  */
@@ -233,7 +241,7 @@ function pickTable(
   parsedHolds,
   preferredZoneId,
   excludeHoldToken = null,
-  { preferOpenEnded = false, blockRules = [] } = {},
+  { preferOpenEnded = false, blockRules = [], swapsByReservationId = null } = {},
   blockingSessions = []
 ) {
   const candidates = getCandidateTables(tables, partySize, null);
@@ -244,7 +252,8 @@ function pickTable(
     blockRules,
     slotStart,
     slotEnd,
-    excludeHoldToken
+    excludeHoldToken,
+    swapsByReservationId
   );
 
   const free = candidates.filter((t) => {
@@ -332,12 +341,13 @@ function checkPacing(pacingRules, dayOfWeek, confirmedCovers, confirmedReservati
 
 /**
  * Convierte array de reservas raw a formato normalizado.
- * @param {Array<{ tableId: string|null; startUtc: string; durationMinutes: number; partySize?: number }>} reservations
+ * @param {Array<{ id?: string; tableId: string|null; startUtc: string; durationMinutes: number; partySize?: number }>} reservations
  * @param {number} bufferMs - se usa en la comparación, no en el mapeo
- * @returns {Array<{ tableId: string|null; start: Date; end: Date; partySize: number|null }>}
+ * @returns {Array<{ id: string|null; tableId: string|null; start: Date; end: Date; partySize: number|null }>}
  */
 function parseReservations(reservations) {
   return reservations.map((r) => ({
+    id: r.id ?? null,
     tableId: r.tableId,
     start: new Date(r.startUtc),
     end: new Date(new Date(r.startUtc).getTime() + r.durationMinutes * 60000),
@@ -371,10 +381,12 @@ function getConflictingLinkedTableLabels(
   excludeHoldToken,
   blockingSessions,
   blockRules,
-  tableById
+  tableById,
+  proposedSwaps = [],
+  swapsByReservationId = null
 ) {
   if (!blockRules?.length) return [];
-  const requiredLinked = getRequiredLinkedTableIds(tableId, partySize, blockRules);
+  const requiredLinked = getRequiredLinkedTableIds(tableId, partySize, blockRules, proposedSwaps);
   if (requiredLinked.length === 0) return [];
 
   const derivedBlockedIds = getDerivedBlockedTableIds(
@@ -383,7 +395,8 @@ function getConflictingLinkedTableLabels(
     blockRules,
     slotStart,
     slotEnd,
-    excludeHoldToken
+    excludeHoldToken,
+    swapsByReservationId
   );
 
   return requiredLinked
@@ -394,6 +407,79 @@ function getConflictingLinkedTableLabels(
       return !isDirectlyFree(linkedId, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken);
     })
     .map((id) => tableById.get(id)?.label || id);
+}
+
+/**
+ * Igual que `getConflictingLinkedTableLabels`, pero retorna detalle suficiente para
+ * ofrecer una resolución (mover la reserva que bloquea, o sustituir la mesa vinculada):
+ * qué mesa está en conflicto, y — cuando el conflicto es una reserva u hold directo
+ * sobre esa mesa vinculada — su id/token para poder reasignarla o excluirla.
+ *
+ * @returns {Array<{ tableId: string, tableLabel: string, reason: 'activity'|'reservation'|'hold'|'other_event', blockingReservationId: string|null, blockingHoldToken: string|null }>}
+ */
+function getLinkedTableConflictDetails(
+  tableId,
+  partySize,
+  slotStart,
+  slotEnd,
+  bufferMs,
+  parsedReservations,
+  parsedHolds,
+  excludeHoldToken,
+  blockingSessions,
+  blockRules,
+  tableById,
+  swapsByReservationId = null,
+  proposedSwaps = []
+) {
+  if (!blockRules?.length) return [];
+  const requiredLinked = getRequiredLinkedTableIds(tableId, partySize, blockRules, proposedSwaps);
+  if (requiredLinked.length === 0) return [];
+
+  const derivedBlockedIds = getDerivedBlockedTableIds(
+    parsedReservations,
+    parsedHolds,
+    blockRules,
+    slotStart,
+    slotEnd,
+    excludeHoldToken,
+    swapsByReservationId
+  );
+
+  const details = [];
+  for (const linkedId of requiredLinked) {
+    const linkedTable = tableById.get(linkedId);
+    const tableLabel = linkedTable?.label || linkedId;
+
+    if (linkedTable && isTableBlockedBySessions(linkedTable, slotStart, slotEnd, blockingSessions)) {
+      details.push({ tableId: linkedId, tableLabel, reason: 'activity', blockingReservationId: null, blockingHoldToken: null });
+      continue;
+    }
+
+    const directReservation = parsedReservations.find(
+      (r) => r.tableId === linkedId && overlaps(slotStart, slotEnd, r.start, new Date(r.end.getTime() + bufferMs))
+    );
+    if (directReservation) {
+      details.push({ tableId: linkedId, tableLabel, reason: 'reservation', blockingReservationId: directReservation.id ?? null, blockingHoldToken: null });
+      continue;
+    }
+
+    const directHold = parsedHolds.find(
+      (h) =>
+        h.tableId === linkedId &&
+        (!excludeHoldToken || h.holdToken !== excludeHoldToken) &&
+        overlaps(slotStart, slotEnd, h.start, h.end)
+    );
+    if (directHold) {
+      details.push({ tableId: linkedId, tableLabel, reason: 'hold', blockingReservationId: null, blockingHoldToken: directHold.holdToken });
+      continue;
+    }
+
+    if (derivedBlockedIds.has(linkedId)) {
+      details.push({ tableId: linkedId, tableLabel, reason: 'other_event', blockingReservationId: null, blockingHoldToken: null });
+    }
+  }
+  return details;
 }
 
 function formatTableLabelList(labels) {
@@ -416,7 +502,9 @@ function buildTableBookingConflictMessage(
   excludeHoldToken,
   blockingSessions,
   blockRules,
-  allTables
+  allTables,
+  proposedSwaps = [],
+  swapsByReservationId = null
 ) {
   const tableById = new Map(allTables.map((t) => [t.id, t]));
 
@@ -430,7 +518,8 @@ function buildTableBookingConflictMessage(
     blockRules,
     slotStart,
     slotEnd,
-    excludeHoldToken
+    excludeHoldToken,
+    swapsByReservationId
   );
   if (derivedBlockedIds.has(table.id)) {
     return 'Esa mesa está bloqueada por otra reserva en ese horario. Elige otra mesa o cambia la hora.';
@@ -451,7 +540,9 @@ function buildTableBookingConflictMessage(
     excludeHoldToken,
     blockingSessions,
     blockRules,
-    tableById
+    tableById,
+    proposedSwaps,
+    swapsByReservationId
   );
   if (conflictingLabels.length > 0) {
     return `No se puede reservar ${table.label}: las mesas vinculadas ${formatTableLabelList(conflictingLabels)} tienen reservas en ese horario.`;
@@ -470,5 +561,6 @@ module.exports = {
   parseHolds,
   msUntilNextReservation,
   isDirectlyFree,
+  getLinkedTableConflictDetails,
   buildTableBookingConflictMessage,
 };

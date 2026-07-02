@@ -28,11 +28,18 @@ const {
   parseHolds,
   countFreeTables,
   buildTableBookingConflictMessage,
+  getLinkedTableConflictDetails,
 } = require('../services/slotEngine/capacity');
+const {
+  buildTableConflictResolutions,
+  loadSwapsByReservationId,
+  normalizeTableSwaps,
+} = require('../services/tableConflictResolution');
+const { getRequiredLinkedTableIds } = require('../services/slotEngine/blockRules');
 
 const MAX_TABLE_CAPACITY = 300;
 const { sortFreeTablesForUi } = require('../lib/tableAssignment');
-const { NotFoundError, ValidationError, ForbiddenError } = require('../utils/errors');
+const { NotFoundError, ValidationError, ForbiddenError, TableConflictError } = require('../utils/errors');
 const {
   getEffectiveTimezone,
   parseInTimezone,
@@ -306,6 +313,7 @@ router.get('/tables/status', async (req, res, next) => {
         select: { triggerTableId: true, blockedTableId: true, minPartySize: true },
       }),
     ]);
+    const swapsByReservationId = await loadSwapsByReservationId(reservations.map((r) => r.id));
 
     const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
 
@@ -336,7 +344,7 @@ router.get('/tables/status', async (req, res, next) => {
       }),
     }));
 
-    applyBlockedStatus(zonesWithStatus.flatMap((z) => z.tables), blockRules);
+    applyBlockedStatus(zonesWithStatus.flatMap((z) => z.tables), blockRules, swapsByReservationId);
 
     res.json({ date: dateStr, zones: zonesWithStatus });
   } catch (error) {
@@ -631,6 +639,7 @@ router.post('/reservations', async (req, res, next) => {
       tableId,
       walkIn,
       nextDay: nextDayBody,
+      tableSwaps: rawTableSwaps,
     } = req.body;
 
     const isWalkIn = walkIn === true;
@@ -772,8 +781,9 @@ router.post('/reservations', async (req, res, next) => {
             status: { in: ACTIVE_TABLE_STATUSES },
             dateTime: { gte: windowStart, lte: windowEnd },
           },
-          select: { tableId: true, dateTime: true, durationMinutes: true, partySize: true },
+          select: { id: true, tableId: true, dateTime: true, durationMinutes: true, partySize: true },
         });
+        const swapsByReservationId = await loadSwapsByReservationId(dayReservations.map((r) => r.id));
 
         const blockingSessions = await loadBlockingSessionsForDay(
           restaurantId,
@@ -782,7 +792,7 @@ router.post('/reservations', async (req, res, next) => {
         );
 
         const reservationsRaw = dayReservations.map((r) => ({
-          tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes, partySize: r.partySize,
+          id: r.id, tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes, partySize: r.partySize,
         }));
         const holdsRaw = activeHolds.map((h) => ({
           tableId: h.tableId, startUtc: h.dateTime.toISOString(), durationMinutes: h.durationMinutes, holdToken: h.holdToken, partySize: h.partySize,
@@ -792,12 +802,18 @@ router.post('/reservations', async (req, res, next) => {
         const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
 
         let selectedTable = null;
+        let tableSwaps = [];
 
         if (tableId) {
           // Reserva manual con mesa explícita — chequear conflicto vía slotEngine
           const table = await tx.restaurantTable.findUnique({ where: { id: tableId }, include: { zone: true } });
           if (!table || table.zone.restaurantId !== restaurantId) throw new ValidationError('Mesa no válida');
           if (table.minCapacity > size || table.maxCapacity < size) throw new ValidationError('La mesa no admite este número de comensales');
+          try {
+            tableSwaps = normalizeTableSwaps(rawTableSwaps, allTables, tableId);
+          } catch (e) {
+            throw new ValidationError(e.message);
+          }
           const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
           const parsedRes = parseReservations(reservationsRaw);
           const parsedHoldsArr = parseHolds(holdsRaw);
@@ -811,24 +827,33 @@ router.post('/reservations', async (req, res, next) => {
           const specificFree = countFreeTables(
             [{ id: table.id, zoneId: table.zone.id, minCapacity: table.minCapacity, maxCapacity: table.maxCapacity }],
             dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null, blockingSessions,
-            { partySize: size, blockRules, allTables: tables }
+            { partySize: size, blockRules, allTables: tables, swapsByReservationId, proposedSwaps: tableSwaps }
           );
           if (specificFree === 0) {
-            throw new ValidationError(
-              buildTableBookingConflictMessage(
-                table,
-                size,
-                dateTime,
-                slotEnd,
-                bufferMs,
-                parsedRes,
-                parsedHoldsArr,
-                null,
-                blockingSessions,
-                blockRules,
-                tablesForConflict
-              )
+            const conflictDetails = getLinkedTableConflictDetails(
+              table.id, size, dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null,
+              blockingSessions, blockRules, new Map(tablesForConflict.map((t) => [t.id, t])),
+              swapsByReservationId, tableSwaps
             );
+            const message = buildTableBookingConflictMessage(
+              table, size, dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null,
+              blockingSessions, blockRules, tablesForConflict, tableSwaps, swapsByReservationId
+            );
+            if (conflictDetails.length > 0) {
+              const requiredLinkedDefault = getRequiredLinkedTableIds(table.id, size, blockRules);
+              const conflicts = await buildTableConflictResolutions({
+                restaurantId,
+                restaurant,
+                timezone,
+                conflictDetails,
+                eventDateStr: calendarDate,
+                eventTimeStr: time,
+                eventPartySize: size,
+                excludeTableIdsForSwap: [table.id, ...requiredLinkedDefault],
+              });
+              throw new TableConflictError(message, conflicts);
+            }
+            throw new ValidationError(message);
           }
           selectedTable = table;
         } else {
@@ -854,6 +879,7 @@ router.post('/reservations', async (req, res, next) => {
               dayOfWeek,
               blockingSessions,
               blockRules,
+              swapsByReservationId,
             });
             if (!validation.valid) {
               const msgs = {
@@ -879,11 +905,11 @@ router.post('/reservations', async (req, res, next) => {
           const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
           selectedTable = pickTable(tables, size, dateTime, slotEnd, bufferMs,
             parseReservations(reservationsRaw), parseHolds(holdsRaw), null, null,
-            { preferOpenEnded: isWalkIn, blockRules }, blockingSessions);
+            { preferOpenEnded: isWalkIn, blockRules, swapsByReservationId }, blockingSessions);
           if (!selectedTable) throw new ValidationError('No hay mesas disponibles en este horario');
         }
 
-        return tx.reservation.create({
+        const createdReservation = await tx.reservation.create({
           data: {
             restaurantId,
             tableId: selectedTable?.id ?? null,
@@ -904,6 +930,18 @@ router.post('/reservations', async (req, res, next) => {
             table: { select: { id: true, label: true } },
           },
         });
+
+        if (tableSwaps.length > 0) {
+          await tx.reservationTableSwap.createMany({
+            data: tableSwaps.map((swap) => ({
+              reservationId: createdReservation.id,
+              originalTableId: swap.originalTableId,
+              substituteTableId: swap.substituteTableId,
+            })),
+          });
+        }
+
+        return createdReservation;
       }, { isolationLevel: 'Serializable' })
     );
 
@@ -969,7 +1007,7 @@ router.post('/reservations', async (req, res, next) => {
 
 router.patch('/reservations/:id', async (req, res, next) => {
   try {
-    const { status, date, time, partySize, tableId, notes } = req.body;
+    const { status, date, time, partySize, tableId, notes, tableSwaps: rawTableSwaps } = req.body;
 
     const reservation = await prisma.reservation.findUnique({
       where: { id: req.params.id },
@@ -1105,15 +1143,16 @@ router.patch('/reservations/:id', async (req, res, next) => {
               dateTime: { gte: windowStart, lte: windowEnd },
               id: { not: reservation.id },
             },
-            select: { tableId: true, dateTime: true, durationMinutes: true, partySize: true },
+            select: { id: true, tableId: true, dateTime: true, durationMinutes: true, partySize: true },
           });
+          const swapsByReservationId = await loadSwapsByReservationId(dayReservations.map((r) => r.id));
 
           const slotDuration = resolveDuration(restaurant, size, durationRules);
           const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
           const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
 
           const reservationsRaw = dayReservations.map((r) => ({
-            tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes, partySize: r.partySize,
+            id: r.id, tableId: r.tableId, startUtc: r.dateTime.toISOString(), durationMinutes: r.durationMinutes, partySize: r.partySize,
           }));
           const holdsRaw = activeHolds.map((h) => ({
             tableId: h.tableId, startUtc: h.dateTime.toISOString(), durationMinutes: h.durationMinutes, holdToken: h.holdToken, partySize: h.partySize,
@@ -1124,10 +1163,16 @@ router.patch('/reservations/:id', async (req, res, next) => {
           const tableIdStr = (tableIdVal != null && String(tableIdVal).trim()) || null;
 
           let selectedTable = null;
+          let tableSwaps = [];
           if (tableIdStr) {
             const table = await tx.restaurantTable.findUnique({ where: { id: tableIdStr }, include: { zone: true } });
             if (!table || table.zone.restaurantId !== restaurant.id) throw new ValidationError('Mesa no válida');
             if (table.minCapacity > size || table.maxCapacity < size) throw new ValidationError('La mesa no admite este número de comensales');
+            try {
+              tableSwaps = normalizeTableSwaps(rawTableSwaps, allTables, tableIdStr);
+            } catch (e) {
+              throw new ValidationError(e.message);
+            }
             const parsedRes = parseReservations(reservationsRaw);
             const parsedHoldsArr = parseHolds(holdsRaw);
             const tablesForConflict = allTables.map((t) => ({
@@ -1140,33 +1185,42 @@ router.patch('/reservations/:id', async (req, res, next) => {
             const specificFree = countFreeTables(
               [{ id: table.id, zoneId: table.zone.id, minCapacity: table.minCapacity, maxCapacity: table.maxCapacity }],
               dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null, [],
-              { partySize: size, blockRules, allTables: tables }
+              { partySize: size, blockRules, allTables: tables, swapsByReservationId, proposedSwaps: tableSwaps }
             );
             if (specificFree === 0) {
-              throw new ValidationError(
-                buildTableBookingConflictMessage(
-                  table,
-                  size,
-                  dateTime,
-                  slotEnd,
-                  bufferMs,
-                  parsedRes,
-                  parsedHoldsArr,
-                  null,
-                  [],
-                  blockRules,
-                  tablesForConflict
-                )
+              const conflictDetails = getLinkedTableConflictDetails(
+                table.id, size, dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null,
+                [], blockRules, new Map(tablesForConflict.map((t) => [t.id, t])),
+                swapsByReservationId, tableSwaps
               );
+              const message = buildTableBookingConflictMessage(
+                table, size, dateTime, slotEnd, bufferMs, parsedRes, parsedHoldsArr, null,
+                [], blockRules, tablesForConflict, tableSwaps, swapsByReservationId
+              );
+              if (conflictDetails.length > 0) {
+                const requiredLinkedDefault = getRequiredLinkedTableIds(table.id, size, blockRules);
+                const conflicts = await buildTableConflictResolutions({
+                  restaurantId: restaurant.id,
+                  restaurant,
+                  timezone,
+                  conflictDetails,
+                  eventDateStr: dateStr,
+                  eventTimeStr: timeStr,
+                  eventPartySize: size,
+                  excludeTableIdsForSwap: [table.id, ...requiredLinkedDefault],
+                });
+                throw new TableConflictError(message, conflicts);
+              }
+              throw new ValidationError(message);
             }
             selectedTable = table;
           } else {
             selectedTable = pickTable(tables, size, dateTime, slotEnd, bufferMs,
-              parseReservations(reservationsRaw), parseHolds(holdsRaw), null, null, { blockRules });
+              parseReservations(reservationsRaw), parseHolds(holdsRaw), null, null, { blockRules, swapsByReservationId });
             if (!selectedTable) throw new ValidationError('No hay mesas disponibles en este horario');
           }
 
-          return tx.reservation.update({
+          const updatedReservation = await tx.reservation.update({
             where: { id: req.params.id },
             data: {
               dateTime,
@@ -1181,6 +1235,21 @@ router.patch('/reservations/:id', async (req, res, next) => {
               table: { select: { id: true, label: true } },
             },
           });
+
+          // Reemplaza las sustituciones de esta reserva por las vigentes tras la edición
+          // (mesa/horario/cupo pudieron cambiar qué mesas vinculadas aplican).
+          await tx.reservationTableSwap.deleteMany({ where: { reservationId: updatedReservation.id } });
+          if (tableSwaps.length > 0) {
+            await tx.reservationTableSwap.createMany({
+              data: tableSwaps.map((swap) => ({
+                reservationId: updatedReservation.id,
+                originalTableId: swap.originalTableId,
+                substituteTableId: swap.substituteTableId,
+              })),
+            });
+          }
+
+          return updatedReservation;
         }, { isolationLevel: 'Serializable' })
       );
 

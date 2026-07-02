@@ -22,6 +22,11 @@ function dayLookbackMs(defaultSlotDurationMinutes, durationRules = []) {
 
 /**
  * Mesas libres para un cupo — misma lógica que al crear reserva (slotEngine + holds + lookback).
+ *
+ * @param {boolean} [ignoreCapacity] - true para sugerir mesas sustitutas de una mesa vinculada
+ *   (ocupan espacio físico del evento, no se sienta gente ahí) en vez de mesas para sentar `partySize`.
+ * @param {string[]} [excludeTableIds] - mesas a excluir de las candidatas (p. ej. la mesa gatillo
+ *   y sus otras mesas vinculadas por defecto, al buscar un sustituto).
  */
 async function getAvailableTablesForSlot({
   restaurantId,
@@ -31,6 +36,8 @@ async function getAvailableTablesForSlot({
   timeStr,
   partySize,
   excludeReservationId = null,
+  ignoreCapacity = false,
+  excludeTableIds = [],
 }) {
   const size = partySize;
   const dateTime = parseInTimezone(dateStr, timeStr, timezone);
@@ -106,7 +113,21 @@ async function getAvailableTablesForSlot({
     return { tables: [], blocked: true };
   }
 
+  const swapRows = dayReservations.length
+    ? await prisma.reservationTableSwap.findMany({
+        where: { reservationId: { in: dayReservations.map((r) => r.id) } },
+        select: { reservationId: true, originalTableId: true, substituteTableId: true },
+      })
+    : [];
+  const swapsByReservationId = new Map();
+  for (const swap of swapRows) {
+    const list = swapsByReservationId.get(swap.reservationId) || [];
+    list.push(swap);
+    swapsByReservationId.set(swap.reservationId, list);
+  }
+
   const reservationsRaw = dayReservations.map((r) => ({
+    id: r.id,
     tableId: r.tableId,
     startUtc: r.dateTime.toISOString(),
     durationMinutes: r.durationMinutes,
@@ -135,7 +156,10 @@ async function getAvailableTablesForSlot({
     zoneName: t.zone.name,
   }));
 
-  const candidates = getCandidateTables(tablesMapped, size, null);
+  const capacityCandidates = ignoreCapacity ? tablesMapped : getCandidateTables(tablesMapped, size, null);
+  const candidates = excludeTableIds.length
+    ? capacityCandidates.filter((t) => !excludeTableIds.includes(t.id))
+    : capacityCandidates;
   const freeTables = [];
   for (const table of candidates) {
     const free = countFreeTables(
@@ -147,7 +171,7 @@ async function getAvailableTablesForSlot({
       parsedHolds,
       null,
       [],
-      { partySize: size, blockRules, allTables: tablesMapped }
+      { partySize: size, blockRules, allTables: tablesMapped, swapsByReservationId }
     );
     if (free > 0) {
       const full = allTables.find((t) => t.id === table.id);
