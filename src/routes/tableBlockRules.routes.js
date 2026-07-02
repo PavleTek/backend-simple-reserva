@@ -24,6 +24,101 @@ const router = express.Router({ mergeParams: true });
 router.use(authenticateToken);
 router.use(authorizeRestaurant);
 
+/** Resumen de todas las reglas del local (espacios de evento + mesas vinculadas). */
+router.get(
+  '/block-rules/summary',
+  authenticateRestaurantRoles(ROLES_CONFIG_VIEW),
+  async (req, res, next) => {
+    try {
+      const { restaurantId } = req.activeRestaurant;
+
+      const rules = await prisma.tableBlockRule.findMany({
+        where: { restaurantId },
+        include: {
+          triggerTable: {
+            select: {
+              id: true,
+              label: true,
+              isActive: true,
+              zone: { select: { name: true } },
+            },
+          },
+          blockedTable: {
+            select: {
+              id: true,
+              label: true,
+              isActive: true,
+              zone: { select: { name: true } },
+            },
+          },
+        },
+      });
+
+      const activeRules = rules.filter(
+        (r) => r.triggerTable.isActive && r.blockedTable.isActive,
+      );
+
+      /** @type {Map<string, { tableId: string, tableLabel: string, zoneName: string, blockedCount: number, minPartySize: number | null }>} */
+      const triggerMap = new Map();
+      /** @type {Map<string, { tableId: string, tableLabel: string, zoneName: string, triggers: Map<string, { tableId: string, tableLabel: string }> }>} */
+      const tiedMap = new Map();
+
+      for (const rule of activeRules) {
+        const triggerId = rule.triggerTable.id;
+        let trigger = triggerMap.get(triggerId);
+        if (!trigger) {
+          trigger = {
+            tableId: triggerId,
+            tableLabel: rule.triggerTable.label,
+            zoneName: rule.triggerTable.zone.name,
+            blockedCount: 0,
+            minPartySize: rule.minPartySize,
+          };
+          triggerMap.set(triggerId, trigger);
+        }
+        trigger.blockedCount += 1;
+        if (rule.minPartySize != null) {
+          trigger.minPartySize = rule.minPartySize;
+        }
+
+        const blockedId = rule.blockedTable.id;
+        let tied = tiedMap.get(blockedId);
+        if (!tied) {
+          tied = {
+            tableId: blockedId,
+            tableLabel: rule.blockedTable.label,
+            zoneName: rule.blockedTable.zone.name,
+            triggers: new Map(),
+          };
+          tiedMap.set(blockedId, tied);
+        }
+        tied.triggers.set(triggerId, {
+          tableId: triggerId,
+          tableLabel: rule.triggerTable.label,
+        });
+      }
+
+      const triggers = [...triggerMap.values()].sort((a, b) =>
+        a.tableLabel.localeCompare(b.tableLabel, 'es', { numeric: true }),
+      );
+      const tied = [...tiedMap.values()]
+        .map((entry) => ({
+          tableId: entry.tableId,
+          tableLabel: entry.tableLabel,
+          zoneName: entry.zoneName,
+          triggers: [...entry.triggers.values()].sort((a, b) =>
+            a.tableLabel.localeCompare(b.tableLabel, 'es', { numeric: true }),
+          ),
+        }))
+        .sort((a, b) => a.tableLabel.localeCompare(b.tableLabel, 'es', { numeric: true }));
+
+      res.json({ triggers, tied });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 async function loadOwnActiveTable(restaurantId, tableId) {
   const table = await prisma.restaurantTable.findUnique({
     where: { id: tableId },
