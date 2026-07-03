@@ -191,10 +191,11 @@ router.delete('/restaurants/:id/logo', async (req, res, next) => {
  */
 router.get('/organizations', async (req, res, next) => {
   try {
-    const { search, includeDeleted } = req.query;
+    const { search, includeDeleted, includeHidden } = req.query;
     const { page, limit, skip } = parsePagination(req.query);
 
     const deletedFilter = includeDeleted === 'true' ? {} : { isDeleted: false };
+    const hiddenFilter = includeHidden === 'true' ? {} : { hidden: false };
 
     const searchFilter = search
       ? {
@@ -206,7 +207,7 @@ router.get('/organizations', async (req, res, next) => {
         }
       : {};
 
-    const where = { ...deletedFilter, ...searchFilter };
+    const where = { ...deletedFilter, ...hiddenFilter, ...searchFilter };
 
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -708,6 +709,34 @@ router.patch('/organizations/:id/billing', async (req, res, next) => {
   }
 });
 
+/**
+ * PATCH /admin/organizations/:id/hidden
+ * Oculta o muestra una organización en los listados del panel admin.
+ */
+router.patch('/organizations/:id/hidden', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { hidden } = req.body;
+
+    if (typeof hidden !== 'boolean') {
+      throw new ValidationError('hidden debe ser un booleano');
+    }
+
+    const org = await prisma.restaurantOrganization.findUnique({ where: { id } });
+    if (!org) throw new NotFoundError('Organización no encontrada');
+
+    const updated = await prisma.restaurantOrganization.update({
+      where: { id },
+      data: { hidden },
+      select: { id: true, hidden: true },
+    });
+
+    res.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── Planes personalizados por organización ────────────────────────────────
 
 /**
@@ -793,7 +822,7 @@ router.post('/organizations/:organizationId/assign-plan', async (req, res, next)
 
 router.get('/users', async (req, res, next) => {
   try {
-    const { search, role } = req.query;
+    const { search, role, includeHidden } = req.query;
     const { page, limit, skip } = parsePagination(req.query);
 
     const where = {};
@@ -802,6 +831,13 @@ router.get('/users', async (req, res, next) => {
       where.OR = [
         { email: { contains: search, mode: 'insensitive' } },
         { name: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    if (includeHidden !== 'true') {
+      where.AND = [
+        { OR: [{ ownedOrganization: null }, { ownedOrganization: { hidden: false } }] },
+        { managedOrganizations: { none: { organization: { hidden: true } } } },
+        { hostedOrganizations: { none: { organization: { hidden: true } } } },
       ];
     }
 
