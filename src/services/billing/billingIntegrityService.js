@@ -9,6 +9,8 @@
  * Detects:
  *  1. Multi-active subs per org (violates partial unique index — should never happen)
  *  2. Automatic zombie: active + null preapproval + past currentPeriodEnd
+ *  2a. Automatic sin preapproval: active + null preapproval, sin importar currentPeriodEnd
+ *      (típicamente activada a mano con el PATCH genérico en vez de activate-from-preapproval)
  *  2b. Automatic overdue: active + preapproval vigente + currentPeriodEnd vencido hace >2 días
  *      sin pasar a grace (backstop si reconciliationJob no corrió o falló para esa sub)
  *  3. Grace/cancelled past gracePeriodEndsAt still active (cron missed)
@@ -49,6 +51,27 @@ const CHECKS = [
           billingStrategy: 'automatic_recurring',
           mercadopagoPreapprovalId: null,
           currentPeriodEnd: { lt: now },
+        },
+        select: { id: true, organizationId: true, currentPeriodEnd: true, startDate: true },
+      });
+      return { count: rows.length, rows };
+    },
+  },
+  {
+    name: 'automatic_active_missing_preapproval',
+    severity: 'critical',
+    title: 'Suscripciones automáticas activas sin preapproval vinculado (no verificables contra MP)',
+    suggestedAction:
+      'No usar el PATCH genérico de edición para activar (deja el preapproval sin vincular y el ' +
+      'currentPeriodEnd desalineado de MP). Verificar en /admin/subscriptions/:id/mp-check si hay ' +
+      'un preapproval autorizado y activarlo con /admin/subscriptions/:id/activate-from-preapproval.',
+    async run() {
+      const rows = await prisma.subscription.findMany({
+        where: {
+          status: 'active',
+          isActiveSubscription: true,
+          billingStrategy: 'automatic_recurring',
+          mercadopagoPreapprovalId: null,
         },
         select: { id: true, organizationId: true, currentPeriodEnd: true, startDate: true },
       });
@@ -167,7 +190,8 @@ async function runBillingIntegrityChecks() {
             severity: check.severity,
             title: `[Integridad] ${check.title}`,
             detail: `${count} registro(s) afectado(s). Revisar y corregir manualmente.`,
-            suggestedAction: 'Ejecutar corrección desde admin o esperar que el job de limpieza corra.',
+            suggestedAction:
+              check.suggestedAction || 'Ejecutar corrección desde admin o esperar que el job de limpieza corra.',
             dedupeKey: `integrity:${check.name}:${new Date().toISOString().slice(0, 13)}`,
           });
         } catch (alertErr) {
