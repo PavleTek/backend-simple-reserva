@@ -243,6 +243,44 @@ async function submitFeedbackResponse(token, body) {
 }
 
 /**
+ * Resuelve la URL de reseña de Google para un token y marca el primer click
+ * del comensal en `FeedbackResponse.googleReviewClickedAt` (solo si ya respondió).
+ * @param {string} token
+ * @returns {Promise<{ googleReviewUrl: string|null }>}
+ */
+async function recordGoogleReviewClickAndGetUrl(token) {
+  const request = await prisma.feedbackRequest.findUnique({
+    where: { token },
+    include: {
+      response: { select: { id: true, googleReviewClickedAt: true } },
+      reservation: {
+        select: {
+          restaurant: { select: { googlePlaceId: true } },
+        },
+      },
+    },
+  });
+  if (!request) throw new NotFoundError('Encuesta no encontrada');
+
+  const survey = await prisma.feedbackSurvey.findUnique({
+    where: { restaurantId: request.restaurantId },
+  });
+  const googleReviewUrl = resolveGoogleReviewUrl(
+    survey,
+    request.reservation?.restaurant || {},
+  );
+
+  if (request.response && !request.response.googleReviewClickedAt) {
+    await prisma.feedbackResponse.update({
+      where: { id: request.response.id },
+      data: { googleReviewClickedAt: new Date() },
+    });
+  }
+
+  return { googleReviewUrl };
+}
+
+/**
  * @param {{ address?: string|null; shortAddress?: string|null }} restaurant
  */
 function maskEmailForDisplay(email) {
@@ -266,4 +304,5 @@ module.exports = {
   getPublicFeedbackMeta,
   markOpened,
   submitFeedbackResponse,
+  recordGoogleReviewClickAndGetUrl,
 };
