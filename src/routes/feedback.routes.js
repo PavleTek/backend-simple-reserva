@@ -13,6 +13,7 @@ const {
   markOpened,
   submitFeedbackResponse,
   recordClickAndGetRedirect,
+  recordGoogleReviewClickAndGetUrl,
   getRestaurantSummary,
   getRestaurantInsights,
 } = require('../services/feedbackEngine');
@@ -39,6 +40,16 @@ publicRouter.get('/:token/click', async (req, res, next) => {
     const result = await recordClickAndGetRedirect(req.params.token);
     if (!result) throw new NotFoundError('Encuesta no encontrada');
     res.redirect(302, result.redirectUrl);
+  } catch (err) {
+    next(err);
+  }
+});
+
+publicRouter.get('/:token/google-review', async (req, res, next) => {
+  try {
+    const { googleReviewUrl } = await recordGoogleReviewClickAndGetUrl(req.params.token);
+    const frontBase = (process.env.FRONTEND_LANDING_PAGE_URL || 'http://localhost:5173').replace(/\/$/, '');
+    res.redirect(302, googleReviewUrl || `${frontBase}/feedback/${req.params.token}`);
   } catch (err) {
     next(err);
   }

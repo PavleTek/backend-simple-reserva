@@ -12,7 +12,7 @@ const { computeSatisfactionIndex, computeFunnelRates } = require('./satisfaction
 async function getRestaurantSummary(restaurantId, from, to) {
   const sentStatuses = ['sent', 'clicked', 'opened', 'completed'];
 
-  const [sent, clicked, completed, responses, openAlerts] = await Promise.all([
+  const [sent, clicked, completed, responses, openAlerts, googleReviewClicks] = await Promise.all([
     prisma.feedbackRequest.count({
       where: {
         restaurantId,
@@ -43,6 +43,13 @@ async function getRestaurantSummary(restaurantId, from, to) {
     }),
     prisma.feedbackAlert.count({
       where: { restaurantId, status: 'open', type: 'recovery' },
+    }),
+    prisma.feedbackResponse.count({
+      where: {
+        feedbackRequest: { restaurantId },
+        respondedAt: { gte: from, lte: to },
+        googleReviewClickedAt: { not: null },
+      },
     }),
   ]);
 
@@ -85,6 +92,7 @@ async function getRestaurantSummary(restaurantId, from, to) {
     sent,
     clicked,
     completed,
+    googleReviewClicks,
     openRecoveryAlerts: openAlerts,
     recoveryResolvedRate:
       totalRecovery > 0 ? Math.round((resolvedRecovery / totalRecovery) * 1000) / 10 : null,

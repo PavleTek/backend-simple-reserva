@@ -818,6 +818,7 @@ model FeedbackResponse {
   organizationId             String?
   cityKey                    String?
   respondedAt                DateTime        @default(now())
+  googleReviewClickedAt      DateTime?
 
   alerts                     FeedbackAlert[]
 }
