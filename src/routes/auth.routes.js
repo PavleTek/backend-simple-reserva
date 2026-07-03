@@ -38,6 +38,7 @@ const {
   updateProfile,
   updatePassword,
   completeDashboardTour,
+  touchUserActivity,
   touchRestaurantDashboardActivity,
   verifyTwoFactor,
   setupTwoFactor,
@@ -122,6 +123,7 @@ router.get('/profile', authenticateToken, getProfile);
 router.put('/profile', authenticateToken, updateProfile);
 router.put('/profile/password', authenticateToken, updatePassword);
 router.patch('/dashboard-tour/complete', authenticateToken, completeDashboardTour);
+router.patch('/activity', authenticateToken, touchUserActivity);
 router.patch('/restaurant-dashboard/activity', authenticateToken, touchRestaurantDashboardActivity);
 router.get('/2fa/status', authenticateToken, getTwoFactorStatus);
 router.post('/2fa/setup', authenticateToken, setupTwoFactor);

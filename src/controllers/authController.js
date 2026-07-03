@@ -1,4 +1,5 @@
 const prisma = require('../lib/prisma');
+const { touchUserActivity } = require('../lib/userActivity');
 const planService = require('../services/planService');
 const promoCodeService = require('../services/promoCodeService');
 const referralService = require('../services/referralService');
@@ -1394,45 +1395,23 @@ const completeDashboardTour = async (req, res) => {
   }
 };
 
-/** Throttle window for recording restaurant-dashboard presence (reuses User.lastLogin). */
-const RESTAURANT_DASHBOARD_ACTIVITY_INTERVAL_MS = 30 * 60 * 1000;
-
-const touchRestaurantDashboardActivity = async (req, res) => {
+/** Registra actividad autenticada (portal restaurante o admin), throttled. Reutiliza User.lastLogin. */
+const touchUserActivityHandler = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const threshold = new Date(Date.now() - RESTAURANT_DASHBOARD_ACTIVITY_INTERVAL_MS);
-    const now = new Date();
-
-    const result = await prisma.user.updateMany({
-      where: {
-        id: userId,
-        OR: [{ lastLogin: null }, { lastLogin: { lt: threshold } }],
-      },
-      data: { lastLogin: now },
-    });
-
-    if (result.count > 0) {
-      res.status(200).json({
-        updated: true,
-        lastLogin: now.toISOString(),
-      });
-      return;
-    }
-
-    const row = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { lastLogin: true },
-    });
+    const { updated, lastLogin } = await touchUserActivity(prisma, req.user.id);
 
     res.status(200).json({
-      updated: false,
-      lastLogin: row?.lastLogin ? row.lastLogin.toISOString() : null,
+      updated,
+      lastLogin: lastLogin ? lastLogin.toISOString() : null,
     });
   } catch (error) {
-    console.error('Touch restaurant dashboard activity error:', error);
+    console.error('Touch user activity error:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
+
+/** @deprecated alias — usar touchUserActivityHandler / PATCH /api/auth/activity */
+const touchRestaurantDashboardActivity = touchUserActivityHandler;
 
 const registerFromTransfer = async (req, res, next) => {
   try {
@@ -1493,6 +1472,7 @@ module.exports = {
   updateProfile,
   updatePassword,
   completeDashboardTour,
+  touchUserActivity: touchUserActivityHandler,
   touchRestaurantDashboardActivity,
   verifyTwoFactor,
   setupTwoFactor,
