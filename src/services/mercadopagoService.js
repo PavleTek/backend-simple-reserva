@@ -12,6 +12,7 @@
 const prisma = require('../lib/prisma');
 const planService = require('./planService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
+const { withMpRetry } = require('../lib/mpRetry');
 const { montoEfectivoNeto } = require('../lib/addonPricing');
 const {
   getMercadoPagoAccessToken,
@@ -863,7 +864,7 @@ async function confirmSubscriptionFromPreapproval(organizationId, preapprovalId)
   const { preApprovalClient } = getClient();
   let mpSub;
   try {
-    mpSub = await preApprovalClient.get({ id: preapprovalId });
+    mpSub = await withMpRetry(() => preApprovalClient.get({ id: preapprovalId }));
   } catch (err) {
     console.error('[MercadoPago] confirmSubscriptionFromPreapproval get failed:', err?.message ?? err);
     throw new Error('No se pudo verificar el pago con MercadoPago');

@@ -1,7 +1,7 @@
 /**
  * Job de reconciliacion: detecta y corrige discrepancias entre el estado local y MercadoPago.
  *
- * Corre cada 6 horas (configurable via RECONCILIATION_CRON).
+ * Corre cada hora (configurable via RECONCILIATION_CRON).
  *
  * Pasada 1: CheckoutSessions pendientes con mas de 2h.
  *   - Sin preapprovalId: marcar expired.
@@ -30,6 +30,7 @@ const { decideOverdueAutomaticSubAction } = require('../services/billing/payment
 const { parseMpRetrySchedule } = require('../services/billing/retryScheduleService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const { withMpRetry } = require('../lib/mpRetry');
+const { resolvePreapprovalIdFromAuthorizedPayment } = require('../lib/mpAuthorizedPayment');
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutProService');
 const { parseExternalReferenceV2 } = require('../lib/externalReferenceV2');
@@ -320,7 +321,29 @@ async function runReconciliation() {
     await sleep(100);
     try {
       if (event.mpEventType === 'subscription_preapproval' || event.mpEventType === 'subscription_authorized_payment') {
-        const mpSub = await withMpRetry(() => preApprovalClient.get({ id: event.mpDataId }));
+        // Para subscription_authorized_payment, mpDataId es el id del cobro (authorized
+        // payment), NO el preapproval id — hay que resolverlo antes de consultar GET /preapproval.
+        // Reutilizar mpDataId como preapproval id (bug anterior) hacía que MP devolviera 404
+        // ("resource not found") y el reintento fallara para siempre hasta salir de la ventana
+        // de 48h, sin activar nunca la suscripción.
+        let preapprovalId = event.mpDataId;
+        if (event.mpEventType === 'subscription_authorized_payment') {
+          try {
+            preapprovalId = await resolvePreapprovalIdFromAuthorizedPayment(event.mpDataId, accessToken);
+          } catch (apErr) {
+            if (apErr.noPreapprovalId) {
+              await prisma.webhookEvent.update({
+                where: { id: event.id },
+                data: { processingStatus: 'processed', errorMessage: 'no preapproval_id en authorized_payment (reintento)', processedAt: new Date() },
+              });
+              console.warn(`[Reconciliation] Sin preapproval_id en authorized_payment ${event.mpDataId}, evento no accionable`);
+              continue;
+            }
+            throw apErr;
+          }
+        }
+
+        const mpSub = await withMpRetry(() => preApprovalClient.get({ id: preapprovalId }));
         const externalRef = mpSub?.external_reference;
         if (!externalRef) continue;
 
@@ -338,24 +361,24 @@ async function runReconciliation() {
             const referralFreeWindowService = require('../services/billing/referralFreeWindowService');
             const isReferralWindow = await referralFreeWindowService.isReferralFreeWindowPreapproval(
               orgId,
-              event.mpDataId,
+              preapprovalId,
             );
             if (isReferralWindow) {
-              const activateOpts = await getActivateOptionsForPreapproval(orgId, event.mpDataId);
-              await activateOrganizationSubscription(orgId, event.mpDataId, planSKU, {
+              const activateOpts = await getActivateOptionsForPreapproval(orgId, preapprovalId);
+              await activateOrganizationSubscription(orgId, preapprovalId, planSKU, {
                 ...activateOpts,
                 referralFreeUntil: new Date(mpStartDate),
                 skipMarkFirstPayment: true,
               });
             } else {
-              await scheduleOrganizationSubscription(orgId, event.mpDataId, planSKU, new Date(mpStartDate));
+              await scheduleOrganizationSubscription(orgId, preapprovalId, planSKU, new Date(mpStartDate));
             }
           } else {
-            const activateOpts = await getActivateOptionsForPreapproval(orgId, event.mpDataId);
-            await activateOrganizationSubscription(orgId, event.mpDataId, planSKU, activateOpts);
+            const activateOpts = await getActivateOptionsForPreapproval(orgId, preapprovalId);
+            await activateOrganizationSubscription(orgId, preapprovalId, planSKU, activateOpts);
           }
         } else if (status === 'payment_required' || status === 'cancelled' || status === 'expired') {
-          await enterGracePeriod(orgId, { scheduledPreapprovalId: event.mpDataId });
+          await enterGracePeriod(orgId, { scheduledPreapprovalId: preapprovalId });
         }
 
         await prisma.webhookEvent.update({
@@ -424,7 +447,10 @@ async function runReconciliation() {
 }
 
 function startReconciliationJob() {
-  const schedule = process.env.RECONCILIATION_CRON || '0 */6 * * *'; // cada 6 horas
+  // Cada hora por defecto (antes 6h): a escala actual (decenas de orgs) el costo extra
+  // contra la API de MP es insignificante y acota mucho cuánto tiempo puede quedar un
+  // cliente mal reflejado si un webhook falla por una falla de red transitoria.
+  const schedule = process.env.RECONCILIATION_CRON || '0 * * * *';
   cron.schedule(schedule, () => {
     withCronLock('reconciliation', runReconciliation).catch((err) => {
       logger.error({ err }, '[Reconciliation] job failed');

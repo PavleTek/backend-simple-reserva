@@ -18,7 +18,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function withMpRetry(fn, { attempts = 3, baseDelayMs = 500 } = {}) {
+async function withMpRetry(fn, { attempts = 5, baseDelayMs = 500 } = {}) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
     try {

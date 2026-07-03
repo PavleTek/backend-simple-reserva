@@ -25,6 +25,7 @@ const { shouldEnterGraceFromRejectedPayment } = require('../services/billing/pay
 const { createReceiptFromMPPayment } = require('../services/paymentReceiptService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const { withMpRetry } = require('../lib/mpRetry');
+const { resolvePreapprovalIdFromAuthorizedPayment } = require('../lib/mpAuthorizedPayment');
 const referralService = require('../services/referralService');
 const { parseExternalReference } = require('../lib/billingProviders');
 const { parseExternalReferenceV2 } = require('../lib/externalReferenceV2');
@@ -201,22 +202,16 @@ router.post('/mercadopago', express.json({
         let preapprovalId = dataId;
         if (type === 'subscription_authorized_payment') {
           try {
-            const apRes = await withMpRetry(() => fetch(
-              `https://api.mercadopago.com/v1/authorized_payments/${dataId}`,
-              { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } },
-            ));
-            const apData = await apRes.json();
-            const resolvedPreapprovalId = apData?.preapproval_id;
-            if (!resolvedPreapprovalId) {
-              console.warn('[Webhook] subscription_authorized_payment: no preapproval_id en authorized_payment', dataId, apData);
+            preapprovalId = await resolvePreapprovalIdFromAuthorizedPayment(dataId, accessToken);
+          } catch (apErr) {
+            if (apErr.noPreapprovalId) {
+              console.warn('[Webhook] subscription_authorized_payment: no preapproval_id en authorized_payment', dataId, apErr.authorizedPaymentData);
               await prisma.webhookEvent.update({
                 where: { id: webhookEvent.id },
                 data: { processingStatus: 'skipped', errorMessage: 'no preapproval_id en authorized_payment' },
               });
               return;
             }
-            preapprovalId = resolvedPreapprovalId;
-          } catch (apErr) {
             console.error('[Webhook] subscription_authorized_payment: error fetching authorized_payment:', apErr?.message ?? apErr);
             await prisma.webhookEvent.update({
               where: { id: webhookEvent.id },
