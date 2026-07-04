@@ -138,6 +138,10 @@ const {
   slugifyRestaurantName,
   ensureUniqueRestaurantSlug,
 } = require('../lib/restaurantSlug');
+const {
+  getClientIp,
+  isRegistrationBlocked,
+} = require('../services/registrationBlocklistService');
 
 const login = async (req, res) => {
   try {
@@ -147,6 +151,13 @@ const login = async (req, res) => {
     if (!identifier || !password) {
       console.log('[AUTH] Login rejected: missing email or password');
       res.status(400).json({ error: 'Se requiere usuario/email y contraseña' });
+      return;
+    }
+
+    const clientIp = getClientIp(req);
+    if (isRegistrationBlocked({ email: identifier, ip: clientIp })) {
+      console.log('[AUTH] Login blocked: blocklist', { email: identifier, ip: clientIp });
+      res.status(401).json({ error: LOGIN_CREDENTIALS_ERROR });
       return;
     }
 
@@ -249,6 +260,13 @@ const register = async (req, res) => {
 
     if (!email || !password || !restaurantName) {
       res.status(400).json({ error: 'Se requiere email, contraseña y nombre del restaurante' });
+      return;
+    }
+
+    const clientIp = getClientIp(req);
+    if (isRegistrationBlocked({ email, ip: clientIp })) {
+      console.log('[AUTH] Register blocked: blocklist', { email, ip: clientIp });
+      res.status(403).json({ error: 'No es posible completar el registro en este momento.' });
       return;
     }
 
