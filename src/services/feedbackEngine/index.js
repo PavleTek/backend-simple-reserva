@@ -15,6 +15,7 @@ module.exports = {
   getPublicFeedbackMeta: require('./submitResponse').getPublicFeedbackMeta,
   markOpened: require('./submitResponse').markOpened,
   submitFeedbackResponse: require('./submitResponse').submitFeedbackResponse,
+  recordGoogleReviewClickAndGetUrl: require('./submitResponse').recordGoogleReviewClickAndGetUrl,
   getRestaurantSummary: require('./analytics').getRestaurantSummary,
   getBenchmarkAggregates: require('./analytics').getBenchmarkAggregates,
   getRestaurantInsights: require('./analytics').getRestaurantInsights,
