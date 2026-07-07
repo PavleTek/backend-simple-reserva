@@ -85,7 +85,10 @@ const updateRestaurant = async (req, res, next) => {
       nameTrimmed !== undefined && nameTrimmed.length > 0 && nameTrimmed !== currentName;
 
     if (nameChanged) {
-      resolvedSlug = await ensureUniqueRestaurantSlug(nameTrimmed, restaurantId);
+      // Slug publicado: no recalcular al renombrar (links en IG, QR, etc. siguen válidos).
+      if (!(current.slug || '').trim()) {
+        resolvedSlug = await ensureUniqueRestaurantSlug(nameTrimmed, restaurantId);
+      }
     } else if (slug !== undefined && String(slug).trim()) {
       const requested = slugifyRestaurantName(String(slug).trim());
       const taken = await prisma.restaurant.findUnique({
