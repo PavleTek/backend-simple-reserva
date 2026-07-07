@@ -42,7 +42,14 @@ const { isCrossMidnightEnabled } = require('../lib/featureFlags');
 const { listIndexableBookingSlugs, listActiveBookingSlugs } = require('../services/bookingSeoService');
 const { restaurantHasPublicActivities } = require('./publicActivities.routes');
 
+const { resolvePublicRestaurantSlug } = require('../utils/restaurantSlugAliases');
+
 const router = express.Router();
+
+router.param('slug', (req, _res, next, slug) => {
+  req.params.slug = resolvePublicRestaurantSlug(slug);
+  next();
+});
 
 // ─── Helper: transacción Serializable con retry P2034 ─────────────────────────
 

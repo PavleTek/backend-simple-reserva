@@ -18,12 +18,18 @@ const {
 } = require('../services/activityBookingService');
 const { requireAcceptanceOpen } = require('../middleware/acceptance');
 const { hasActiveAccess } = require('../services/subscriptionService');
+const { resolvePublicRestaurantSlug } = require('../utils/restaurantSlugAliases');
 
 const router = express.Router({ mergeParams: true });
 
+router.param('slug', (req, _res, next, slug) => {
+  req.params.slug = resolvePublicRestaurantSlug(slug);
+  next();
+});
+
 async function resolveRestaurantBySlug(slug) {
   const restaurant = await prisma.restaurant.findFirst({
-    where: { slug, isActive: true, isDeleted: false },
+    where: { slug: resolvePublicRestaurantSlug(slug), isActive: true, isDeleted: false },
   });
   if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
   return restaurant;
