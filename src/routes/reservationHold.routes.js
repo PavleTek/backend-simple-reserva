@@ -36,8 +36,15 @@ const {
 } = require('../services/slotEngine/index');
 const { pickTable, parseReservations, parseHolds } = require('../services/slotEngine/capacity');
 
+const { resolvePublicRestaurantSlug } = require('../utils/restaurantSlugAliases');
+
 // Router para /api/public/restaurants/:slug/reservation-holds (POST)
 const publicRestaurantRouter = express.Router();
+
+publicRestaurantRouter.param('slug', (req, _res, next, slug) => {
+  req.params.slug = resolvePublicRestaurantSlug(slug);
+  next();
+});
 // Router para /api/public/reservation-holds/:holdToken (DELETE)
 const publicHoldRouter = express.Router();
 
