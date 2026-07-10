@@ -3,7 +3,7 @@
 const prisma = require('../lib/prisma');
 const { resolveDuration } = require('./slotEngine/index');
 const {
-  countFreeTables,
+  getFreeTables,
   getCandidateTables,
   parseReservations,
   parseHolds,
@@ -160,24 +160,22 @@ async function getAvailableTablesForSlot({
   const candidates = excludeTableIds.length
     ? capacityCandidates.filter((t) => !excludeTableIds.includes(t.id))
     : capacityCandidates;
-  const freeTables = [];
-  for (const table of candidates) {
-    const free = countFreeTables(
-      [{ id: table.id, zoneId: table.zoneId, minCapacity: table.minCapacity, maxCapacity: table.maxCapacity }],
-      dateTime,
-      slotEnd,
-      bufferMs,
-      parsedRes,
-      parsedHolds,
-      null,
-      [],
-      { partySize: size, blockRules, allTables: tablesMapped, swapsByReservationId }
-    );
-    if (free > 0) {
-      const full = allTables.find((t) => t.id === table.id);
-      if (full) freeTables.push(full);
-    }
-  }
+
+  // Una sola pasada sobre todas las candidatas (en vez de countFreeTables mesa por
+  // mesa): derivedBlockedIds y tableById se calculan una vez, no T veces.
+  const freeCandidates = getFreeTables(
+    candidates,
+    dateTime,
+    slotEnd,
+    bufferMs,
+    parsedRes,
+    parsedHolds,
+    null,
+    [],
+    { partySize: size, blockRules, allTables: tablesMapped, swapsByReservationId }
+  );
+  const tableByIdFull = new Map(allTables.map((t) => [t.id, t]));
+  const freeTables = freeCandidates.map((table) => tableByIdFull.get(table.id)).filter(Boolean);
 
   const ordered = sortFreeTablesForUi(freeTables, size, null);
   return {

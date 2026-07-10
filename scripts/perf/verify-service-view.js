@@ -1,19 +1,35 @@
-const prisma = require('../lib/prisma');
-const { ACTIVE_TABLE_STATUSES } = require('../lib/reservationStatuses');
+'use strict';
+
+/**
+ * Verifica que buildServiceView (con groupBy acotado a teléfonos del día +
+ * Map de reservas por mesa) produzca el mismo resultado que la versión
+ * pre-optimización (groupBy sobre todo el historial + filter por mesa).
+ * Script de validación manual, no se ejecuta en CI.
+ *
+ * Uso: node scripts/perf/verify-service-view.js
+ */
+
+const prisma = require('../../src/lib/prisma');
+const { DateTime } = require('luxon');
+const { ACTIVE_TABLE_STATUSES } = require('../../src/lib/reservationStatuses');
 const {
   getEffectiveTimezone,
   parseInTimezone,
   nowInTimezone,
   formatInTimezone,
   getDayOfWeekInTimezone,
-} = require('../utils/timezone');
-const { isCrossMidnightEnabled } = require('../lib/featureFlags');
+} = require('../../src/utils/timezone');
+const { isCrossMidnightEnabled } = require('../../src/lib/featureFlags');
+const { buildServiceView, reservationIsWalkIn } = require('../../src/services/serviceView');
 
-function reservationIsWalkIn(r) {
-  const n = (r.notes || '').trim().toLowerCase();
-  const name = (r.customerName || '').trim();
-  return n === 'walk-in' || name === 'Walk-in' || name === 'walk-in';
-}
+const SLUGS = [
+  'perf-test-20-mesas',
+  'perf-test-40-mesas',
+  'perf-test-80-mesas',
+  'perf-test-120-mesas',
+];
+
+// ─── Copia de las funciones de pressure, tal cual en serviceView.js (no exportadas) ──
 
 function roundToSlotMinutes(date, minutes = 15) {
   const d = new Date(date);
@@ -88,12 +104,12 @@ function computePressureLevel({ tablesTotal, tablesFree, nextHourCovers, pacingM
   return { level: 'calm', label: 'TRANQUILO' };
 }
 
-async function buildServiceView(restaurantId, dateParam) {
+// ─── Versión OLD (pre-optimización): groupBy sin acotar + filter por mesa ───
+
+async function oldBuildServiceView(restaurantId, dateParam) {
   const restaurant = await prisma.restaurant.findUnique({
     where: { id: restaurantId },
-    include: {
-      organization: { include: { owner: { select: { country: true } } } },
-    },
+    include: { organization: { include: { owner: { select: { country: true } } } } },
   });
   if (!restaurant) return null;
 
@@ -115,7 +131,7 @@ async function buildServiceView(restaurantId, dateParam) {
       }
     : { dateTime: { gte: dayStart, lte: dayEnd } };
 
-  const [reservations, zones, pacingRules] = await Promise.all([
+  const [reservations, zones, pacingRules, phoneCounts] = await Promise.all([
     prisma.reservation.findMany({
       where: {
         restaurantId,
@@ -130,22 +146,16 @@ async function buildServiceView(restaurantId, dateParam) {
       include: { tables: { where: { isActive: true } } },
     }),
     prisma.pacingRule.findMany({ where: { restaurantId } }),
+    prisma.reservation.groupBy({
+      by: ['customerPhone'],
+      where: {
+        restaurantId,
+        customerPhone: { not: null },
+        status: { in: ['confirmed', 'arrived', 'completed'] },
+      },
+      _count: { id: true },
+    }),
   ]);
-
-  // Acotado a los teléfonos del día: evita agrupar todo el historial de
-  // reservas del restaurante solo para calcular el badge de "cliente frecuente".
-  const todaysPhones = [...new Set(reservations.map((r) => r.customerPhone).filter(Boolean))];
-  const phoneCounts = todaysPhones.length
-    ? await prisma.reservation.groupBy({
-        by: ['customerPhone'],
-        where: {
-          restaurantId,
-          customerPhone: { in: todaysPhones },
-          status: { in: ['confirmed', 'arrived', 'completed'] },
-        },
-        _count: { id: true },
-      })
-    : [];
 
   const visitCountByPhone = new Map();
   for (const row of phoneCounts) {
@@ -161,18 +171,12 @@ async function buildServiceView(restaurantId, dateParam) {
   let tablesFree = 0;
   const tablesBrief = [];
 
-  const reservationsByTableId = new Map();
-  for (const r of reservations) {
-    if (!r.tableId || !ACTIVE_TABLE_STATUSES.includes(r.status)) continue;
-    const list = reservationsByTableId.get(r.tableId);
-    if (list) list.push(r);
-    else reservationsByTableId.set(r.tableId, [r]);
-  }
-
   for (const zone of zones) {
     for (const table of zone.tables) {
       tablesTotal += 1;
-      const tableReservations = reservationsByTableId.get(table.id) || [];
+      const tableReservations = reservations.filter(
+        (r) => r.tableId === table.id && ACTIVE_TABLE_STATUSES.includes(r.status),
+      );
       let occupied = false;
       for (const r of tableReservations) {
         const rEnd = new Date(r.dateTime.getTime() + r.durationMinutes * 60000 + bufferMs);
@@ -247,22 +251,69 @@ async function buildServiceView(restaurantId, dateParam) {
     timezone,
     now: now.toISOString(),
     isToday,
-    restaurant: {
-      id: restaurant.id,
-      name: restaurant.name,
-    },
-    pressure: {
-      ...pressure,
-      tablesTotal,
-      tablesFree,
-      ...pressureMetrics,
-    },
+    restaurant: { id: restaurant.id, name: restaurant.name },
+    pressure: { ...pressure, tablesTotal, tablesFree, ...pressureMetrics },
     tables: tablesBrief,
     reservations: enriched,
   };
 }
 
-module.exports = {
-  buildServiceView,
-  reservationIsWalkIn,
-};
+async function main() {
+  const today = DateTime.now().toFormat('yyyy-MM-dd');
+  const dates = [today, DateTime.now().plus({ days: 1 }).toFormat('yyyy-MM-dd')];
+
+  let mismatches = 0;
+  let comparisons = 0;
+
+  for (const slug of SLUGS) {
+    const restaurant = await prisma.restaurant.findUnique({ where: { slug }, select: { id: true } });
+    if (!restaurant) {
+      console.log(`[SKIP] ${slug} no encontrado`);
+      continue;
+    }
+
+    for (const dateStr of dates) {
+      comparisons += 1;
+      const [oldResult, newResult] = await Promise.all([
+        oldBuildServiceView(restaurant.id, dateStr),
+        buildServiceView(restaurant.id, dateStr),
+      ]);
+
+      // `now` depende del instante de ejecución de cada llamada; se compara todo
+      // lo demás y se tolera un pequeño desfase en `now`/`pressure.slots`.
+      const oldForCompare = { ...oldResult, now: undefined, pressure: { ...oldResult.pressure, slots: undefined } };
+      const newForCompare = { ...newResult, now: undefined, pressure: { ...newResult.pressure, slots: undefined } };
+
+      const oldKey = JSON.stringify(oldForCompare);
+      const newKey = JSON.stringify(newForCompare);
+
+      if (oldKey !== newKey) {
+        mismatches += 1;
+        console.log(`\n[MISMATCH] slug=${slug} date=${dateStr}`);
+        console.log('  OLD tablesFree:', oldResult.pressure.tablesFree, 'reservations:', oldResult.reservations.length);
+        console.log('  NEW tablesFree:', newResult.pressure.tablesFree, 'reservations:', newResult.reservations.length);
+        for (let i = 0; i < Math.max(oldResult.reservations.length, newResult.reservations.length); i++) {
+          const o = JSON.stringify(oldResult.reservations[i]);
+          const n = JSON.stringify(newResult.reservations[i]);
+          if (o !== n) console.log(`    reservation[${i}]: OLD=${o}\n                  NEW=${n}`);
+        }
+        for (let i = 0; i < Math.max(oldResult.tables.length, newResult.tables.length); i++) {
+          const o = JSON.stringify(oldResult.tables[i]);
+          const n = JSON.stringify(newResult.tables[i]);
+          if (o !== n) console.log(`    table[${i}]: OLD=${o}  NEW=${n}`);
+        }
+      } else {
+        console.log(`[OK] slug=${slug} date=${dateStr} → tablesFree=${newResult.pressure.tablesFree}/${newResult.pressure.tablesTotal} reservations=${newResult.reservations.length}`);
+      }
+    }
+  }
+
+  console.log(`\n${comparisons - mismatches}/${comparisons} comparaciones idénticas.`);
+  await prisma.$disconnect();
+  process.exit(mismatches > 0 ? 1 : 0);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

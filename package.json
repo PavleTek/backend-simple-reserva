@@ -20,7 +20,10 @@
     "cy:run": "npx cypress run",
     "cy:open": "npx cypress open",
     "cy:test": "npm run cy:seed && npx cypress run",
-    "cy:test:open": "npm run cy:seed && npx cypress open"
+    "cy:test:open": "npm run cy:seed && npx cypress open",
+    "perf:seed": "node scripts/perf/seed-perf.js",
+    "perf:cleanup": "node scripts/perf/cleanup-perf.js",
+    "perf:benchmark": "node scripts/perf/benchmark.js"
   },
   "type": "commonjs",
   "dependencies": {

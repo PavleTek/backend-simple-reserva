@@ -7,7 +7,8 @@ const router = express.Router();
 
 const analyticsRateLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 10,
+  // Flujo de reserva: batch cada ~6s + flush al salir; 10/min generaba 429 en sesiones normales.
+  max: 60,
   message: { error: 'Demasiadas solicitudes. Intenta de nuevo en un minuto.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -50,6 +51,13 @@ const VALID_EVENT_NAMES = new Set([
   'booking.restaurant_details_toggled',
   'booking.booking_disabled',
   'booking.error_shown',
+  'booking.next_date_suggested',
+  'booking.next_date_picked',
+  'booking.restaurant_phone_clicked',
+  'booking.restaurant_whatsapp_clicked',
+  'booking.restaurant_email_clicked',
+  'booking.menu_clicked',
+  'booking.powered_by_clicked',
 ]);
 
 const VALID_MARKETING_EVENT_NAMES = new Set([
@@ -61,11 +69,11 @@ const VALID_MARKETING_EVENT_NAMES = new Set([
 ]);
 
 /**
- * POST /api/analytics/events
- * Batch ingestion of booking analytics events.
- * Public, rate-limited (10 req/min per IP).
+ * POST /api/booking-events (preferido; evita filtros de adblock en /analytics/)
+ * POST /api/analytics/events (legacy)
+ * Batch ingestion of booking analytics events. Public, rate-limited (60 req/min per IP).
  */
-router.post('/events', analyticsRateLimiter, async (req, res, next) => {
+async function ingestBookingEvents(req, res, next) {
   try {
     const { events } = req.body;
 
@@ -133,7 +141,9 @@ router.post('/events', analyticsRateLimiter, async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+}
+
+router.post('/events', analyticsRateLimiter, ingestBookingEvents);
 
 function sanitizeProperties(e) {
   const allowed = [
@@ -300,5 +310,8 @@ router.post('/marketing-events', marketingRateLimiter, async (req, res, next) =>
     next(error);
   }
 });
+
+router.ingestBookingEvents = ingestBookingEvents;
+router.analyticsRateLimiter = analyticsRateLimiter;
 
 module.exports = router;

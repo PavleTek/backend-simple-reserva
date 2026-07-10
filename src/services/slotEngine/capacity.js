@@ -39,6 +39,37 @@ function overlaps(s1, e1, s2, e2) {
   return s1 < e2 && e1 > s2;
 }
 
+const EMPTY_LIST = [];
+
+/**
+ * Índice `tableId -> items` de una lista de reservas/holds parseados, memoizado
+ * por identidad del array (WeakMap): dentro de un mismo cómputo de disponibilidad,
+ * `computeAvailability` reutiliza la MISMA referencia de `parsedRes`/`parsedHoldsArr`
+ * en cada slot, así que el índice se construye una sola vez por cómputo aunque
+ * `isDirectlyFree` se llame S×T veces. Sin cambios de firma pública: quien llama
+ * sigue pasando el array plano de siempre.
+ */
+const tableIndexCache = new WeakMap();
+
+function getByTable(list, tableId) {
+  if (!list.length) return EMPTY_LIST;
+  let index = tableIndexCache.get(list);
+  if (!index) {
+    index = new Map();
+    for (const item of list) {
+      if (!item.tableId) continue;
+      let bucket = index.get(item.tableId);
+      if (!bucket) {
+        bucket = [];
+        index.set(item.tableId, bucket);
+      }
+      bucket.push(item);
+    }
+    tableIndexCache.set(list, index);
+  }
+  return index.get(tableId) ?? EMPTY_LIST;
+}
+
 function isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions) {
   if (!blockingSessions?.length) return false;
   for (const bs of blockingSessions) {
@@ -64,8 +95,7 @@ function isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions) {
  */
 function msUntilNextReservation(tableId, afterTime, parsedReservations) {
   let nearest = Infinity;
-  for (const r of parsedReservations) {
-    if (r.tableId !== tableId) continue;
+  for (const r of getByTable(parsedReservations, tableId)) {
     if (r.start < afterTime) continue;
     const gap = r.start.getTime() - afterTime.getTime();
     if (gap < nearest) nearest = gap;
@@ -102,15 +132,13 @@ function getCandidateTables(tables, partySize, zoneId) {
  * @returns {boolean}
  */
 function isDirectlyFree(tableId, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken) {
-  const reservationConflict = parsedReservations.some((r) => {
-    if (r.tableId !== tableId) return false;
+  const reservationConflict = getByTable(parsedReservations, tableId).some((r) => {
     const rEnd = new Date(r.end.getTime() + bufferMs);
     return overlaps(slotStart, slotEnd, r.start, rEnd);
   });
   if (reservationConflict) return false;
 
-  const holdConflict = parsedHolds.some((h) => {
-    if (h.tableId !== tableId) return false;
+  const holdConflict = getByTable(parsedHolds, tableId).some((h) => {
     if (excludeHoldToken && h.holdToken === excludeHoldToken) return false;
     return overlaps(slotStart, slotEnd, h.start, h.end);
   });
@@ -151,9 +179,14 @@ function hasLinkedTableConflict(
 }
 
 /**
- * Cuántas mesas candidatas están libres para un slot dado.
- * Considera reservas confirmadas, holds activos (no expirados), buffer, sesiones
- * bloqueantes y — si se provee `opts.blockRules` — mesas vinculadas (bidireccional).
+ * Lista las mesas candidatas libres para un slot dado. Considera reservas
+ * confirmadas, holds activos (no expirados), buffer, sesiones bloqueantes y —
+ * si se provee `opts.blockRules` — mesas vinculadas (bidireccional).
+ *
+ * Factorizada para que countFreeTables y pickTable (y cualquier otro caller
+ * que necesite el detalle, no solo el total) compartan una sola pasada:
+ * derivedBlockedIds y tableById se calculan una vez por llamada, no una vez
+ * por mesa candidata.
  *
  * @param {Array<{ id: string }>} candidateTables
  * @param {Date} slotStart
@@ -169,9 +202,9 @@ function hasLinkedTableConflict(
  *   allTables: lista completa de mesas (para resolver mesas vinculadas que no sean candidatas). Default: candidateTables.
  *   swapsByReservationId: sustituciones puntuales (ReservationTableSwap) de otras reservas gatillo activas, por reservation.id.
  *   proposedSwaps: sustituciones propuestas/persistidas SOLO si `candidateTables` es una única mesa gatillo explícita.
- * @returns {number} - cantidad de mesas libres
+ * @returns {Array<typeof candidateTables[0]>} - subconjunto de candidateTables que está libre
  */
-function countFreeTables(
+function getFreeTables(
   candidateTables,
   slotStart,
   slotEnd,
@@ -194,21 +227,40 @@ function countFreeTables(
     swapsByReservationId
   );
 
-  let free = 0;
-  for (const table of candidateTables) {
-    if (isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions)) continue;
-    if (derivedBlockedIds.has(table.id)) continue;
-    if (!isDirectlyFree(table.id, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken)) continue;
+  return candidateTables.filter((table) => {
+    if (isTableBlockedBySessions(table, slotStart, slotEnd, blockingSessions)) return false;
+    if (derivedBlockedIds.has(table.id)) return false;
+    if (!isDirectlyFree(table.id, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken)) return false;
     if (
       hasLinkedTableConflict(
         table.id, partySize, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds,
         excludeHoldToken, blockingSessions, blockRules, derivedBlockedIds, tableById, proposedSwaps
       )
-    ) continue;
+    ) return false;
+    return true;
+  });
+}
 
-    free++;
-  }
-  return free;
+/**
+ * Cuántas mesas candidatas están libres para un slot dado. Ver getFreeTables
+ * para el detalle de parámetros — mismo cálculo, solo retorna el total.
+ * @returns {number} - cantidad de mesas libres
+ */
+function countFreeTables(
+  candidateTables,
+  slotStart,
+  slotEnd,
+  bufferMs,
+  parsedReservations,
+  parsedHolds,
+  excludeHoldToken = null,
+  blockingSessions = [],
+  opts = {}
+) {
+  return getFreeTables(
+    candidateTables, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds,
+    excludeHoldToken, blockingSessions, opts
+  ).length;
 }
 
 /**
@@ -245,29 +297,10 @@ function pickTable(
   blockingSessions = []
 ) {
   const candidates = getCandidateTables(tables, partySize, null);
-  const tableById = new Map(tables.map((t) => [t.id, t]));
-  const derivedBlockedIds = getDerivedBlockedTableIds(
-    parsedReservations,
-    parsedHolds,
-    blockRules,
-    slotStart,
-    slotEnd,
-    excludeHoldToken,
-    swapsByReservationId
+  const free = getFreeTables(
+    candidates, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds,
+    excludeHoldToken, blockingSessions, { partySize, blockRules, allTables: tables, swapsByReservationId }
   );
-
-  const free = candidates.filter((t) => {
-    if (isTableBlockedBySessions(t, slotStart, slotEnd, blockingSessions)) return false;
-    if (derivedBlockedIds.has(t.id)) return false;
-    if (!isDirectlyFree(t.id, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds, excludeHoldToken)) return false;
-    if (
-      hasLinkedTableConflict(
-        t.id, partySize, slotStart, slotEnd, bufferMs, parsedReservations, parsedHolds,
-        excludeHoldToken, blockingSessions, blockRules, derivedBlockedIds, tableById
-      )
-    ) return false;
-    return true;
-  });
 
   if (free.length === 0) return null;
 
@@ -554,6 +587,7 @@ function buildTableBookingConflictMessage(
 module.exports = {
   overlaps,
   getCandidateTables,
+  getFreeTables,
   countFreeTables,
   pickTable,
   checkPacing,

@@ -38,6 +38,7 @@ const webhooksRouter = require("./routes/webhooks.routes");
 const analyticsRouter = require("./routes/analytics.routes");
 const placesRouter = require("./routes/places.routes");
 const errorHandler = require("./middleware/errorHandler");
+const perfLog = require("./middleware/perfLog");
 const { startReminderJob } = require("./jobs/reminderJob");
 const { startDailySummaryJob } = require("./jobs/dailySummaryJob");
 const { startTrialReminderJob } = require("./jobs/trialReminderJob");
@@ -127,6 +128,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+app.use(perfLog);
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 app.get("/logo-full-480w.png", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "assets", "brand", "logo-full-480w.png"));
@@ -290,6 +292,11 @@ app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
 app.use("/api/restaurant/:restaurantId/activities", activitiesRouter);
 app.use("/api/restaurant/:restaurantId", activityBookingsRouter);
 app.use("/api/admin", adminRouter);
+app.post(
+  "/api/booking-events",
+  analyticsRouter.analyticsRateLimiter,
+  analyticsRouter.ingestBookingEvents,
+);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/places", placesRouter);
 app.use("/api/webhooks", webhooksRouter);

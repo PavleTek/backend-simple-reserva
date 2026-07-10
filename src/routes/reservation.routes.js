@@ -24,6 +24,7 @@ const {
   notifyRestaurantNewReservation,
 } = require('../services/notificationService');
 const { canCreateReservation, canSendConfirmations, hasActiveAccess } = require('../services/subscriptionService');
+const { getCachedRestaurantForBooking, getCachedHasActiveAccess } = require('../lib/publicBookingCache');
 const {
   getEffectiveTimezone,
   parseInTimezone,
@@ -902,16 +903,13 @@ router.get('/:slug/day-snapshot', async (req, res, next) => {
     const { date } = req.query;
     if (!date) throw new ValidationError('Se requiere el parámetro date');
 
-    const restaurant = await prisma.restaurant.findUnique({
-      where: { slug, isActive: true, isDeleted: false },
-      include: { organization: { include: { owner: { select: { country: true } } } } },
-    });
+    const restaurant = await getCachedRestaurantForBooking(slug);
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
 
-    const access = await hasActiveAccess(restaurant.organizationId);
+    const access = await getCachedHasActiveAccess(restaurant.organizationId);
     if (!access) {
       return res.json({
         date, timezone, subscriptionActive: false, schedule: null, defaults: null,
@@ -938,16 +936,13 @@ router.get('/:slug/availability', async (req, res, next) => {
     const size = parseInt(partySize);
     if (isNaN(size) || size < 1) throw new ValidationError('partySize debe ser un número positivo');
 
-    const restaurant = await prisma.restaurant.findUnique({
-      where: { slug, isActive: true, isDeleted: false },
-      include: { organization: { include: { owner: { select: { country: true } } } } },
-    });
+    const restaurant = await getCachedRestaurantForBooking(slug);
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
 
-    const access = await hasActiveAccess(restaurant.organizationId);
+    const access = await getCachedHasActiveAccess(restaurant.organizationId);
     if (!access) return res.json({ slots: [], reason: 'subscription_expired' });
 
     const result = await getAvailabilitySlotsForRestaurant(restaurant, {

@@ -443,16 +443,20 @@ router.post('/batch-delete', authenticateRestaurantRoles(ROLES_CONFIG), async (r
       throw new ValidationError('Una o más mesas no pertenecen a este local.');
     }
 
+    const futureCounts = await prisma.reservation.groupBy({
+      by: ['tableId'],
+      where: {
+        tableId: { in: tableIds },
+        status: 'confirmed',
+        dateTime: { gte: new Date() },
+      },
+      _count: { id: true },
+    });
+    const futureCountByTableId = new Map(futureCounts.map((f) => [f.tableId, f._count.id]));
+
     const blocked = [];
     for (const table of tables) {
-      // eslint-disable-next-line no-await-in-loop
-      const futureCount = await prisma.reservation.count({
-        where: {
-          tableId: table.id,
-          status: 'confirmed',
-          dateTime: { gte: new Date() },
-        },
-      });
+      const futureCount = futureCountByTableId.get(table.id) || 0;
       if (futureCount > 0) {
         blocked.push({ label: table.label, futureCount });
       }

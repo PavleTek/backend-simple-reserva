@@ -586,6 +586,7 @@ model Reservation {
 
   @@index([restaurantId, dateTime, status])
   @@index([restaurantId, businessDate, status])
+  @@index([tableId, dateTime])
   @@index([secureToken])
   @@index([confirmedByUserId])
   @@index([updatedByUserId])

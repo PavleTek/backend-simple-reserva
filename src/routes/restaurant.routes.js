@@ -317,6 +317,14 @@ router.get('/tables/status', async (req, res, next) => {
 
     const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
 
+    const reservationsByTableId = new Map();
+    for (const r of reservations) {
+      if (!r.tableId) continue;
+      const list = reservationsByTableId.get(r.tableId);
+      if (list) list.push(r);
+      else reservationsByTableId.set(r.tableId, [r]);
+    }
+
     const zonesWithStatus = zones.map((zone) => ({
       id: zone.id,
       name: zone.name,
@@ -324,7 +332,7 @@ router.get('/tables/status', async (req, res, next) => {
       smokingZone: zone.smokingZone,
       petFriendly: zone.petFriendly,
       tables: zone.tables.map((table) => {
-        const tableReservations = reservations.filter((r) => r.tableId === table.id);
+        const tableReservations = reservationsByTableId.get(table.id) || [];
         const { status, currentReservation, nextReservation } = computeTableFloorStatus(
           tableReservations,
           now,
@@ -548,9 +556,10 @@ router.get('/reservations', async (req, res, next) => {
     const restaurantId = req.activeRestaurant.restaurantId;
     const restaurant = await prisma.restaurant.findUnique({
       where: { id: restaurantId },
-      include: {
-        organization: { include: { owner: { select: { country: true } } } }
-      }
+      select: {
+        timezone: true,
+        organization: { select: { owner: { select: { country: true } } } },
+      },
     });
     if (!restaurant) throw new NotFoundError('Restaurante no encontrado');
 
@@ -561,12 +570,13 @@ router.get('/reservations', async (req, res, next) => {
 
     const { isCrossMidnightEnabled } = require('../lib/featureFlags');
 
+    let dateOr = null;
     if (date) {
       const start = parseInTimezone(date, '00:00', timezone);
       const end = parseInTimezone(date, '23:59', timezone);
       const businessDateVal = new Date(`${date}T12:00:00.000Z`);
       if (isCrossMidnightEnabled()) {
-        where.OR = [
+        dateOr = [
           { businessDate: businessDateVal },
           { businessDate: null, dateTime: { gte: start, lte: end } },
         ];
@@ -583,11 +593,23 @@ router.get('/reservations', async (req, res, next) => {
       where.status = status;
     }
 
+    let searchOr = null;
     if (search) {
-      where.OR = [
+      searchOr = [
         { customerName: { contains: search, mode: 'insensitive' } },
         { customerPhone: { contains: search, mode: 'insensitive' } },
       ];
+    }
+
+    // dateOr y searchOr son independientes: si ambos están presentes, no pueden
+    // compartir la misma propiedad `where.OR` (la segunda asignación pisaría a
+    // la primera). Se combinan con AND para que ambas condiciones se cumplan.
+    if (dateOr && searchOr) {
+      where.AND = [{ OR: dateOr }, { OR: searchOr }];
+    } else if (dateOr) {
+      where.OR = dateOr;
+    } else if (searchOr) {
+      where.OR = searchOr;
     }
 
     const orderAsc = sort !== 'desc';
