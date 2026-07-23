@@ -37,6 +37,7 @@ model User {
   transfersInitiated            OwnershipTransfer[] @relation("TransferInitiator")
   transfersFromOwnership        OwnershipTransfer[] @relation("TransferFromOwner")
   transfersAsTarget             OwnershipTransfer[] @relation("TransferTarget")
+  signupRegisteredOrganizations RestaurantOrganization[] @relation("SignupRegisteredBy")
   
   @@index([role])
 }
@@ -75,6 +76,15 @@ model RestaurantOrganization {
   billingEmailLogs BillingEmailLog[]
   billingOpsAlerts BillingOpsAlert[]
   ownershipTransfers OwnershipTransfer[]
+  signupEmailLogs    OrganizationSignupEmailLog[]
+
+  /// Evidencia de registro / aceptación de términos (auditoría, SII)
+  signupRegisteredByUserId String?
+  signupRegisteredByUser   User?    @relation("SignupRegisteredBy", fields: [signupRegisteredByUserId], references: [id], onDelete: SetNull)
+  signupTermsAcceptedAt    DateTime?
+  signupTermsVersion       String?
+  signupIp                 String?
+  signupUserAgent          String?
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -96,6 +106,30 @@ model RestaurantOrganization {
   @@index([customPlanId])
   @@index([isDeleted])
   @@index([hidden])
+  @@index([signupRegisteredByUserId])
+}
+
+/// Correos transaccionales del alta (p. ej. bienvenida al owner).
+model OrganizationSignupEmailLog {
+  id             String                 @id @default(cuid())
+  organizationId String
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// owner_welcome | ...
+  kind           String
+  recipientEmail String
+  subject        String?
+  status         String                 @default("sent") // sent | failed
+  resendId       String?
+  sentAt         DateTime?
+  /// live = enviado en runtime; backfill = reconstruido desde logs u otra fuente
+  source         String                 @default("live")
+  metadata       Json?
+  createdAt      DateTime               @default(now())
+
+  @@index([organizationId])
+  @@index([recipientEmail])
+  @@index([sentAt])
+  @@index([kind])
 }
 
 model OrganizationManager {

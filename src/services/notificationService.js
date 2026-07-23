@@ -315,13 +315,14 @@ async function sendModificationAlertToCustomer(options) {
  * @param {string} options.panelUrl - URL to the restaurant management portal
  * @returns {Promise<boolean>}
  */
-async function sendOrganizationOwnerWelcomeEmail({ email, ownerName, panelUrl }) {
+async function sendOrganizationOwnerWelcomeEmail({ email, ownerName, panelUrl, organizationId }) {
   if (!email) return false;
 
   const { buildOrganizationOwnerWelcomeHtml } = require('../templates/restaurantOrganizationOwnerWelcomeEmail');
   const { sendEmail } = require('./emailService');
   const { CONTACT_EMAIL, WHATSAPP_DISPLAY, WHATSAPP_HREF } = require('../config/contact');
   const prisma = require('../lib/prisma');
+  const { logOwnerWelcomeEmail, WELCOME_EMAIL_SUBJECT } = require('./signupEvidenceService');
 
   const config = await prisma.configuration.findFirst();
   const fromSenderId = config?.reservationEmailSenderId || config?.recoveryEmailSenderId;
@@ -342,16 +343,39 @@ async function sendOrganizationOwnerWelcomeEmail({ email, ownerName, panelUrl })
   });
 
   try {
-    await sendEmail({
+    const result = await sendEmail({
       fromEmail,
       toEmails: [email],
-      subject: 'Bienvenido a SimpleReserva — tu cuenta está lista',
+      subject: WELCOME_EMAIL_SUBJECT,
       content: html,
       isHtml: true,
     });
+    const resendId = result?.data?.id || result?.id || null;
+    if (organizationId) {
+      await logOwnerWelcomeEmail({
+        organizationId,
+        recipientEmail: email,
+        status: 'sent',
+        resendId,
+        source: 'live',
+      });
+    }
     return true;
   } catch (err) {
     console.error('[Notification] Welcome email error:', err.message);
+    if (organizationId) {
+      try {
+        await logOwnerWelcomeEmail({
+          organizationId,
+          recipientEmail: email,
+          status: 'failed',
+          source: 'live',
+          metadata: { error: err.message },
+        });
+      } catch (logErr) {
+        console.error('[Notification] Welcome email log error:', logErr.message);
+      }
+    }
     return false;
   }
 }

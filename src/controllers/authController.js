@@ -17,6 +17,7 @@ const { sendEmail } = require('../services/emailService');
 const { SUPPORTED_COUNTRIES } = require('../utils/timezone');
 const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 const { ValidationError } = require('../utils/errors');
+const { CURRENT_TERMS_VERSION } = require('../lib/termsVersion');
 
 function stripUser(user, lastLoginOverride) {
   return {
@@ -256,7 +257,29 @@ const login = async (req, res) => {
 
 const register = async (req, res) => {
   try {
-    const { email, password, name, lastName, restaurantName, restaurantSlug, plan, country, promoCode: promoCodeInput, referralCode: referralCodeInput, referralAttributionSource, utmSource, utmMedium, utmCampaign } = req.body;
+    const {
+      email,
+      password,
+      name,
+      lastName,
+      restaurantName,
+      restaurantSlug,
+      plan,
+      country,
+      promoCode: promoCodeInput,
+      referralCode: referralCodeInput,
+      referralAttributionSource,
+      utmSource,
+      utmMedium,
+      utmCampaign,
+      acceptedTerms,
+      termsVersion,
+    } = req.body;
+
+    if (acceptedTerms !== true) {
+      res.status(400).json({ error: 'Debes aceptar los términos de servicio para continuar.' });
+      return;
+    }
 
     if (!email || !password || !restaurantName) {
       res.status(400).json({ error: 'Se requiere email, contraseña y nombre del restaurante' });
@@ -388,6 +411,11 @@ const register = async (req, res) => {
           reservationNotifyRecipients: { owner: true, members: {}, extras: [] },
           reservationNotifyOnWeb: true,
           reservationNotifyOnManual: true,
+          signupRegisteredByUserId: user.id,
+          signupTermsAcceptedAt: new Date(),
+          signupTermsVersion: termsVersion || CURRENT_TERMS_VERSION,
+          signupIp,
+          signupUserAgent,
         },
       });
 
@@ -451,12 +479,20 @@ const register = async (req, res) => {
         }
       });
 
-      return { user, restaurant, promoCodeResult, referralResult };
+      return { user, restaurant, organization, promoCodeResult, referralResult };
     });
 
     const userWithoutPassword = stripUser(result.user);
     const token = generateToken(userWithoutPassword);
     const restaurants = await getRestaurantsForUser(result.user.id);
+
+    console.log('[AUTH] Register success', {
+      email: result.user.email,
+      organizationId: result.organization.id,
+      restaurantId: result.restaurant.id,
+      ip: signupIp,
+      termsVersion: termsVersion || CURRENT_TERMS_VERSION,
+    });
 
     try {
       const panelUrl = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || 'http://localhost:5175').replace(/\/$/, '');
@@ -469,6 +505,7 @@ const register = async (req, res) => {
         email: result.user.email,
         ownerName,
         panelUrl,
+        organizationId: result.organization.id,
       });
     } catch (err) {
       console.error('[Auth] Welcome email failed:', err?.message ?? err);
