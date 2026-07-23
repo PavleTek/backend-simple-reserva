@@ -2806,6 +2806,21 @@ router.post('/reservations/send-missing-emails', async (req, res, next) => {
 const adminFeedbackRouter = require('./adminFeedback.routes');
 router.use('/restaurants/:id/feedback', adminFeedbackRouter);
 
+/** Inspección de sugerencias (modo observación) */
+router.get('/insights/:restaurantId', async (req, res, next) => {
+  try {
+    const { getInsights, evaluateRestaurant } = require('../services/insightEngine');
+    const { refresh } = req.query;
+    if (refresh === '1' || refresh === 'true') {
+      await evaluateRestaurant(req.params.restaurantId);
+    }
+    const data = await getInsights(req.params.restaurantId, { includeDebug: true });
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.use('/referrals', require('./adminReferral.routes'));
 router.use('/migrations', require('./adminMigration.routes'));
 

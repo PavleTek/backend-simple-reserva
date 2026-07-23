@@ -37,10 +37,12 @@ const billingRouter = require("./routes/billing.routes");
 const webhooksRouter = require("./routes/webhooks.routes");
 const analyticsRouter = require("./routes/analytics.routes");
 const placesRouter = require("./routes/places.routes");
+const insightsRouter = require("./routes/insights.routes");
 const errorHandler = require("./middleware/errorHandler");
 const perfLog = require("./middleware/perfLog");
 const { startReminderJob } = require("./jobs/reminderJob");
 const { startDailySummaryJob } = require("./jobs/dailySummaryJob");
+const { startInsightsJob } = require("./jobs/insightsJob");
 const { startTrialReminderJob } = require("./jobs/trialReminderJob");
 const { startTrialExpiryJob } = require("./jobs/trialExpiryJob");
 const { startGracePeriodExpiryJob } = require("./jobs/gracePeriodExpiryJob");
@@ -287,6 +289,7 @@ app.use("/api/restaurant/:restaurantId/reservation-windows", reservationWindowRo
 app.use("/api/restaurant/:restaurantId/booking-acceptance", bookingAcceptanceRouter);
 app.use("/api/restaurant/:restaurantId", organizationNotificationRouter);
 app.use("/api/restaurant/:restaurantId/feedback", feedbackRestaurantRouter);
+app.use("/api/restaurant/:restaurantId/insights", insightsRouter);
 app.use("/api/restaurant/:restaurantId/holds", holdStaffRouter);
 app.use("/api/restaurant/:restaurantId/upload", uploadRouter);
 app.use("/api/restaurant/:restaurantId/activities", activitiesRouter);
@@ -317,6 +320,7 @@ app.listen(PORT, "0.0.0.0", () => {
   }
   startReminderJob();
   startDailySummaryJob();
+  startInsightsJob();
   startTrialReminderJob();
   startTrialExpiryJob();
   startGracePeriodExpiryJob();

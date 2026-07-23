@@ -282,10 +282,76 @@ model Restaurant {
   activities                Activity[]
   activityBookings          ActivityBooking[]
   tableBlockRules           TableBlockRule[]
+  recommendations           Recommendation[]
+  recommendationEvents      RecommendationEvent[]
+  insightsState             InsightsState?
 
   @@index([organizationId])
   @@index([isActive])
   @@index([isDeleted])
+}
+
+/// Estado de evaluación del motor de sugerencias (1:1 con Restaurant)
+model InsightsState {
+  id                   String    @id @default(cuid())
+  restaurantId         String    @unique
+  restaurant           Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  lastEvaluatedAt      DateTime?
+  evaluatedDataVersion Int       @default(0)
+  configFingerprint    String?
+  configStableSince    DateTime?
+  maturityStage        String?   // configuracion | activacion | aprendizaje | insights
+  weeklySummary        Json?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+/// Recomendación persistida del motor de sugerencias
+model Recommendation {
+  id               String    @id @default(cuid())
+  restaurantId     String
+  restaurant       Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  ruleId           String
+  ruleVersion      String
+  category         String
+  priority         String    // critical | high | medium | low | positive
+  confidence       String    // low | medium | high
+  status           String    @default("active") // active | resolved | expired (solo automático)
+  dedupeKey        String
+  payload          Json
+  periodStart      DateTime? @db.Date
+  periodEnd        DateTime? @db.Date
+  generatedAt      DateTime  @default(now())
+  expiresAt        DateTime?
+  dismissedAt      DateTime?
+  snoozedUntil     DateTime?
+  actionTakenAt    DateTime?
+  markedUsefulAt   DateTime?
+  firstViewedAt    DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  events           RecommendationEvent[]
+
+  @@unique([restaurantId, ruleId, dedupeKey])
+  @@index([restaurantId, status])
+  @@index([restaurantId, generatedAt])
+}
+
+/// Eventos de interacción / ciclo de vida de recomendaciones
+model RecommendationEvent {
+  id               String         @id @default(cuid())
+  restaurantId     String
+  restaurant       Restaurant     @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  recommendationId String?
+  recommendation   Recommendation? @relation(fields: [recommendationId], references: [id], onDelete: SetNull)
+  ruleId           String
+  eventType        String
+  metadata         Json?
+  createdAt        DateTime       @default(now())
+
+  @@index([restaurantId, createdAt])
+  @@index([ruleId, eventType])
+  @@index([recommendationId])
 }
 
 /// Lista de espera — cliente sin cupo deja datos para que el local contacte
