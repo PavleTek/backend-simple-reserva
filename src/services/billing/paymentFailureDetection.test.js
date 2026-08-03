@@ -83,6 +83,34 @@ test('decideOverdueAutomaticSubAction: authorized + periodo vencido pero MP cobr
   );
 });
 
+test('decideOverdueAutomaticSubAction: periodo vencido hace <6h sin cobro nuevo → none (espera cobro MP; caso Localcin)', () => {
+  const currentPeriodEnd = new Date('2026-07-29T03:16:04.967Z');
+  const now = new Date('2026-07-29T04:00:00.000Z'); // ~44 min después
+  assert.deepEqual(
+    decideOverdueAutomaticSubAction({
+      mpStatus: 'authorized',
+      currentPeriodEnd,
+      lastChargedDate: new Date('2026-06-29T03:16:04.967Z'),
+      now,
+    }),
+    { action: 'none' },
+  );
+});
+
+test('decideOverdueAutomaticSubAction: periodo vencido hace ≥6h sin cobro nuevo → enter_grace', () => {
+  const currentPeriodEnd = new Date('2026-07-29T03:16:04.967Z');
+  const now = new Date('2026-07-29T09:16:04.967Z'); // exactamente 6h
+  assert.deepEqual(
+    decideOverdueAutomaticSubAction({
+      mpStatus: 'authorized',
+      currentPeriodEnd,
+      lastChargedDate: new Date('2026-06-29T03:16:04.967Z'),
+      now,
+    }),
+    { action: 'enter_grace' },
+  );
+});
+
 test('decideOverdueAutomaticSubAction: periodo aún vigente → none', () => {
   const now = new Date('2026-07-02T12:00:00Z');
   assert.deepEqual(

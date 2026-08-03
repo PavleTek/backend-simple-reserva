@@ -325,14 +325,19 @@ router.post('/mercadopago', express.json({
           console.log('[Webhook] MercadoPago status ignorado:', status);
         }
 
+        // pending (y otros no accionables) → skipped, no processed: MP reenvía el mismo
+        // data.id cuando pasa a authorized; si marcamos processed, nunca activamos.
+        const preapprovalTerminal =
+          isAuthorized || status === 'payment_required' || status === 'cancelled' || status === 'expired';
         await prisma.webhookEvent.update({
           where: { id: webhookEvent.id },
           data: {
-            processingStatus: 'processed',
+            processingStatus: preapprovalTerminal ? 'processed' : 'skipped',
             mpStatus: status,
             organizationId,
             externalRef,
-            processedAt: new Date(),
+            processedAt: preapprovalTerminal ? new Date() : null,
+            errorMessage: preapprovalTerminal ? null : `preapproval non-terminal status: ${status || 'unknown'}`,
           },
         });
 
@@ -527,6 +532,13 @@ router.post('/mercadopago', express.json({
               where: { id: organizationId },
               data: { trialEndsAt: null },
             }).catch((e) => console.warn('[Webhook] No se pudo limpiar trialEndsAt:', e?.message ?? e));
+          }
+
+          try {
+            const { resolveBillingAlerts } = require('../services/billing/billingEmailService');
+            await resolveBillingAlerts(organizationId, ['period_overdue', 'grace_entered', 'payment_rejected']);
+          } catch (alertErr) {
+            console.warn('[Webhook] resolveBillingAlerts:', alertErr?.message ?? alertErr);
           }
 
           try {
