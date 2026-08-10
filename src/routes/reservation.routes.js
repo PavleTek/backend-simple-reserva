@@ -769,6 +769,8 @@ router.post('/', async (req, res, next) => {
             partySize: size,
             secureToken: reservation.secureToken,
             timezone,
+            restaurantLogoUrl: restaurant.logoUrl || null,
+            appearanceTheme: restaurant.appearanceTheme || null,
           }).then((sent) => {
             if (sent) {
               prisma.reservation.update({ where: { id: reservation.id }, data: { emailSent: true } })

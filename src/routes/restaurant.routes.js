@@ -989,6 +989,8 @@ router.post('/reservations', async (req, res, next) => {
             partySize: size,
             secureToken: reservation.secureToken,
             timezone,
+            restaurantLogoUrl: restaurant.logoUrl || null,
+            appearanceTheme: restaurant.appearanceTheme || null,
           })
             .then((sent) => {
               if (sent) {

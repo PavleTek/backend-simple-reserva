@@ -1,5 +1,7 @@
 'use strict';
 
+const { resolveEmailTheme } = require('../constants/bookingThemes');
+
 /** Colors aligned with user-front `docs/STYLING.md` (semantic + primary wine). */
 const COLORS = {
   pageBg: '#faf9f6',
@@ -10,6 +12,14 @@ const COLORS = {
   textMuted: '#8a8675',
   primary600: '#8b2d3a',
   primary700: '#6e2330',
+};
+
+const SR_GUEST_DEFAULT_COLORS = {
+  ...COLORS,
+  nestedBg: '#f5f4f0',
+  headerGradientFrom: '#faf0f1',
+  primaryTextOn: '#ffffff',
+  isDark: false,
 };
 
 /**
@@ -27,13 +37,17 @@ function escapeHtml(value) {
 }
 
 /**
+ * Absolute HTTPS SimpleReserva wordmark, or null if unsafe for email clients.
  * @param {string} baseUrl
+ * @param {{ variant?: 'default' | 'white' }} [options]
  * @returns {string|null}
  */
-function resolveLogoImageUrl(baseUrl) {
+function resolveLogoImageUrl(baseUrl, options = {}) {
   if (!baseUrl || typeof baseUrl !== 'string') return null;
+  const variant = options?.variant === 'white' ? 'white' : 'default';
+  const path = variant === 'white' ? '/logo-full-white-480w.png' : '/logo-full-480w.png';
   try {
-    const logoU = new URL('/logo-full-480w.png', baseUrl);
+    const logoU = new URL(path, baseUrl);
     if (logoU.protocol !== 'https:') return null;
     const h = logoU.hostname.toLowerCase();
     if (h === 'localhost' || h === '127.0.0.1' || h.endsWith('.local')) return null;
@@ -44,12 +58,132 @@ function resolveLogoImageUrl(baseUrl) {
 }
 
 /**
+ * Absolute HTTPS restaurant logo URL, or null if missing/unsafe.
+ * @param {unknown} logoUrl
+ * @returns {string|null}
+ */
+function resolveRestaurantLogoImageUrl(logoUrl) {
+  if (!logoUrl || typeof logoUrl !== 'string') return null;
+  try {
+    const u = new URL(logoUrl.trim());
+    if (u.protocol !== 'https:') return null;
+    const h = u.hostname.toLowerCase();
+    if (h === 'localhost' || h === '127.0.0.1' || h.endsWith('.local')) return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Guest emails: restaurant theme only when a valid restaurant logo exists.
+ * Without logo → SimpleReserva default colors (current template look).
+ * @param {{ restaurantLogoUrl?: string|null, appearanceTheme?: string|null }} opts
+ */
+function resolveGuestEmailPresentation({ restaurantLogoUrl = null, appearanceTheme = null } = {}) {
+  const validLogo = resolveRestaurantLogoImageUrl(restaurantLogoUrl);
+  if (!validLogo) {
+    return {
+      branded: false,
+      restaurantLogoUrl: null,
+      colors: { ...SR_GUEST_DEFAULT_COLORS },
+    };
+  }
+  const theme = resolveEmailTheme(appearanceTheme);
+  return {
+    branded: true,
+    restaurantLogoUrl: validLogo,
+    colors: {
+      pageBg: theme.pageBg,
+      cardBg: theme.cardBg,
+      nestedBg: theme.nestedBg,
+      border: theme.border,
+      textPrimary: theme.textPrimary,
+      textSecondary: theme.textSecondary,
+      textMuted: theme.textMuted,
+      primary600: theme.primary,
+      primary700: theme.primaryHover,
+      primaryTextOn: theme.primaryTextOn,
+      headerGradientFrom: theme.headerGradientFrom,
+      isDark: theme.isDark,
+    },
+  };
+}
+
+/**
+ * Header logo row: restaurant mark when branded, else SimpleReserva wordmark/text.
+ * @param {{
+ *   restaurantLogoUrl: string|null,
+ *   restaurantName: string,
+ *   assetBaseUrl?: string,
+ *   colors: typeof SR_GUEST_DEFAULT_COLORS,
+ * }} opts
+ */
+function buildGuestEmailLogoBlock({
+  restaurantLogoUrl,
+  restaurantName,
+  assetBaseUrl = '',
+  colors,
+}) {
+  if (restaurantLogoUrl) {
+    return `<tr><td align="center" style="padding:0 0 20px 0;background-color:${colors.cardBg};"><img src="${escapeHtml(restaurantLogoUrl)}" alt="${escapeHtml(restaurantName)}" width="160" style="display:block;width:160px;height:auto;max-width:160px;border:0;outline:none;text-decoration:none;margin:0 auto;" /></td></tr>`;
+  }
+  const variant = colors.isDark ? 'white' : 'default';
+  const logoUrl = resolveLogoImageUrl(assetBaseUrl, { variant });
+  if (logoUrl) {
+    return `<tr><td align="center" style="padding:0 0 20px 0;"><img src="${escapeHtml(logoUrl)}" alt="SimpleReserva" width="200" style="display:block;width:200px;height:auto;max-width:200px;border:0;outline:none;text-decoration:none;" /></td></tr>`;
+  }
+  return `<tr><td align="center" style="padding:0 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:700;color:${colors.primary700};letter-spacing:-0.02em;">SimpleReserva</td></tr>`;
+}
+
+/**
+ * Pie guest: texto siempre; wordmark SR (etiqueta) solo en modo branded.
+ * @param {string} restaurantName
+ * @param {{
+ *   border?: string,
+ *   textMuted?: string,
+ *   padding?: string,
+ *   showBrandMark?: boolean,
+ *   isDark?: boolean,
+ *   assetBaseUrl?: string,
+ *   primary700?: string,
+ * }} [style]
+ */
+function buildSimpleReservaEmailFooter(restaurantName, style = {}) {
+  const year = new Date().getFullYear();
+  const safeRestaurant = escapeHtml(restaurantName);
+  const border = style.border ?? '#e8e7e3';
+  const textMuted = style.textMuted ?? '#8a8675';
+  const padding = style.padding ?? '16px 28px 24px';
+  const primary700 = style.primary700 ?? COLORS.primary700;
+
+  let brandMarkHtml = '';
+  if (style.showBrandMark) {
+    const variant = style.isDark ? 'white' : 'default';
+    const logoUrl = resolveLogoImageUrl(style.assetBaseUrl || '', { variant });
+    if (logoUrl) {
+      brandMarkHtml = `<p style="margin:0 0 12px 0;"><img src="${escapeHtml(logoUrl)}" alt="SimpleReserva" width="120" style="display:inline-block;width:120px;height:auto;max-width:120px;border:0;outline:none;text-decoration:none;" /></p>`;
+    } else {
+      brandMarkHtml = `<p style="margin:0 0 8px 0;font-family:Georgia,'Times New Roman',serif;font-size:16px;font-weight:700;color:${primary700};">SimpleReserva</p>`;
+    }
+  }
+
+  return `<tr>
+    <td style="padding:${padding};border-top:1px solid ${border};font-family:Inter,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:12px;line-height:1.5;color:${textMuted};text-align:center;">
+      ${brandMarkHtml}
+      <p style="margin:0 0 6px 0;">Enviado por SimpleReserva para ${safeRestaurant}.</p>
+      <p style="margin:0;">&copy; ${year} SimpleReserva</p>
+    </td>
+  </tr>`;
+}
+
+/**
  * @param {Object} opts
  * @param {string} opts.assetBaseUrl
  * @param {string} opts.eyebrow
  * @param {string} opts.headline
  * @param {string} opts.preheader
- * @returns {string}
+ * @returns {{ safePreheader: string, headerHtml: string }}
  */
 function buildEmailHeaderBlock({ assetBaseUrl, eyebrow, headline, preheader }) {
   const safePreheader = escapeHtml(preheader);
@@ -138,6 +272,10 @@ module.exports = {
   COLORS,
   escapeHtml,
   resolveLogoImageUrl,
+  resolveRestaurantLogoImageUrl,
+  resolveGuestEmailPresentation,
+  buildGuestEmailLogoBlock,
+  buildSimpleReservaEmailFooter,
   buildEmailHeaderBlock,
   buildEmailFooter,
   wrapEmailDocument,

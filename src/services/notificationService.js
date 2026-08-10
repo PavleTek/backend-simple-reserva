@@ -740,6 +740,8 @@ async function sendReservationReminderEmail(options) {
     partySize,
     secureToken,
     timezone,
+    restaurantLogoUrl = null,
+    appearanceTheme = null,
   } = options;
   if (!customerEmail) {
     console.log('[Notification] sendReservationReminderEmail: skipped — no customerEmail');
@@ -765,6 +767,8 @@ async function sendReservationReminderEmail(options) {
     viewUrl,
     timezone: timezone || null,
     assetBaseUrl: baseUrl,
+    restaurantLogoUrl,
+    appearanceTheme,
   });
 
   try {
@@ -837,7 +841,17 @@ async function sendPaymentFailureNotification(options) {
  * @returns {Promise<boolean>}
  */
 async function sendReservationConfirmationEmail(options) {
-  const { customerEmail, restaurantName, customerName, dateTime, partySize, secureToken, timezone } = options;
+  const {
+    customerEmail,
+    restaurantName,
+    customerName,
+    dateTime,
+    partySize,
+    secureToken,
+    timezone,
+    restaurantLogoUrl = null,
+    appearanceTheme = null,
+  } = options;
   if (!customerEmail) {
     console.log('[Notification] sendReservationConfirmationEmail: skipped — no customerEmail');
     return false;
@@ -869,6 +883,8 @@ async function sendReservationConfirmationEmail(options) {
     viewUrl,
     timezone: timezone || null,
     assetBaseUrl: baseUrl,
+    restaurantLogoUrl,
+    appearanceTheme,
   });
 
   try {
@@ -982,6 +998,8 @@ async function sendPostVisitFeedbackEmail(options) {
     clickUrl,
     optOutUrl,
     subjectVariant = 'a',
+    restaurantLogoUrl = null,
+    appearanceTheme = null,
   } = options;
   if (!customerEmail) return false;
 
@@ -1005,6 +1023,8 @@ async function sendPostVisitFeedbackEmail(options) {
     optOutUrl,
     timezone,
     assetBaseUrl,
+    restaurantLogoUrl,
+    appearanceTheme,
   });
 
   try {

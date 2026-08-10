@@ -23,4 +23,21 @@ describe('postVisitFeedbackEmail', () => {
     assert.ok(html.includes('2026 SimpleReserva'));
     assert.ok(html.includes('SimpleReserva</p>'));
   });
+
+  it('brands with restaurant logo and keeps SR in footer', () => {
+    const html = buildPostVisitFeedbackHtml({
+      restaurantName: 'Nuevo Local',
+      customerName: 'Juan',
+      dateTime: new Date('2026-05-22T18:00:00Z'),
+      clickUrl: 'https://dev.simplereserva.com/api/public/feedback/tok/click',
+      optOutUrl: 'https://dev.simplereserva.com/api/public/feedback/tok/opt-out',
+      assetBaseUrl: 'https://dev.simplereserva.com',
+      restaurantLogoUrl: 'https://cdn.example.com/nl.png',
+      appearanceTheme: 'lavanda-clara',
+    });
+    assert.ok(html.includes('https://cdn.example.com/nl.png'));
+    assert.ok(html.includes('#6b4c9a'));
+    assert.ok(html.includes('width="120"'));
+    assert.ok(html.includes('Enviado por SimpleReserva para Nuevo Local.'));
+  });
 });
