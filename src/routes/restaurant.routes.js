@@ -54,7 +54,7 @@ const {
   resolveCalendarDateFromBusinessDate,
   addDaysToDateStr,
 } = require('../services/slotEngine/businessDate');
-const { ACTIVE_TABLE_STATUSES, canTransitionStatus } = require('../lib/reservationStatuses');
+const { ACTIVE_TABLE_STATUSES, LATE_GRACE_MINUTES, canTransitionStatus } = require('../lib/reservationStatuses');
 const { buildServiceView } = require('../services/serviceView');
 const { computeTableFloorStatus, applyBlockedStatus } = require('../services/tableFloorStatus');
 const { buildReservationDayWhere } = require('../utils/reservationDateFilter');
@@ -583,13 +583,22 @@ router.get('/reservations', async (req, res, next) => {
       } else {
         where.dateTime = { gte: start, lte: end };
       }
-    } else if (dateFrom && dateTo) {
-      const start = parseInTimezone(dateFrom, '00:00', timezone);
-      const end = parseInTimezone(dateTo, '23:59', timezone);
-      where.dateTime = { gte: start, lte: end };
+    } else if (dateFrom || dateTo) {
+      where.dateTime = {};
+      if (dateFrom) where.dateTime.gte = parseInTimezone(dateFrom, '00:00', timezone);
+      if (dateTo) where.dateTime.lte = parseInTimezone(dateTo, '23:59', timezone);
     }
 
-    if (status) {
+    const andParts = [];
+    if (status === 'overdue') {
+      where.status = 'confirmed';
+      const cutoff = new Date(Date.now() - LATE_GRACE_MINUTES * 60 * 1000);
+      andParts.push({ dateTime: { lte: cutoff } });
+    } else if (status === 'confirmed') {
+      where.status = 'confirmed';
+      const cutoff = new Date(Date.now() - LATE_GRACE_MINUTES * 60 * 1000);
+      andParts.push({ dateTime: { gt: cutoff } });
+    } else if (status) {
       where.status = status;
     }
 
@@ -601,20 +610,19 @@ router.get('/reservations', async (req, res, next) => {
       ];
     }
 
-    // dateOr y searchOr son independientes: si ambos están presentes, no pueden
-    // compartir la misma propiedad `where.OR` (la segunda asignación pisaría a
-    // la primera). Se combinan con AND para que ambas condiciones se cumplan.
-    if (dateOr && searchOr) {
-      where.AND = [{ OR: dateOr }, { OR: searchOr }];
-    } else if (dateOr) {
-      where.OR = dateOr;
-    } else if (searchOr) {
-      where.OR = searchOr;
+    // dateOr, searchOr y el recorte de atrasadas son independientes: no pueden
+    // compartir la misma propiedad `where.OR`. Se combinan con AND.
+    if (dateOr) andParts.push({ OR: dateOr });
+    if (searchOr) andParts.push({ OR: searchOr });
+    if (andParts.length === 1 && andParts[0].OR) {
+      where.OR = andParts[0].OR;
+    } else if (andParts.length > 0) {
+      where.AND = andParts;
     }
 
     const orderAsc = sort !== 'desc';
 
-    const [reservations, total] = await Promise.all([
+    const [reservations, total, coversAgg] = await Promise.all([
       prisma.reservation.findMany({
         where,
         include: { table: { select: { id: true, label: true } } },
@@ -623,9 +631,16 @@ router.get('/reservations', async (req, res, next) => {
         take: limit,
       }),
       prisma.reservation.count({ where }),
+      prisma.reservation.aggregate({
+        where,
+        _sum: { partySize: true },
+      }),
     ]);
 
-    res.json(paginatedResponse(reservations, total, page, limit));
+    res.json({
+      ...paginatedResponse(reservations, total, page, limit),
+      covers: coversAgg._sum.partySize ?? 0,
+    });
   } catch (error) {
     next(error);
   }
