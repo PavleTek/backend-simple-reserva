@@ -291,7 +291,7 @@ router.patch('/token/:secureToken', async (req, res, next) => {
           throw new ValidationError(msgs[validation.reason] ?? 'La hora solicitada no está disponible');
         }
 
-        const slotDuration = validation.durationMinutes;
+        const slotDuration = reservation.durationMinutes;
         const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
         const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
 

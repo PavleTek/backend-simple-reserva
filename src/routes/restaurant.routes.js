@@ -1044,7 +1044,7 @@ router.post('/reservations', async (req, res, next) => {
 
 router.patch('/reservations/:id', async (req, res, next) => {
   try {
-    const { status, date, time, partySize, tableId, notes, tableSwaps: rawTableSwaps } = req.body;
+    const { status, date, time, partySize, tableId, notes, durationMinutes, tableSwaps: rawTableSwaps } = req.body;
 
     const reservation = await prisma.reservation.findUnique({
       where: { id: req.params.id },
@@ -1077,8 +1077,8 @@ router.patch('/reservations/:id', async (req, res, next) => {
       }
     }
 
-    // Full edit (date, time, partySize, table, notes)
-    if (date !== undefined || time !== undefined || partySize !== undefined || tableId !== undefined || notes !== undefined) {
+    // Full edit (date, time, partySize, table, notes, duration)
+    if (date !== undefined || time !== undefined || partySize !== undefined || tableId !== undefined || notes !== undefined || durationMinutes !== undefined) {
       const restaurant = await prisma.restaurant.findUnique({
         where: { id: reservation.restaurantId },
         include: {
@@ -1184,7 +1184,15 @@ router.patch('/reservations/:id', async (req, res, next) => {
           });
           const swapsByReservationId = await loadSwapsByReservationId(dayReservations.map((r) => r.id));
 
-          const slotDuration = resolveDuration(restaurant, size, durationRules);
+          let slotDuration;
+          if (durationMinutes !== undefined) {
+            slotDuration = parseInt(durationMinutes, 10);
+            if (isNaN(slotDuration) || slotDuration < 15 || slotDuration > 240) {
+              throw new ValidationError('durationMinutes debe estar entre 15 y 240');
+            }
+          } else {
+            slotDuration = reservation.durationMinutes;
+          }
           const slotEnd = new Date(dateTime.getTime() + slotDuration * 60000);
           const bufferMs = (restaurant.bufferMinutesBetweenReservations ?? 0) * 60000;
 
