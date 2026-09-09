@@ -7,13 +7,13 @@
  * - Recurring invoices are generated and charged by Flow.
  * - Plan change = cancel previous Flow subscription + create a new one.
  *
- * Shared Flow account with SimpleHora: prefixes must not collide (sr/dsr vs sh/dsh).
+ * Shared Flow account with SimpleHora: prefixes must not collide (sr vs sh).
  */
 
 const crypto = require('crypto');
 const prisma = require('../lib/prisma');
 const { montoEfectivoNeto } = require('../lib/addonPricing');
-const { flowUseProductionCredentials, describeFlowCredentialChoice } = require('../lib/flowEnv');
+const { describeFlowCredentialChoice } = require('../lib/flowEnv');
 const { flowGet, flowPost, FlowApiError } = require('../lib/flowClient');
 const { checkoutSessionBillingData, PAYMENT_PROVIDER_FLOW } = require('../lib/billingDomain');
 
@@ -43,7 +43,7 @@ function resolveFlowInterval(plan) {
 }
 
 function buildFlowPlanId({ productSKU, grossAmount, interval, intervalCount }) {
-  const prefix = flowUseProductionCredentials() ? 'sr' : 'dsr';
+  const prefix = 'sr';
   const sku = String(productSKU || '').trim();
   if (!sku) throw new Error('Plan sin productSKU, no se puede crear en Flow');
   const payload = `${sku}|${Number(grossAmount)}|${Number(interval)}|${Number(intervalCount)}`;

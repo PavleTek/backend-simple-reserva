@@ -988,7 +988,7 @@ model Subscription {
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid (preapproval)
   /// Flow.cl subscription hash (sus_…).
   flowSubscriptionId String?
-  /// Flow.cl planId used for this subscription (sr/dsr + hash).
+  /// Flow.cl planId used for this subscription (sr + hash).
   flowPlanId String?
   /// Cómo se cobra: automatic_recurring | manual_monthly
   billingStrategy String @default("automatic_recurring")

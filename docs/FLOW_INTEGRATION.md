@@ -12,8 +12,8 @@ Both apps use the **same** Flow API key / secret. Identifiers must not collide:
 
 | App | Flow `planId` prefix | Customer `externalId` | Plan `name` |
 |-----|----------------------|-----------------------|-------------|
-| SimpleHora | `sh` / `dsh` | `sagenda\|{orgId}` | `SimpleHora …` |
-| SimpleReserva | `sr` / `dsr` | `sreserva\|{orgId}` | `SimpleReserva {plan.name}` |
+| SimpleHora | `sh` | `sagenda\|{orgId}` | `SimpleHora …` |
+| SimpleReserva | `sr` | `sreserva\|{orgId}` | `SimpleReserva {plan.name}` |
 
 Each Flow plan’s `urlCallback` points at **this** backend (`{BACKEND_PUBLIC_URL}/api/webhooks/flow`), so invoice notifications stay on the correct app.
 
@@ -33,22 +33,16 @@ Admin MP → Flow: cancel MP preapproval (best effort), keep local access until 
 
 | Variable | Notes |
 |----------|--------|
-| `FLOW_ENV` | `development` → sandbox keys; `production` → prod keys; else follows `NODE_ENV` |
-| `FLOW_API_KEY_DEVELOPMENT` / `FLOW_SECRET_KEY_DEVELOPMENT` | Sandbox (`https://sandbox.flow.cl/api`) |
-| `FLOW_API_KEY_PRODUCTION` / `FLOW_SECRET_KEY_PRODUCTION` | Production (`https://www.flow.cl/api`) |
-| `FLOW_API_KEY` / `FLOW_SECRET_KEY` | Legacy fallback |
-| `FLOW_BASE_URL` | Optional API base override |
+| `FLOW_API_KEY_PRODUCTION` / `FLOW_SECRET_KEY_PRODUCTION` | Same Flow commerce as SimpleHora |
 | `BACKEND_PUBLIC_URL` | Webhook + card-enrollment `url_return` |
 | `FRONTEND_RESTAURANT_PORTAL_URL` | Redirect after enrollment |
-
-Same keys as SimpleHora. Sandbox plans use prefix `dsr` so they stay apart from Hora’s `dsh`.
 
 ## Mapping
 
 | SimpleReserva | Flow |
 |---------------|------|
 | `RestaurantOrganization` | `customer` (`externalId` = `sreserva\|{orgId}`) |
-| Local `Plan` + amount + interval | `plans/create` `planId` = `dsr`/`sr` + sha256(SKU\|amount\|interval\|count) |
+| Local `Plan` + amount + interval | `plans/create` `planId` = `sr` + sha256(SKU\|amount\|interval\|count) |
 | Checkout | `customer/register` (card enrollment) |
 | Paid `Subscription` | `subscription/create` |
 | Monthly charge | Flow invoice, webhook → `payment/getStatus` |
@@ -88,13 +82,12 @@ Plan change = cancel previous Flow subscription + create a new one.
 - `subscription/get` for local subs with `flowSubscriptionId`.
 - Retry failed Flow webhook events from the last 48h.
 
-## Sandbox checklist
+## Checklist
 
-1. Copy the same sandbox API key + secret used by SimpleHora (or a dedicated sandbox commerce).
-2. Set `FLOW_ENV=development`, `FLOW_API_KEY_DEVELOPMENT`, `FLOW_SECRET_KEY_DEVELOPMENT`.
-3. `BACKEND_PUBLIC_URL` must be reachable by Flow (ngrok / Railway).
-4. Register a **new** org (defaults to Flow) → checkout → enroll a [sandbox card](https://developers.flow.cl/api) → first invoice.
-5. Change plan with enrolled card → no redirect.
-6. Cancel at period end (`at_period_end=1`).
-7. Admin-switch a Mercado Pago org → Flow; owner enrolls a card.
-8. Confirm legacy Mercado Pago orgs are untouched.
+1. Same Flow API key + secret as SimpleHora (`FLOW_API_KEY_PRODUCTION` / `FLOW_SECRET_KEY_PRODUCTION`).
+2. `BACKEND_PUBLIC_URL` must be reachable by Flow.
+3. Register a **new** org (defaults to Flow) → checkout → enroll a card → first invoice.
+4. Change plan with enrolled card → no redirect.
+5. Cancel at period end (`at_period_end=1`).
+6. Admin-switch a Mercado Pago org → Flow; owner enrolls a card.
+7. Confirm legacy Mercado Pago orgs are untouched.
