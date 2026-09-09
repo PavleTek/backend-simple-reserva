@@ -168,6 +168,11 @@ async function repairSubscription(subscriptionId, options = {}) {
   const org = sub.organization;
   const force = Boolean(options.force);
 
+  if (sub.flowSubscriptionId) {
+    log.push('Omitido: suscripción Flow (la reparación MP no aplica).');
+    return { subscription: sub, organization: org, log };
+  }
+
   // --- MP: activar si hay preapproval autorizado ---
   let mpAuthorized = false;
   let mpLookup = await findAuthorizedPreapprovalForOrg(

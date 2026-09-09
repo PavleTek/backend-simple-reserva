@@ -13,7 +13,13 @@ const { isTrialExpired, isTrialActive } = require('../lib/trialPeriod');
 async function getOrganizationWithTrial(organizationId) {
   return prisma.restaurantOrganization.findUnique({
     where: { id: organizationId },
-    select: { trialEndsAt: true, billingEmail: true },
+    select: {
+      trialEndsAt: true,
+      billingEmail: true,
+      paymentProvider: true,
+      flowCardBrand: true,
+      flowCardLast4: true,
+    },
   });
 }
 
@@ -44,6 +50,7 @@ function isDateExpired(sub, trialEndsAt) {
     sub.status === 'active' &&
     sub.billingStrategy === 'automatic_recurring' &&
     !sub.mercadopagoPreapprovalId &&
+    !sub.flowSubscriptionId &&
     sub.currentPeriodEnd &&
     new Date(sub.currentPeriodEnd) < now
   ) {

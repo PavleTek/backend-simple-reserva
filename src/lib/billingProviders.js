@@ -6,6 +6,8 @@ const {
   BILLING_STRATEGY_AUTOMATIC,
   BILLING_STRATEGY_MANUAL,
   PAYMENT_PROVIDER_MERCADOPAGO,
+  PAYMENT_PROVIDER_FLOW,
+  FLOW_COLLECTION_METHOD_LABEL,
   LEGACY_MP_PREAPPROVAL,
   LEGACY_MP_CHECKOUT_PRO,
   isLegacyProviderId,
@@ -38,6 +40,9 @@ function parseEnabledProviders() {
 }
 
 function getDefaultBillingStrategy(organization) {
+  if (isFlowOrg(organization)) {
+    return BILLING_STRATEGY_AUTOMATIC;
+  }
   const enabled = parseEnabledStrategies();
   const legacyEnabled = parseEnabledProviders();
   if (
@@ -70,7 +75,28 @@ function isChileBilling(organization) {
   return resolveBillingCountry(organization) === 'CL';
 }
 
+function isFlowOrg(organization) {
+  return String(organization?.paymentProvider || '').trim() === PAYMENT_PROVIDER_FLOW;
+}
+
 function listCollectionMethodsForApi(organization) {
+  if (isFlowOrg(organization)) {
+    return [
+      {
+        id: BILLING_STRATEGY_AUTOMATIC,
+        billingStrategy: BILLING_STRATEGY_AUTOMATIC,
+        paymentProvider: PAYMENT_PROVIDER_FLOW,
+        legacyId: BILLING_STRATEGY_AUTOMATIC,
+        label: FLOW_COLLECTION_METHOD_LABEL,
+        description:
+          'Cobro automático mensual con tarjeta registrada en Flow. No requiere cuenta de Mercado Pago.',
+        supportsInternationalCards: true,
+        supportsAutoRecurring: true,
+        requiresMercadoPagoChileEmail: false,
+        recommended: true,
+      },
+    ];
+  }
   const enabled = parseEnabledStrategies();
   const legacyEnabled = parseEnabledProviders();
   const all = [
@@ -156,7 +182,8 @@ function normalizeBillingInput(body, organization) {
   } else {
     billingStrategy = getDefaultBillingStrategy(organization);
   }
-  const psp = normalizePaymentProviderPsp(body?.paymentProviderPsp ?? PAYMENT_PROVIDER_MERCADOPAGO);
+  const defaultPsp = isFlowOrg(organization) ? PAYMENT_PROVIDER_FLOW : PAYMENT_PROVIDER_MERCADOPAGO;
+  const psp = normalizePaymentProviderPsp(body?.paymentProviderPsp ?? defaultPsp);
   return {
     billingStrategy,
     paymentProvider: psp,
@@ -205,6 +232,8 @@ module.exports = {
   BILLING_STRATEGY_AUTOMATIC,
   BILLING_STRATEGY_MANUAL,
   PAYMENT_PROVIDER_MERCADOPAGO,
+  PAYMENT_PROVIDER_FLOW,
+  isFlowOrg,
   parseEnabledProviders,
   parseEnabledStrategies,
   getDefaultBillingStrategy,

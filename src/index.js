@@ -160,6 +160,51 @@ app.get("/api/redirect-to-billing/:restaurantId", (req, res) => {
   res.redirect(302, target);
 });
 
+function escapeHtmlAttr(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function redirectFlowRegisterReturn(req, res) {
+  const portalBase = (process.env.FRONTEND_RESTAURANT_PORTAL_URL || "").replace(/\/$/, "");
+  if (!portalBase) {
+    logger.error("[flow/register-return] FRONTEND_RESTAURANT_PORTAL_URL missing");
+    return res.status(500).json({ error: "FRONTEND_RESTAURANT_PORTAL_URL is not configured" });
+  }
+  const token = String(req.body?.token || req.query?.token || "").trim();
+  const restaurantId = String(req.params.restaurantId || req.query.restaurantId || "").trim();
+  const params = new URLSearchParams();
+  if (restaurantId) params.set("restaurantId", restaurantId);
+  params.set("returnFromCheckout", "1");
+  if (token) params.set("flowToken", token);
+  const redirectUrl = `${portalBase}/billing?${params.toString()}`;
+  logger.info({ restaurantId, hasToken: Boolean(token) }, "[flow/register-return] bouncing to portal");
+
+  res.status(303);
+  res.setHeader("Location", redirectUrl);
+  res.setHeader("Cache-Control", "no-store");
+  res.type("html").send(`<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="refresh" content="0;url=${escapeHtmlAttr(redirectUrl)}" />
+  <title>Redirigiendo a SimpleReserva</title>
+</head>
+<body>
+  <p>Redirigiendo a tu facturación…</p>
+  <script>window.location.replace(${JSON.stringify(redirectUrl)});</script>
+  <p><a href="${escapeHtmlAttr(redirectUrl)}">Continuar a facturación</a></p>
+</body>
+</html>`);
+}
+
+const flowReturnParser = express.urlencoded({ extended: false });
+app.all("/api/billing/flow/register-return/:restaurantId", flowReturnParser, redirectFlowRegisterReturn);
+app.all("/api/billing/flow/register-return", flowReturnParser, redirectFlowRegisterReturn);
+
 // Fallback: ruta antigua con query (por si hay links guardados)
 app.get("/api/redirect-to-billing", (req, res) => {
   let restaurantId = req.query.restaurantId;
@@ -317,6 +362,12 @@ app.listen(PORT, "0.0.0.0", () => {
     assertMpEnvSafety();
   } catch (e) {
     logger.warn({ err: e.message }, "MercadoPago env safety check");
+  }
+  try {
+    const { describeFlowCredentialChoice } = require("./lib/flowEnv");
+    logger.info({ flow: describeFlowCredentialChoice() }, "Flow credential choice");
+  } catch (e) {
+    logger.warn({ err: e.message }, "Flow env check");
   }
   startReminderJob();
   startDailySummaryJob();

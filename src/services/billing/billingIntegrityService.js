@@ -50,6 +50,7 @@ const CHECKS = [
           isActiveSubscription: true,
           billingStrategy: 'automatic_recurring',
           mercadopagoPreapprovalId: null,
+          flowSubscriptionId: null,
           currentPeriodEnd: { lt: now },
         },
         select: { id: true, organizationId: true, currentPeriodEnd: true, startDate: true },
@@ -72,6 +73,7 @@ const CHECKS = [
           isActiveSubscription: true,
           billingStrategy: 'automatic_recurring',
           mercadopagoPreapprovalId: null,
+          flowSubscriptionId: null,
         },
         select: { id: true, organizationId: true, currentPeriodEnd: true, startDate: true },
       });
@@ -90,6 +92,7 @@ const CHECKS = [
           isActiveSubscription: true,
           billingStrategy: 'automatic_recurring',
           mercadopagoPreapprovalId: { not: null },
+          flowSubscriptionId: null,
           currentPeriodEnd: { lt: twoDaysAgo },
         },
         select: { id: true, organizationId: true, currentPeriodEnd: true, mercadopagoPreapprovalId: true },

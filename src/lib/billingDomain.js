@@ -9,9 +9,11 @@ const BILLING_STRATEGY_AUTOMATIC = 'automatic_recurring';
 const BILLING_STRATEGY_MANUAL = 'manual_monthly';
 
 const PAYMENT_PROVIDER_MERCADOPAGO = 'mercadopago';
+const PAYMENT_PROVIDER_FLOW = 'flow';
 
 const PROVIDER_IMPL_PREAPPROVAL = 'preapproval';
 const PROVIDER_IMPL_CHECKOUT_PRO = 'checkout_pro';
+const PROVIDER_IMPL_FLOW_SUBSCRIPTION = 'flow_subscription';
 
 /** Legacy — uso interno en adaptadores MP */
 const LEGACY_MP_PREAPPROVAL = 'mercadopago_preapproval';
@@ -24,6 +26,8 @@ const COLLECTION_METHOD_LABELS = {
   [BILLING_STRATEGY_AUTOMATIC]: 'Débito automático',
   [BILLING_STRATEGY_MANUAL]: 'Pago mensual manual',
 };
+
+const FLOW_COLLECTION_METHOD_LABEL = 'Débito automático (Flow)';
 
 function isLegacyProviderId(value) {
   const v = String(value || '').trim();
@@ -67,7 +71,12 @@ function resolveBillingStrategy(subOrSession) {
 function resolvePaymentProviderPsp(subOrSession) {
   if (!subOrSession) return PAYMENT_PROVIDER_MERCADOPAGO;
   const psp = String(subOrSession.paymentProvider || '').trim();
-  if (psp === PAYMENT_PROVIDER_MERCADOPAGO || psp === 'paypal' || psp === 'stripe') {
+  if (
+    psp === PAYMENT_PROVIDER_MERCADOPAGO ||
+    psp === PAYMENT_PROVIDER_FLOW ||
+    psp === 'paypal' ||
+    psp === 'stripe'
+  ) {
     return psp;
   }
   if (isLegacyProviderId(psp)) return PAYMENT_PROVIDER_MERCADOPAGO;
@@ -77,8 +86,15 @@ function resolvePaymentProviderPsp(subOrSession) {
 function resolveProviderImplementation(subOrSession) {
   if (!subOrSession) return PROVIDER_IMPL_PREAPPROVAL;
   const impl = String(subOrSession.providerImplementation || '').trim();
-  if (impl === PROVIDER_IMPL_CHECKOUT_PRO || impl === PROVIDER_IMPL_PREAPPROVAL) {
+  if (
+    impl === PROVIDER_IMPL_CHECKOUT_PRO ||
+    impl === PROVIDER_IMPL_PREAPPROVAL ||
+    impl === PROVIDER_IMPL_FLOW_SUBSCRIPTION
+  ) {
     return impl;
+  }
+  if (resolvePaymentProviderPsp(subOrSession) === PAYMENT_PROVIDER_FLOW) {
+    return PROVIDER_IMPL_FLOW_SUBSCRIPTION;
   }
   if (isLegacyProviderId(subOrSession.paymentProvider)) {
     return implementationFromLegacyProvider(subOrSession.paymentProvider);
@@ -103,7 +119,9 @@ function normalizeBillingStrategy(value, organization) {
 
 function normalizePaymentProviderPsp(value) {
   const v = String(value || '').trim();
-  if (v === PAYMENT_PROVIDER_MERCADOPAGO || v === 'paypal' || v === 'stripe') return v;
+  if (v === PAYMENT_PROVIDER_MERCADOPAGO || v === PAYMENT_PROVIDER_FLOW || v === 'paypal' || v === 'stripe') {
+    return v;
+  }
   if (isLegacyProviderId(v)) return PAYMENT_PROVIDER_MERCADOPAGO;
   return PAYMENT_PROVIDER_MERCADOPAGO;
 }
@@ -115,7 +133,8 @@ function normalizePlanChangeWhen(value) {
   return PLAN_CHANGE_END_OF_PERIOD;
 }
 
-function collectionMethodLabel(billingStrategy) {
+function collectionMethodLabel(billingStrategy, paymentProvider) {
+  if (paymentProvider === PAYMENT_PROVIDER_FLOW) return FLOW_COLLECTION_METHOD_LABEL;
   return COLLECTION_METHOD_LABELS[billingStrategy] || COLLECTION_METHOD_LABELS[BILLING_STRATEGY_AUTOMATIC];
 }
 
@@ -126,7 +145,7 @@ function subscriptionBillingView(sub) {
     billingStrategy,
     paymentProvider,
     providerImplementation: resolveProviderImplementation(sub),
-    collectionMethodLabel: collectionMethodLabel(billingStrategy),
+    collectionMethodLabel: collectionMethodLabel(billingStrategy, paymentProvider),
     isAutomatic: billingStrategy === BILLING_STRATEGY_AUTOMATIC,
     isManual: billingStrategy === BILLING_STRATEGY_MANUAL,
     /** @deprecated compat API — no usar en UI nueva */
@@ -137,11 +156,16 @@ function subscriptionBillingView(sub) {
 function checkoutSessionBillingData({ billingStrategy, paymentProvider }) {
   const strategy = normalizeBillingStrategy(billingStrategy);
   const psp = normalizePaymentProviderPsp(paymentProvider);
+  let providerImplementation = PROVIDER_IMPL_PREAPPROVAL;
+  if (psp === PAYMENT_PROVIDER_FLOW) {
+    providerImplementation = PROVIDER_IMPL_FLOW_SUBSCRIPTION;
+  } else if (strategy === BILLING_STRATEGY_MANUAL) {
+    providerImplementation = PROVIDER_IMPL_CHECKOUT_PRO;
+  }
   return {
     billingStrategy: strategy,
     paymentProvider: psp,
-    providerImplementation:
-      strategy === BILLING_STRATEGY_MANUAL ? PROVIDER_IMPL_CHECKOUT_PRO : PROVIDER_IMPL_PREAPPROVAL,
+    providerImplementation,
     legacyPaymentProviderId: legacyIdFromStrategy(strategy),
   };
 }
@@ -150,8 +174,11 @@ module.exports = {
   BILLING_STRATEGY_AUTOMATIC,
   BILLING_STRATEGY_MANUAL,
   PAYMENT_PROVIDER_MERCADOPAGO,
+  PAYMENT_PROVIDER_FLOW,
   PROVIDER_IMPL_PREAPPROVAL,
   PROVIDER_IMPL_CHECKOUT_PRO,
+  PROVIDER_IMPL_FLOW_SUBSCRIPTION,
+  FLOW_COLLECTION_METHOD_LABEL,
   LEGACY_MP_PREAPPROVAL,
   LEGACY_MP_CHECKOUT_PRO,
   PLAN_CHANGE_IMMEDIATE,

@@ -66,6 +66,25 @@ function sendCheckoutJson(res, checkoutUrl, mercadopagoPayerEmail, checkoutHints
   });
 }
 
+function sendCheckoutResult(res, result, mercadopagoPayerEmail, extraHints = {}) {
+  if (result?.activated || (result?.scheduled && !result.checkoutUrl) || result?.scheduledByProvider) {
+    return res.json({
+      activated: !!result.activated,
+      scheduled: !!(result.scheduled || result.scheduledByProvider),
+      scheduledDate: result.scheduledDate || null,
+      message: result.activated
+        ? 'Suscripción activada'
+        : 'Suscripción programada',
+      paymentProvider: result.providerId || extraHints.paymentProvider || 'flow',
+    });
+  }
+  sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
+    paymentProvider: result.providerId,
+    hints: result.checkoutHints,
+    ...extraHints,
+  });
+}
+
 /** Correo para checkout: obligatorio en preapproval; opcional en Checkout Pro. */
 async function resolvePayerEmailForCheckout(organizationId, bodyEmail, loginEmail, paymentProvider) {
   const { PAYMENT_PROVIDER_MP_CHECKOUT_PRO } = require('../lib/billingProviders');
@@ -103,6 +122,17 @@ function handleBillingRouteError(error, res, next, respondMp) {
   }
   if (error.message?.includes('BACKEND_PUBLIC_URL') || error.message?.includes('MP_TEST_PAYER')) {
     res.status(400).json({ error: error.message });
+    return;
+  }
+  if (error.name === 'FlowApiError' || error.message?.includes('FLOW_API_KEY') || error.message?.includes('FLOW_SECRET_KEY')) {
+    if (error.status === 503 || /no configurad/i.test(error.message || '')) {
+      res.status(503).json({ error: 'Configuración de pagos Flow no disponible. Contacta a soporte.' });
+      return;
+    }
+    res.status(502).json({
+      error: 'checkout_flow_error',
+      message: error.message || 'Flow no pudo procesar el checkout.',
+    });
     return;
   }
   respondMp(error, res, next);
@@ -193,7 +223,7 @@ router.get('/billing/providers', authenticateRestaurantRoles(ROLES_BILLING), asy
   const org = restaurant
     ? await prisma.restaurantOrganization.findUnique({
         where: { id: restaurant.organizationId },
-        select: { billingCountry: true, owner: { select: { country: true } } },
+        select: { billingCountry: true, paymentProvider: true, owner: { select: { country: true } } },
       })
     : null;
   const collectionMethods = listCollectionMethodsForApi(org);
@@ -215,7 +245,7 @@ router.get('/billing/collection-methods', authenticateRestaurantRoles(ROLES_BILL
   const org = restaurant
     ? await prisma.restaurantOrganization.findUnique({
         where: { id: restaurant.organizationId },
-        select: { billingCountry: true, owner: { select: { country: true } } },
+        select: { billingCountry: true, paymentProvider: true, owner: { select: { country: true } } },
       })
     : null;
   res.json({
@@ -479,7 +509,10 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
       allPlans: sortPlansByDisplayOrder(allPlansForOrg),
       offeredPlans,
       billingEmail: orgWithCustomPlan?.billingEmail ?? null,
-      paymentProvider: billingView?.paymentProvider ?? sub?.paymentProvider ?? null,
+      paymentProvider: billingView?.paymentProvider ?? sub?.paymentProvider ?? org?.paymentProvider ?? null,
+      paymentProviderPsp: org?.paymentProvider ?? billingView?.paymentProvider ?? null,
+      cardBrand: org?.flowCardBrand ?? null,
+      cardLast4: org?.flowCardLast4 ?? null,
       billingStrategy: billingView?.billingStrategy ?? null,
       collectionMethodLabel: billingView?.collectionMethodLabel ?? null,
       legacyPaymentProviderId: billingView?.legacyPaymentProviderId ?? null,
@@ -605,14 +638,19 @@ router.post(
       });
       const strategy = activeSub ? resolveBillingStrategy(activeSub) : null;
 
+      const { isFlowOrganizationId } = require('../lib/orgPaymentProvider');
+      const isFlow = await isFlowOrganizationId(organizationId);
+
       let mercadopagoPayerEmail = user?.email ?? null;
-      if (strategy === BILLING_STRATEGY_AUTOMATIC) {
+      if (strategy === BILLING_STRATEGY_AUTOMATIC && !isFlow) {
         mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
           organizationId,
           req.body?.mercadopagoPayerEmail,
           user?.email,
           'mercadopago_preapproval',
         );
+      } else if (isFlow) {
+        mercadopagoPayerEmail = null;
       }
 
       const { applyReferralCreditsToNextRenewal } = require('../services/billing/referralRenewalCreditService');
@@ -623,7 +661,10 @@ router.post(
         restaurantId,
       });
 
-      if (result.requiresCheckout && result.checkoutUrl) {
+      if (result.requiresCheckout && (result.checkoutUrl || result.activated || result.scheduled)) {
+        if (!result.checkoutUrl) {
+          return sendCheckoutResult(res, result, mercadopagoPayerEmail);
+        }
         return sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
           paymentProvider: result.providerId,
           billingStrategy: result.billingStrategy,
@@ -683,6 +724,13 @@ router.post('/billing/recovery/create-link', authenticateRestaurantRoles(['resta
       select: { organizationId: true },
     });
     if (!restaurant) throw new Error('Restaurante no encontrado');
+    const { isFlowOrganizationId } = require('../lib/orgPaymentProvider');
+    if (await isFlowOrganizationId(restaurant.organizationId)) {
+      return res.status(400).json({
+        error: 'recovery_not_available_flow',
+        message: 'Flow reintenta el cobro automáticamente. Activa tu plan desde Facturación para registrar o actualizar tu tarjeta.',
+      });
+    }
     const { createRecoveryPaymentLink } = require('../services/billing/recoveryLinkService');
     const result = await createRecoveryPaymentLink({
       organizationId: restaurant.organizationId,
@@ -706,7 +754,7 @@ async function handleCollectionMethodUpdate(req, res, next) {
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const org = await prisma.restaurantOrganization.findUnique({
       where: { id: restaurant.organizationId },
-      select: { billingCountry: true, owner: { select: { country: true } } },
+      select: { billingCountry: true, paymentProvider: true, owner: { select: { country: true } } },
     });
     const { normalizeBillingInput } = require('../lib/billingProviders');
     const { updateCollectionMethod } = require('../services/billing/billingOrchestrator');
@@ -930,12 +978,17 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       select: { email: true },
     });
 
-    const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
-      organizationId,
-      req.body?.mercadopagoPayerEmail,
-      user?.email,
-      paymentProvider,
-    );
+    const { isFlowOrganizationId } = require('../lib/orgPaymentProvider');
+    const isFlow = await isFlowOrganizationId(organizationId);
+
+    const mercadopagoPayerEmail = isFlow
+      ? null
+      : await resolvePayerEmailForCheckout(
+          organizationId,
+          req.body?.mercadopagoPayerEmail,
+          user?.email,
+          paymentProvider,
+        );
 
     const result = await billingCheckoutService.createBillingCheckout({
       organizationId,
@@ -948,10 +1001,7 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
       createSubscriptionOptions,
     });
 
-    sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
-      paymentProvider: result.providerId,
-      hints: result.checkoutHints,
-    });
+    sendCheckoutResult(res, result, mercadopagoPayerEmail);
     }); // withOrgBillingLock
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
@@ -968,9 +1018,27 @@ router.post('/billing/confirm', authenticateRestaurantRoles(['restaurant_owner']
     if (!restaurant) throw new Error('Restaurante no encontrado');
     const organizationId = restaurant.organizationId;
 
+    const flowToken = req.body?.flowToken?.trim();
+    if (flowToken) {
+      const flowService = require('../services/flowService');
+      const result = await flowService.confirmFromRegisterToken(organizationId, flowToken);
+      if (result.activated) {
+        return res.json({ ok: true, message: 'Suscripción activada' });
+      }
+      if (result.scheduled) {
+        return res.json({
+          ok: true,
+          scheduled: true,
+          scheduledDate: result.scheduledDate,
+          message: 'Suscripción programada',
+        });
+      }
+      return res.json({ ok: false, message: result.reason || 'El registro de tarjeta no fue completado' });
+    }
+
     const preapprovalId = req.body?.preapprovalId?.trim();
     if (!preapprovalId) {
-      return res.status(400).json({ error: 'preapprovalId requerido' });
+      return res.status(400).json({ error: 'preapprovalId o flowToken requerido' });
     }
     const mercadopagoService = require('../services/mercadopagoService');
     const result = await mercadopagoService.confirmSubscriptionFromPreapproval(organizationId, preapprovalId);
@@ -1072,6 +1140,7 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
     // Actualizar DB primero: dejar el preapprovalId en null para evitar reintentos
     // y marcar como cancelada aunque el llamado a MP falle.
     const preapprovalId = sub.mercadopagoPreapprovalId;
+    const flowSubscriptionId = sub.flowSubscriptionId;
     await prisma.subscription.update({
       where: { id: sub.id },
       data: {
@@ -1080,10 +1149,19 @@ router.post('/billing/cancel', authenticateRestaurantRoles(['restaurant_owner'])
         currentPeriodEnd: periodEnd,
         gracePeriodEndsAt: periodEnd,
         mercadopagoPreapprovalId: null,
+        flowSubscriptionId: null,
       },
     });
 
-    // Cancelar en MercadoPago. Si falla, el estado local ya está correcto (acceso hasta periodEnd).
+    // Cancelar en el PSP. Si falla, el estado local ya está correcto (acceso hasta periodEnd).
+    if (flowSubscriptionId) {
+      const flowService = require('../services/flowService');
+      try {
+        await flowService.cancelFlowSubscription(flowSubscriptionId, 1);
+      } catch (flowErr) {
+        console.error('[billing/cancel] Flow cancel failed (local DB already updated):', flowErr?.message);
+      }
+    }
     if (preapprovalId) {
       const mercadopagoService = require('../services/mercadopagoService');
       try {
@@ -1234,12 +1312,17 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
       select: { email: true },
     });
 
-    const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
-      organizationId,
-      req.body?.mercadopagoPayerEmail,
-      user?.email,
-      paymentProvider,
-    );
+    const { isFlowOrganizationId } = require('../lib/orgPaymentProvider');
+    const isFlow = await isFlowOrganizationId(organizationId);
+
+    const mercadopagoPayerEmail = isFlow
+      ? null
+      : await resolvePayerEmailForCheckout(
+          organizationId,
+          req.body?.mercadopagoPayerEmail,
+          user?.email,
+          paymentProvider,
+        );
 
     const createOpts = when === 'end_of_period' ? { startDate: cancelledSub.endDate } : {};
 
@@ -1307,10 +1390,7 @@ router.post('/billing/reactivate', authenticateRestaurantRoles(['restaurant_owne
       });
     }
 
-    sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
-      paymentProvider: result.providerId,
-      hints: result.checkoutHints,
-    });
+    sendCheckoutResult(res, result, mercadopagoPayerEmail);
     }); // withOrgBillingLock
   } catch (error) {
     handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
@@ -1354,12 +1434,17 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
     const legacyProvider =
       strategy === BILLING_STRATEGY_AUTOMATIC ? 'mercadopago_preapproval' : 'mp_checkout_pro';
 
-    const mercadopagoPayerEmail = await resolvePayerEmailForCheckout(
-      organizationId,
-      req.body?.mercadopagoPayerEmail,
-      user?.email,
-      legacyProvider,
-    );
+    const { isFlowOrganizationId } = require('../lib/orgPaymentProvider');
+    const isFlow = await isFlowOrganizationId(organizationId);
+
+    const mercadopagoPayerEmail = isFlow
+      ? null
+      : await resolvePayerEmailForCheckout(
+          organizationId,
+          req.body?.mercadopagoPayerEmail,
+          user?.email,
+          legacyProvider,
+        );
 
     const result = await executePlanChange({
       organizationId,
@@ -1389,10 +1474,9 @@ router.post('/billing/change-plan', authenticateRestaurantRoles(['restaurant_own
       });
     }
 
-    sendCheckoutJson(res, result.checkoutUrl, mercadopagoPayerEmail, {
+    sendCheckoutResult(res, result, mercadopagoPayerEmail, {
       paymentProvider: result.providerId,
       billingStrategy: result.billingStrategy,
-      hints: result.checkoutHints,
     });
     }); // withOrgBillingLock
   } catch (error) {

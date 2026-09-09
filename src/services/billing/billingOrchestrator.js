@@ -15,6 +15,8 @@ const {
 } = require('../../lib/billingDomain');
 const { normalizeBillingInput, getDefaultBillingStrategy } = require('../../lib/billingProviders');
 const mercadopagoAdapter = require('./adapters/mercadopagoBillingAdapter');
+const flowBillingAdapter = require('./adapters/flowBillingAdapter');
+const { isFlowOrganization, isFlowOrganizationId } = require('../../lib/orgPaymentProvider');
 const {
   switchAutomaticToManualMonthly,
   resolveCollectionMethodChange,
@@ -79,7 +81,7 @@ async function executePlanChange({
 
   const org = await prisma.restaurantOrganization.findUnique({
     where: { id: organizationId },
-    select: { billingCountry: true, owner: { select: { country: true } } },
+    select: { billingCountry: true, paymentProvider: true, owner: { select: { country: true } } },
   });
 
   const newPlan = await prisma.plan.findUnique({ where: { productSKU: planSKU } });
@@ -242,7 +244,8 @@ async function executePlanChange({
     data: { status: 'expired' },
   });
 
-  const result = await mercadopagoAdapter.createCheckout({
+  const adapter = isFlowOrganization(org) ? flowBillingAdapter : mercadopagoAdapter;
+  const result = await adapter.createCheckout({
     organizationId,
     userId,
     payerEmail,
@@ -263,11 +266,14 @@ async function executePlanChange({
 
   return {
     scheduled: false,
-    checkoutUrl: result.checkoutUrl,
+    checkoutUrl: result.checkoutUrl || null,
     providerId: result.providerId,
     billingStrategy,
     checkoutHints: result.checkoutHints,
-    requiresCheckout: true,
+    requiresCheckout: Boolean(result.checkoutUrl),
+    activated: result.activated === true,
+    scheduledByProvider: result.scheduled === true,
+    scheduledDate: result.scheduledDate || null,
   };
 }
 
@@ -283,6 +289,13 @@ async function updateCollectionMethod({
   billingStrategy,
   paymentProviderPsp = 'mercadopago',
 }) {
+  if (await isFlowOrganizationId(organizationId)) {
+    const err = new Error('El método de cobro de Flow no se puede cambiar. Usa débito automático con tarjeta.');
+    err.statusCode = 400;
+    err.code = 'collection_method_not_available';
+    throw err;
+  }
+
   const currentSub = await getActiveSubscription(organizationId);
   canSelfServeBillingOrThrow(currentSub);
   if (!currentSub || currentSub.status !== 'active') {
@@ -387,6 +400,18 @@ async function cancelPendingScheduledChange(organizationId) {
   });
 
   if (!scheduledSub) return null;
+
+  if (scheduledSub.flowSubscriptionId) {
+    try {
+      const flowService = require('../flowService');
+      await flowService.cancelFlowSubscription(scheduledSub.flowSubscriptionId, 0);
+    } catch (err) {
+      console.error(
+        '[billing] cancelPendingScheduledChange: error cancelando suscripción Flow:',
+        err?.message,
+      );
+    }
+  }
 
   if (scheduledSub.mercadopagoPreapprovalId) {
     try {

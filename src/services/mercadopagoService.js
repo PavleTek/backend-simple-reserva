@@ -432,17 +432,27 @@ function isPreapprovalAlreadyCancelledError(err) {
  * Cuando venza el periodo y el job de reconciliación o el webhook detecten el primer pago,
  * se transiciona a 'active'.
  */
-async function scheduleOrganizationSubscription(organizationId, preapprovalId, planSKU, scheduledStartDate) {
-  // Idempotencia: solo omitir si ya enlazamos este preapproval a una fila "viva".
-  // Si la fila anterior quedó cancelled/expired (p. ej. al reemplazar un programado),
-  // no debe bloquear crear el nuevo scheduled aunque MP reutilice el mismo id.
-  const existing = await prisma.subscription.findFirst({
-    where: {
-      mercadopagoPreapprovalId: preapprovalId,
-      status: { notIn: ['cancelled', 'expired'] },
-    },
-  });
-  if (existing) return;
+async function scheduleOrganizationSubscription(organizationId, preapprovalId, planSKU, scheduledStartDate, options = {}) {
+  const { flowSubscriptionId = null, flowPlanId = null } = options;
+
+  // Idempotencia: solo omitir si ya enlazamos este preapproval/flow sub a una fila "viva".
+  if (flowSubscriptionId) {
+    const existingFlow = await prisma.subscription.findFirst({
+      where: {
+        flowSubscriptionId,
+        status: { notIn: ['cancelled', 'expired'] },
+      },
+    });
+    if (existingFlow) return;
+  } else if (preapprovalId) {
+    const existing = await prisma.subscription.findFirst({
+      where: {
+        mercadopagoPreapprovalId: preapprovalId,
+        status: { notIn: ['cancelled', 'expired'] },
+      },
+    });
+    if (existing) return;
+  }
 
   const organization = await prisma.restaurantOrganization.findUnique({ where: { id: organizationId } });
   if (!organization) throw new Error(`Organización no encontrada: ${organizationId}`);
@@ -454,7 +464,7 @@ async function scheduleOrganizationSubscription(organizationId, preapprovalId, p
   // Primero cancelar en Mercado Pago para evitar preapprovals huérfanos que cobren en start_date.
   const previousScheduled = await prisma.subscription.findMany({
     where: { organizationId, status: 'scheduled' },
-    select: { id: true, mercadopagoPreapprovalId: true },
+    select: { id: true, mercadopagoPreapprovalId: true, flowSubscriptionId: true },
   });
   for (const row of previousScheduled) {
     if (row.mercadopagoPreapprovalId && row.mercadopagoPreapprovalId !== preapprovalId) {
@@ -468,13 +478,31 @@ async function scheduleOrganizationSubscription(organizationId, preapprovalId, p
         );
       }
     }
+    if (row.flowSubscriptionId && row.flowSubscriptionId !== flowSubscriptionId) {
+      try {
+        const flowService = require('./flowService');
+        await flowService.cancelFlowSubscription(row.flowSubscriptionId, 0);
+      } catch (err) {
+        console.warn(
+          '[Flow] scheduleOrganizationSubscription: no se pudo cancelar sub Flow previa:',
+          row.flowSubscriptionId,
+          err?.message ?? err,
+        );
+      }
+    }
   }
 
   await prisma.subscription.updateMany({
     where: { organizationId, status: 'scheduled' },
-    data: { status: 'cancelled', mercadopagoPreapprovalId: null, isActiveSubscription: false },
+    data: {
+      status: 'cancelled',
+      mercadopagoPreapprovalId: null,
+      flowSubscriptionId: null,
+      isActiveSubscription: false,
+    },
   });
 
+  const isFlow = Boolean(flowSubscriptionId);
   await prisma.subscription.create({
     data: {
       organizationId,
@@ -482,7 +510,12 @@ async function scheduleOrganizationSubscription(organizationId, preapprovalId, p
       status: 'scheduled',
       isActiveSubscription: false,
       startDate: scheduledStartDate,
-      mercadopagoPreapprovalId: preapprovalId,
+      mercadopagoPreapprovalId: preapprovalId || null,
+      flowSubscriptionId: flowSubscriptionId || null,
+      flowPlanId: flowPlanId || null,
+      paymentProvider: isFlow ? 'flow' : 'mercadopago',
+      billingStrategy: 'automatic_recurring',
+      providerImplementation: isFlow ? 'flow_subscription' : 'preapproval',
     },
   });
 
@@ -545,6 +578,8 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     paymentProviderPsp = 'mercadopago',
     referralFreeUntil = null,
     skipMarkFirstPayment = false,
+    flowSubscriptionId = null,
+    flowPlanId = null,
   } = options;
 
   const {
@@ -562,7 +597,12 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
     paymentProvider: paymentProviderPsp,
   });
 
-  if (preapprovalId) {
+  if (flowSubscriptionId) {
+    const existingFlow = await prisma.subscription.findFirst({
+      where: { flowSubscriptionId, status: 'active' },
+    });
+    if (existingFlow) return;
+  } else if (preapprovalId) {
     const existing = await prisma.subscription.findFirst({
       where: { mercadopagoPreapprovalId: preapprovalId, status: 'active' },
     });
@@ -614,10 +654,26 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   if (replaceSubscriptionId) {
     const oldSub = await prisma.subscription.findUnique({
       where: { id: replaceSubscriptionId },
-      select: { organizationId: true, mercadopagoPreapprovalId: true },
+      select: { organizationId: true, mercadopagoPreapprovalId: true, flowSubscriptionId: true },
     });
     if (!oldSub || oldSub.organizationId !== organizationId) {
       throw new Error('Suscripción previa no válida para esta organización');
+    }
+    if (oldSub.flowSubscriptionId && oldSub.flowSubscriptionId !== flowSubscriptionId) {
+      try {
+        const flowService = require('./flowService');
+        await flowService.cancelFlowSubscription(oldSub.flowSubscriptionId, 0);
+      } catch (err) {
+        const msg = String(err?.message || '');
+        if (/already|cancelad|not found|no exist/i.test(msg)) {
+          console.warn('[Flow] activateOrganizationSubscription: sub Flow previa ya cancelada:', oldSub.flowSubscriptionId);
+        } else {
+          console.error('[Flow] activateOrganizationSubscription: no se pudo cancelar sub Flow previa:', err?.message ?? err);
+          throw new Error(
+            'No se pudo completar el cambio de plan con Flow. Tu plan anterior sigue activo; intenta nuevamente o contacta soporte.',
+          );
+        }
+      }
     }
     if (oldSub.mercadopagoPreapprovalId && oldSub.mercadopagoPreapprovalId !== preapprovalId) {
       try {
@@ -639,11 +695,39 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   }
 
   // Cancelar en MP cualquier sub programada que vamos a marcar cancelled localmente (evita cobros duplicados).
+  if (flowSubscriptionId) {
+    const leftoverFlow = await prisma.subscription.findMany({
+      where: { organizationId, status: { in: ['trial', 'active', 'scheduled', 'grace'] } },
+      select: { flowSubscriptionId: true },
+    });
+    for (const row of leftoverFlow) {
+      if (!row.flowSubscriptionId || row.flowSubscriptionId === flowSubscriptionId) continue;
+      try {
+        const flowService = require('./flowService');
+        await flowService.cancelFlowSubscription(row.flowSubscriptionId, 0);
+      } catch (err) {
+        console.warn('[Flow] activateOrganizationSubscription leftover cancel:', err?.message);
+      }
+    }
+  }
+
   const scheduledToClear = await prisma.subscription.findMany({
     where: { organizationId, status: 'scheduled' },
-    select: { mercadopagoPreapprovalId: true },
+    select: { mercadopagoPreapprovalId: true, flowSubscriptionId: true },
   });
   for (const row of scheduledToClear) {
+    if (row.flowSubscriptionId && row.flowSubscriptionId !== flowSubscriptionId) {
+      try {
+        const flowService = require('./flowService');
+        await flowService.cancelFlowSubscription(row.flowSubscriptionId, 0);
+      } catch (err) {
+        console.warn(
+          '[Flow] activateOrganizationSubscription: no se pudo cancelar scheduled Flow:',
+          row.flowSubscriptionId,
+          err?.message ?? err,
+        );
+      }
+    }
     if (row.mercadopagoPreapprovalId && row.mercadopagoPreapprovalId !== preapprovalId) {
       try {
         await cancelSubscription(row.mercadopagoPreapprovalId);
@@ -685,6 +769,8 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
         status: 'active',
         isActiveSubscription: true,
         mercadopagoPreapprovalId: preapprovalId || null,
+        flowSubscriptionId: flowSubscriptionId || null,
+        flowPlanId: flowPlanId || null,
         billingStrategy: billingFields.billingStrategy,
         paymentProvider: billingFields.paymentProvider,
         providerImplementation: billingFields.providerImplementation,
@@ -706,7 +792,15 @@ async function activateOrganizationSubscription(organizationId, preapprovalId, p
   try {
     const referralService = require('./referralService');
     const activeSub = await prisma.subscription.findFirst({
-      where: { organizationId, mercadopagoPreapprovalId: preapprovalId, status: 'active' },
+      where: {
+        organizationId,
+        status: 'active',
+        ...(flowSubscriptionId
+          ? { flowSubscriptionId }
+          : preapprovalId
+            ? { mercadopagoPreapprovalId: preapprovalId }
+            : {}),
+      },
       select: { id: true },
     });
     if (activeSub) {
@@ -812,12 +906,15 @@ async function enterGracePeriod(organizationId, options = {}) {
     const restaurantId = organization.restaurants?.[0]?.id;
     if (ownerId && restaurantId) {
       try {
-        const link = await createRecoveryPaymentLink({
-          organizationId,
-          userId: ownerId,
-          restaurantId,
-        });
-        checkoutUrl = link.paymentUrl;
+        const { isFlowOrganizationId } = require('../lib/orgPaymentProvider');
+        if (!(await isFlowOrganizationId(organizationId))) {
+          const link = await createRecoveryPaymentLink({
+            organizationId,
+            userId: ownerId,
+            restaurantId,
+          });
+          checkoutUrl = link.paymentUrl;
+        }
       } catch (linkErr) {
         console.warn('[MercadoPago] enterGracePeriod recovery link:', linkErr?.message ?? linkErr);
       }

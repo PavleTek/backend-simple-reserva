@@ -95,6 +95,87 @@ async function createReceiptFromMPPayment(paymentData, organizationId, planSKU) 
 }
 
 /**
+ * Creates a PaymentReceipt from a Flow payment/getStatus payload.
+ * Idempotent on flowOrder. Writes mercadopagoStatus='approved' so existing
+ * /billing/payments + InvoicesTable status mapping still works.
+ */
+async function createReceiptFromFlowPayment(flowPayment, organizationId, extras = {}) {
+  const flowOrder = flowPayment?.flowOrder != null ? Number(flowPayment.flowOrder) : null;
+  if (flowOrder != null && !Number.isNaN(flowOrder)) {
+    const existing = await prisma.paymentReceipt.findUnique({
+      where: { flowOrder },
+    });
+    if (existing) return existing;
+  }
+
+  const organization = await prisma.restaurantOrganization.findUnique({
+    where: { id: organizationId },
+    include: { plan: true, owner: { select: { email: true, name: true, lastName: true } } },
+  });
+  if (!organization) throw new Error(`Organization ${organizationId} not found`);
+
+  const subscription = await prisma.subscription.findFirst({
+    where: {
+      organizationId,
+      status: { in: ['active', 'grace', 'cancelled'] },
+    },
+    orderBy: { startDate: 'desc' },
+  });
+
+  const planId = subscription?.planId ?? organization.planId;
+  const plan = planId
+    ? await prisma.plan.findUnique({ where: { id: planId } })
+    : null;
+  if (!plan) throw new Error(`Plan not found for org ${organizationId}`);
+
+  const amount = Number(flowPayment?.paymentData?.amount ?? flowPayment?.amount ?? 0);
+  const currency = flowPayment?.paymentData?.currency || flowPayment?.currency || 'CLP';
+  const paymentDate = flowPayment?.paymentData?.date
+    ? new Date(flowPayment.paymentData.date)
+    : new Date();
+  const ownerName = [organization.owner?.name, organization.owner?.lastName].filter(Boolean).join(' ').trim();
+
+  const receipt = await prisma.paymentReceipt.create({
+    data: {
+      organizationId,
+      subscriptionId: subscription?.id ?? null,
+      planId: plan.id,
+      amount,
+      currency,
+      paymentDate,
+      receiptType: organization.billingType || 'boleta',
+      clientName: organization.billingBusinessName || ownerName || organization.owner?.email || null,
+      clientEmail: organization.billingEmail || organization.owner?.email || null,
+      clientTaxId: organization.billingTaxId,
+      clientBusinessName: organization.billingBusinessName,
+      clientAddress: organization.billingAddress,
+      provider: 'flow',
+      flowOrder: flowOrder != null && !Number.isNaN(flowOrder) ? flowOrder : null,
+      flowInvoiceId: extras.flowInvoiceId || null,
+      mercadopagoStatus: 'approved',
+    },
+    include: { plan: true, organization: true },
+  });
+
+  try {
+    const { generateReceiptPdf } = require('./billing/receiptPdfGenerator');
+    const { sendPaymentApprovedEmail } = require('./billing/billingTransactionalEmailService');
+    const pdfBuffer = await generateReceiptPdf(receipt, receipt.organization, receipt.plan);
+    await sendPaymentApprovedEmail({
+      organizationId,
+      planName: plan.name,
+      amountCLP: Number(amount),
+      currency,
+      pdfBuffer,
+    });
+  } catch (emailErr) {
+    console.warn('[PaymentReceipt] Flow payment approved email error:', emailErr?.message);
+  }
+
+  return receipt;
+}
+
+/**
  * Marks a legal receipt as sent.
  */
 async function markLegalReceiptSent(receiptId, adminUserId) {
@@ -159,6 +240,7 @@ async function listReceipts(filters = {}, pagination = {}) {
 
 module.exports = {
   createReceiptFromMPPayment,
+  createReceiptFromFlowPayment,
   markLegalReceiptSent,
   markLegalReceiptUnsent,
   listReceipts,

@@ -10,7 +10,7 @@ Three orthogonal concepts:
 |-------|--------|--------|-------------------|
 | **Subscription** | `planId` | Plan SKUs | Plan Profesional, frecuencia |
 | **Billing strategy** | `billingStrategy` | `automatic_recurring`, `manual_monthly` | Método de cobro |
-| **Payment provider (PSP)** | `paymentProvider` | `mercadopago` (future: `paypal`, `stripe`) | Procesado por Mercado Pago |
+| **Payment provider (PSP)** | `paymentProvider` | `flow` (new orgs) \| `mercadopago` (legacy) | Flow.cl o Mercado Pago |
 
 Plan changes use **`planChangeWhen`**: `immediate` | `end_of_period`. Independent of billing strategy.
 
@@ -31,6 +31,10 @@ Internal MP implementation is stored in `providerImplementation` (`preapproval` 
 - `schedulePlanChangeInDb` — manual end-of-period
 
 [`adapters/mercadopagoBillingAdapter.js`](../src/services/billing/adapters/mercadopagoBillingAdapter.js) maps strategy → MP API.
+
+[`adapters/flowBillingAdapter.js`](../src/services/billing/adapters/flowBillingAdapter.js) handles Flow card-enrollment checkout for orgs with `RestaurantOrganization.paymentProvider=flow`. Flow orgs only expose `automatic_recurring`. See [FLOW_INTEGRATION.md](./FLOW_INTEGRATION.md).
+
+Admin switch: `POST /api/admin/organizations/:id/payment-provider`.
 
 ## API (restaurant portal)
 

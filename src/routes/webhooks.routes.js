@@ -35,6 +35,66 @@ const mercadopagoCheckoutProService = require('../services/mercadopagoCheckoutPr
 
 const router = express.Router();
 
+router.get('/flow', (req, res) => {
+  res.json({ ok: true, message: 'Webhook URL reachable. POST from Flow will process subscription invoices.' });
+});
+
+/**
+ * Flow plan urlCallback — POST application/x-www-form-urlencoded { token }.
+ * Verify by calling payment/getStatus.
+ */
+router.post('/flow', express.urlencoded({ extended: false }), async (req, res) => {
+  const token = String(req.body?.token || req.query?.token || '').trim();
+  if (!token) {
+    return res.status(400).json({ error: 'token requerido' });
+  }
+
+  res.status(200).json({ ok: true });
+
+  try {
+    const existing = await prisma.webhookEvent.findUnique({
+      where: { mpEventType_mpDataId: { mpEventType: 'flow_payment', mpDataId: token } },
+    });
+    if (existing?.processingStatus === 'processed') return;
+
+    const event = existing || await prisma.webhookEvent.create({
+      data: {
+        provider: 'flow',
+        mpEventType: 'flow_payment',
+        mpDataId: token,
+        processingStatus: 'processing',
+        rawHeaders: { contentType: req.headers['content-type'] || null },
+      },
+    }).catch(async () => prisma.webhookEvent.findUnique({
+      where: { mpEventType_mpDataId: { mpEventType: 'flow_payment', mpDataId: token } },
+    }));
+
+    if (!event || event.processingStatus === 'processed') return;
+
+    const { processFlowPaymentNotification } = require('../services/flowService');
+    const result = await processFlowPaymentNotification(token);
+
+    await prisma.webhookEvent.update({
+      where: { id: event.id },
+      data: {
+        processingStatus: result?.skipped ? 'skipped' : 'processed',
+        organizationId: result?.organizationId || null,
+        mpStatus: result?.processed || result?.skipped || null,
+        errorMessage: result?.skipped ? String(result.skipped) : null,
+        processedAt: new Date(),
+      },
+    });
+  } catch (err) {
+    console.error('[Flow Webhook] processing error:', err?.message);
+    try {
+      await prisma.webhookEvent.updateMany({
+        where: { mpEventType: 'flow_payment', mpDataId: token },
+        data: { processingStatus: 'failed', errorMessage: err?.message || 'unknown' },
+      });
+    } catch (_) { /* ignore */ }
+  }
+});
+
 // GET para verificar que la URL del webhook es accesible (abre en navegador o curl)
 router.get('/mercadopago', (req, res) => {
   console.log('[Webhook] GET request received - webhook URL is reachable');

@@ -12,6 +12,8 @@ const {
   isProviderEnabled,
 } = require('../lib/billingProviders');
 const { checkoutSessionBillingData } = require('../lib/billingDomain');
+const { isFlowOrganizationId } = require('../lib/orgPaymentProvider');
+const flowBillingAdapter = require('./billing/adapters/flowBillingAdapter');
 
 function checkoutProSupportsWhen(when) {
   return when === 'now';
@@ -30,6 +32,17 @@ async function createBillingCheckout({
   paymentProvider: rawProvider,
   createSubscriptionOptions = {},
 }) {
+  if (await isFlowOrganizationId(organizationId)) {
+    return flowBillingAdapter.createCheckout({
+      organizationId,
+      userId,
+      planSKU,
+      restaurantId,
+      when,
+      createSubscriptionOptions,
+    });
+  }
+
   const paymentProvider = normalizePaymentProvider(rawProvider);
   if (!isProviderEnabled(paymentProvider)) {
     const err = new Error('Método de pago no disponible.');
@@ -151,6 +164,18 @@ async function createBillingCheckoutWithPendingChange({
   pendingChangeFromSubscriptionId,
   createSubscriptionOptions = {},
 }) {
+  if (await isFlowOrganizationId(organizationId)) {
+    return flowBillingAdapter.createCheckout({
+      organizationId,
+      userId,
+      planSKU,
+      restaurantId,
+      when,
+      pendingChangeFromSubscriptionId,
+      createSubscriptionOptions,
+    });
+  }
+
   const paymentProvider = normalizePaymentProvider(rawProvider);
 
   const plan = await prisma.plan.findUnique({ where: { productSKU: planSKU } });

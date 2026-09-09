@@ -40,10 +40,124 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function runFlowReconciliation(now) {
+  const { getFlowApiKey, getFlowSecretKey } = require('../lib/flowEnv');
+  if (!getFlowApiKey() || !getFlowSecretKey()) {
+    logger.warn('[Reconciliation] Flow credentials missing, skipping Flow pass');
+    return;
+  }
+
+  const flowService = require('../services/flowService');
+  const { handleFlowSubscriptionCancelled } = require('../services/billing/handleFlowSubscriptionTerminalStatus');
+
+  const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+  const staleFlowSessions = await prisma.checkoutSession.findMany({
+    where: {
+      status: 'pending',
+      paymentProvider: 'flow',
+      createdAt: { lt: twoHoursAgo },
+    },
+  }).catch(() => []);
+
+  for (const session of staleFlowSessions) {
+    if (!session.flowRegisterToken) {
+      await prisma.checkoutSession.update({
+        where: { id: session.id },
+        data: { status: 'expired' },
+      }).catch(() => {});
+      continue;
+    }
+    try {
+      const statusPayload = await flowService.getRegisterStatus(session.flowRegisterToken);
+      if (statusPayload && (statusPayload.status === 1 || statusPayload.status === '1')) {
+        await flowService.confirmFromRegisterToken(session.organizationId, session.flowRegisterToken);
+      } else {
+        await prisma.checkoutSession.update({
+          where: { id: session.id },
+          data: { status: 'expired' },
+        });
+      }
+    } catch (err) {
+      logger.error({ err, sessionId: session.id }, '[Reconciliation] Flow session error');
+    }
+  }
+
+  const flowSubs = await prisma.subscription.findMany({
+    where: {
+      flowSubscriptionId: { not: null },
+      status: { in: ['active', 'grace', 'scheduled'] },
+    },
+  }).catch(() => []);
+
+  logger.info({ count: flowSubs.length }, '[Reconciliation] Flow subscriptions');
+
+  for (const sub of flowSubs) {
+    await sleep(100);
+    try {
+      if (sub.status === 'scheduled' && sub.startDate && sub.startDate <= now) {
+        const remote = await flowService.getFlowSubscription(sub.flowSubscriptionId);
+        if (Number(remote?.status) === 1) {
+          const plan = await prisma.plan.findUnique({ where: { id: sub.planId } });
+          if (plan) {
+            const { activateOrganizationSubscription } = require('../services/mercadopagoService');
+            await activateOrganizationSubscription(sub.organizationId, null, plan.productSKU, {
+              flowSubscriptionId: sub.flowSubscriptionId,
+              flowPlanId: sub.flowPlanId,
+              paymentProviderPsp: 'flow',
+            });
+            logger.info({ subId: sub.id }, '[Reconciliation] Flow scheduled sub activated');
+          }
+        } else {
+          await handleFlowSubscriptionCancelled(sub.organizationId, sub.flowSubscriptionId, String(remote?.status));
+        }
+        continue;
+      }
+      await flowService.syncLocalSubscriptionFromFlow(sub);
+    } catch (err) {
+      logger.error({ err, subId: sub.id }, '[Reconciliation] Flow sub error');
+    }
+  }
+
+  const windowStart = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+  const failedFlowEvents = await prisma.webhookEvent.findMany({
+    where: {
+      provider: 'flow',
+      processingStatus: 'failed',
+      createdAt: { gt: windowStart },
+      mpEventType: 'flow_payment',
+    },
+  }).catch(() => []);
+
+  for (const event of failedFlowEvents) {
+    await sleep(100);
+    try {
+      const result = await flowService.processFlowPaymentNotification(event.mpDataId);
+      await prisma.webhookEvent.update({
+        where: { id: event.id },
+        data: {
+          processingStatus: result?.skipped ? 'skipped' : 'processed',
+          organizationId: result?.organizationId || null,
+          mpStatus: result?.processed || result?.skipped || null,
+          processedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      logger.error({ err, eventId: event.id }, '[Reconciliation] Flow webhook retry failed');
+    }
+  }
+}
+
 async function runReconciliation() {
+  const now = new Date();
+  try {
+    await runFlowReconciliation(now);
+  } catch (err) {
+    logger.error({ err }, '[Reconciliation] Flow pass failed');
+  }
+
   const accessToken = getMercadoPagoAccessToken();
   if (!accessToken) {
-    logger.warn('[Reconciliation] MERCADOPAGO_ACCESS_TOKEN no configurado, saltando reconciliacion');
+    logger.warn('[Reconciliation] MERCADOPAGO_ACCESS_TOKEN no configurado, saltando pasada MP');
     return;
   }
 
@@ -78,6 +192,10 @@ async function runReconciliation() {
 
   for (const session of staleSessions) {
     await sleep(100); // Rate limit suave contra MP API
+
+    if (session.paymentProvider === 'flow') {
+      continue;
+    }
 
     if (!session.mercadopagoPreapprovalId) {
       // Checkout Pro session: buscar pagos aprobados por external_reference en MP
@@ -461,4 +579,4 @@ function startReconciliationJob() {
   logger.info({ schedule }, '[ReconciliationJob] scheduled');
 }
 
-module.exports = { startReconciliationJob, runReconciliation };
+module.exports = { startReconciliationJob, runReconciliation, runFlowReconciliation };

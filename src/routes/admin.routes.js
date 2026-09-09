@@ -710,6 +710,21 @@ router.patch('/organizations/:id/billing', async (req, res, next) => {
 });
 
 /**
+ * POST /admin/organizations/:id/payment-provider
+ * Cambia el PSP de la organización (mercadopago → flow o rollback).
+ * body: { paymentProvider: 'flow' | 'mercadopago' }
+ */
+router.post('/organizations/:id/payment-provider', async (req, res, next) => {
+  try {
+    const { switchOrganizationPaymentProvider } = require('../services/billing/paymentProviderSwitchService');
+    const result = await switchOrganizationPaymentProvider(req.params.id, req.body?.paymentProvider);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * PATCH /admin/organizations/:id/hidden
  * Oculta o muestra una organización en los listados del panel admin.
  */
@@ -1257,9 +1272,11 @@ router.get('/subscriptions', async (req, res, next) => {
         include: {
           organization: {
             select: {
+              id: true,
               name: true,
               trialEndsAt: true,
               createdAt: true,
+              paymentProvider: true,
               restaurants: { select: { name: true } },
             },
           },
@@ -1281,7 +1298,7 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
 
     const existing = await prisma.subscription.findUnique({
       where: { id: req.params.id },
-      select: { planId: true, organizationId: true, mercadopagoPreapprovalId: true },
+      select: { planId: true, organizationId: true, mercadopagoPreapprovalId: true, flowSubscriptionId: true },
     });
     if (!existing) throw new NotFoundError('Suscripción no encontrada');
 
@@ -1319,6 +1336,15 @@ router.patch('/subscriptions/:id', async (req, res, next) => {
       subData.gracePeriodEndsAt = now;
       subData.isActiveSubscription = false;
 
+      if (existing.flowSubscriptionId) {
+        try {
+          const flowService = require('../services/flowService');
+          await flowService.cancelFlowSubscription(existing.flowSubscriptionId, 0);
+          console.log('[Admin] Flow subscription cancelled:', existing.flowSubscriptionId);
+        } catch (err) {
+          console.warn('[Admin] Could not cancel Flow subscription (continuing):', err?.message);
+        }
+      }
       if (existing.mercadopagoPreapprovalId) {
         try {
           const mercadopagoService = require('../services/mercadopagoService');
@@ -1479,6 +1505,34 @@ router.get('/subscriptions/:id/mp-check', async (req, res, next) => {
     }
 
     res.json({ organizationId, results, suggestion });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /admin/subscriptions/:id/flow-check
+ * Consulta el estado remoto de la suscripción Flow vinculada.
+ */
+router.get('/subscriptions/:id/flow-check', async (req, res, next) => {
+  try {
+    const sub = await prisma.subscription.findUnique({
+      where: { id: req.params.id },
+      select: { organizationId: true, flowSubscriptionId: true, status: true, flowPlanId: true },
+    });
+    if (!sub) throw new NotFoundError('Suscripción no encontrada');
+    if (!sub.flowSubscriptionId) {
+      return res.json({ organizationId: sub.organizationId, flowSubscriptionId: null, remote: null });
+    }
+    const flowService = require('../services/flowService');
+    const remote = await flowService.getFlowSubscription(sub.flowSubscriptionId);
+    res.json({
+      organizationId: sub.organizationId,
+      flowSubscriptionId: sub.flowSubscriptionId,
+      flowPlanId: sub.flowPlanId,
+      localStatus: sub.status,
+      remote,
+    });
   } catch (error) {
     next(error);
   }

@@ -133,7 +133,11 @@ async function buildBillingCapabilities({
   return {
     canChangePlan: gate.allowed && offerFlags.selfServicePlanChanges && !isAdminComped,
     canChangeStrategy:
-      gate.allowed && offerFlags.selfServiceBillingStrategyChanges && !isAdminComped && status === 'active',
+      gate.allowed &&
+      offerFlags.selfServiceBillingStrategyChanges &&
+      !isAdminComped &&
+      status === 'active' &&
+      sub?.paymentProvider !== 'flow',
     canReactivate,
     canRecover: status === 'grace' && !!sub?.isActiveSubscription,
     canActivate: status !== 'active' && status !== 'grace',

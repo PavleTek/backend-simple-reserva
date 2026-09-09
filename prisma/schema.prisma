@@ -94,6 +94,13 @@ model RestaurantOrganization {
   billingEmail        String?   // Billing-specific email
   /// País para facturación / proveedor de pago (CL = preapproval + checkout pro; otro = solo checkout pro)
   billingCountry      String    @default("CL")
+  /// PSP SaaS: flow (default para orgs nuevas) | mercadopago (legado)
+  paymentProvider     String    @default("flow")
+  /// Flow.cl customer hash (cus_…) for SaaS subscription billing.
+  flowCustomerId       String?   @unique
+  flowCardBrand        String?
+  flowCardLast4        String?
+  flowCardRegisteredAt DateTime?
 
   reservationNotifyScope        ReservationNotifyScope @default(restaurant)
   reservationNotifyAudience     ReservationNotifyAudience @default(owner)
@@ -979,11 +986,15 @@ model Subscription {
   /// Access deadline: 7 days after payment failure, OR set equal to endDate on manual cancellation
   gracePeriodEndsAt DateTime?
   mercadopagoPreapprovalId String?   // MercadoPago subscription id when paid (preapproval)
+  /// Flow.cl subscription hash (sus_…).
+  flowSubscriptionId String?
+  /// Flow.cl planId used for this subscription (sr/dsr + hash).
+  flowPlanId String?
   /// Cómo se cobra: automatic_recurring | manual_monthly
   billingStrategy String @default("automatic_recurring")
-  /// PSP: mercadopago | paypal | stripe
+  /// PSP: mercadopago | flow | paypal | stripe
   paymentProvider String @default("mercadopago")
-  /// Implementación interna MP (preapproval | checkout_pro) durante transición
+  /// Implementación interna (preapproval | checkout_pro | flow_subscription)
   providerImplementation String?
   /// CheckoutSession id for manual_monthly renewals / tracing
   providerCheckoutSessionId String?
@@ -1019,6 +1030,7 @@ model Subscription {
   @@index([currentPeriodEnd])
   @@index([isActiveSubscription])
   @@index([scheduledChangeAt])
+  @@index([flowSubscriptionId])
 }
 
 /// Registro de correos de facturación enviados al owner (idempotencia por ciclo).
@@ -1243,7 +1255,11 @@ model PaymentReceipt {
   clientAddress         String?
 
   mercadopagoPaymentId  String?   @unique
-  mercadopagoStatus     String?   // "approved", "pending", etc.
+  mercadopagoStatus     String?   // "approved", "pending", etc. (también usado como status genérico para Flow)
+  /// PSP del cobro: mercadopago | flow
+  provider              String    @default("mercadopago")
+  flowOrder             Int?      @unique
+  flowInvoiceId         String?
 
   legalReceiptSent      Boolean   @default(false)
   legalReceiptSentAt    DateTime?
@@ -1275,6 +1291,8 @@ model CheckoutSession {
   paymentProvider           String    @default("mercadopago")
   providerImplementation    String?
   checkoutUrl               String?
+  flowRegisterToken         String?
+  scheduledStartAt          DateTime?
   /// Si existe, al autorizar el nuevo preapproval se cancela esta suscripción en MP (cambio de plan inmediato sin perder acceso antes de pagar).
   pendingChangeFromSubscriptionId String?
 
@@ -1360,8 +1378,10 @@ model CustomPlanOffer {
 /// Garantiza idempotencia (unique mpEventType+mpDataId) y permite debugging retroactivo.
 model WebhookEvent {
   id               String    @id @default(cuid())
-  mpEventType      String    // "subscription_preapproval" | "payment" | etc.
-  mpDataId         String    // data.id del payload MP
+  /// mercadopago | flow
+  provider         String    @default("mercadopago")
+  mpEventType      String    // "subscription_preapproval" | "payment" | "flow_payment" | etc.
+  mpDataId         String    // data.id del payload MP / token Flow
   mpStatus         String?   // estado real consultado a MP API tras recibir el evento
   organizationId   String?   // extraído de external_reference (nullable si no se puede parsear)
   externalRef      String?   // external_reference completo del preapproval/payment
