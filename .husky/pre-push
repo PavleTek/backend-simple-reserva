@@ -55,4 +55,12 @@ if ! npm run build; then
   exit 1
 fi
 
+echo "[pre-push] backend — npm run syntaxcheck..."
+if ! npm run syntaxcheck; then
+  echo "" >&2
+  echo "[pre-push] FAILED: hay SyntaxError en JS. Corrige antes de git push." >&2
+  echo "No uses git push --no-verify salvo emergencia acordada." >&2
+  exit 1
+fi
+
 echo "[pre-push] OK"
