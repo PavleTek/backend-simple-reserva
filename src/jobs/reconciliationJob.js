@@ -166,7 +166,6 @@ async function runReconciliation() {
   const preApprovalClient = new PreApproval(mpClient);
   const paymentClient = new Payment(mpClient);
 
-  const now = new Date();
   const windowStart = new Date(now.getTime() - 48 * 60 * 60 * 1000); // 48 horas
 
   console.log('[Reconciliation] Iniciando reconciliacion:', now.toISOString());
