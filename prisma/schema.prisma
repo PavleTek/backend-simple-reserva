@@ -38,7 +38,8 @@ model User {
   transfersFromOwnership        OwnershipTransfer[] @relation("TransferFromOwner")
   transfersAsTarget             OwnershipTransfer[] @relation("TransferTarget")
   signupRegisteredOrganizations RestaurantOrganization[] @relation("SignupRegisteredBy")
-  
+  paymentRegularizationReads PaymentRegularizationRead[]
+
   @@index([role])
 }
 
@@ -77,6 +78,7 @@ model RestaurantOrganization {
   billingOpsAlerts BillingOpsAlert[]
   ownershipTransfers OwnershipTransfer[]
   signupEmailLogs    OrganizationSignupEmailLog[]
+  paymentRegularizationNotice PaymentRegularizationNotice?
 
   /// Evidencia de registro / aceptación de términos (auditoría, SII)
   signupRegisteredByUserId String?
@@ -137,6 +139,35 @@ model OrganizationSignupEmailLog {
   @@index([recipientEmail])
   @@index([sentAt])
   @@index([kind])
+}
+
+/// Aviso en el panel del restaurante para asociar tarjeta y crear la suscripción Flow.
+/// No cobra periodos anteriores: solo pide regularizar hacia adelante.
+model PaymentRegularizationNotice {
+  id             String   @id @default(cuid())
+  organizationId String   @unique
+  organization   RestaurantOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  resolvedAt     DateTime?
+  reads          PaymentRegularizationRead[]
+
+  @@index([enabled])
+}
+
+model PaymentRegularizationRead {
+  id        String   @id @default(cuid())
+  noticeId  String
+  notice    PaymentRegularizationNotice @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userName  String?
+  userEmail String?
+  readAt    DateTime @default(now())
+
+  @@unique([noticeId, userId])
+  @@index([noticeId])
+  @@index([userId])
 }
 
 model OrganizationManager {

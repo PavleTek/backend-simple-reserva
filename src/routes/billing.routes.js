@@ -529,6 +529,7 @@ router.get('/subscription', authenticateRestaurantRoles(ROLES_BILLING), async (r
         : null,
       effectiveMonthlyCLP: Number(plan?.priceCLP ?? 0) + addonTotal,
       effectiveMonthlyWithIvaCLP: Math.round((Number(plan?.priceCLP ?? 0) + addonTotal) * 1.19),
+      paymentRegularization: await require('../services/billing/paymentRegularizationService').openNoticeSummary(organizationId),
     });
   } catch (error) {
     next(error);
@@ -1008,6 +1009,55 @@ router.post('/billing/checkout', authenticateRestaurantRoles(['restaurant_owner'
   }
 });
 
+router.post('/billing/regularization-notice/seen', authenticateRestaurantRoles(ROLES_BILLING), async (req, res, next) => {
+  try {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: req.activeRestaurant.restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { id: true, email: true, name: true, lastName: true },
+    });
+    if (!user) return res.status(401).json({ error: 'Usuario no encontrado' });
+    const { recordRead } = require('../services/billing/paymentRegularizationService');
+    const result = await recordRead(restaurant.organizationId, user);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /billing/regularize
+ * Inscribe la tarjeta en Flow y crea la suscripción recurrente desde ahora.
+ * No cobra periodos anteriores.
+ */
+router.post('/billing/regularize', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { organizationId: true },
+    });
+    if (!restaurant) throw new Error('Restaurante no encontrado');
+    const organizationId = restaurant.organizationId;
+
+    return await withOrgBillingLock(organizationId, async () => {
+      const { startRegularization } = require('../services/billing/paymentRegularizationService');
+      const result = await startRegularization({
+        organizationId,
+        userId: req.user.id,
+        restaurantId,
+      });
+      sendCheckoutResult(res, result, null);
+    });
+  } catch (error) {
+    handleBillingRouteError(error, res, next, respondMercadoPagoCheckoutError);
+  }
+});
+
 router.post('/billing/confirm', authenticateRestaurantRoles(['restaurant_owner']), async (req, res, next) => {
   try {
     const restaurantId = req.activeRestaurant.restaurantId;
@@ -1023,6 +1073,8 @@ router.post('/billing/confirm', authenticateRestaurantRoles(['restaurant_owner']
       const flowService = require('../services/flowService');
       const result = await flowService.confirmFromRegisterToken(organizationId, flowToken);
       if (result.activated) {
+        const { resolveIfFlowSubscriptionActive } = require('../services/billing/paymentRegularizationService');
+        await resolveIfFlowSubscriptionActive(organizationId);
         return res.json({ ok: true, message: 'Suscripción activada' });
       }
       if (result.scheduled) {

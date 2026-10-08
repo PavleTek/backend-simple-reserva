@@ -12,22 +12,25 @@ const { withCronLock } = require('../lib/cronLock');
 async function runGracePeriodExpiry() {
   try {
     const now = new Date();
+    const { heldOrganizationIds, excludeHeldOrganizations } = require('../services/billing/paymentRegularizationService');
+    const heldIds = await heldOrganizationIds();
     const expired = await prisma.subscription.updateMany({
-      where: {
+      where: excludeHeldOrganizations({
         status: 'grace',
         gracePeriodEndsAt: { lt: now, not: null },
-      },
+      }, heldIds),
       data: { status: 'expired', isActiveSubscription: false },
     });
 
     // Also deactivate cancelled subs whose gracePeriodEndsAt (= endDate) has passed.
     // These were cancelled by the user and gracePeriodEndsAt was set equal to endDate.
+    // Las cuentas con aviso de regularización abierto conservan el acceso.
     const cancelledExpired = await prisma.subscription.updateMany({
-      where: {
+      where: excludeHeldOrganizations({
         status: 'cancelled',
         isActiveSubscription: true,
         gracePeriodEndsAt: { lt: now, not: null },
-      },
+      }, heldIds),
       data: { status: 'expired', isActiveSubscription: false },
     });
 

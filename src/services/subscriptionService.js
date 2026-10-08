@@ -87,6 +87,10 @@ async function getActiveSubscription(organizationId) {
 
   const expireReason = isDateExpired(sub, trialEndsAt);
   if (expireReason) {
+    const { isNoticeOpenForOrganization } = require('./billing/paymentRegularizationService');
+    if (await isNoticeOpenForOrganization(organizationId)) {
+      return sub;
+    }
     console.warn(
       `[subscriptionService] Self-correcting stale-active sub org=${organizationId} id=${sub.id}: ${expireReason}`,
     );

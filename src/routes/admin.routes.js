@@ -296,6 +296,14 @@ router.get('/organizations/:id', async (req, res, next) => {
           take: 20,
           include: { plan: { select: { id: true, name: true } } },
         },
+        paymentRegularizationNotice: {
+          include: {
+            reads: {
+              orderBy: { readAt: 'asc' },
+              include: { user: { select: { id: true, email: true, name: true, lastName: true } } },
+            },
+          },
+        },
       },
     });
 
@@ -329,8 +337,14 @@ router.get('/organizations/:id', async (req, res, next) => {
       bookingSeo: getBookingSeoAdminMeta(r, orgHasAccess),
     }));
 
+    const { paymentRegularizationNotice, ...orgRest } = org;
+    const { serializeNotice } = require('../services/billing/paymentRegularizationService');
     res.json({
-      organization: { ...org, restaurants: restaurantsWithTableCount },
+      organization: {
+        ...orgRest,
+        restaurants: restaurantsWithTableCount,
+        paymentRegularization: serializeNotice(paymentRegularizationNotice),
+      },
       stats: {
         reservations: {
           total: totalReservations,
@@ -718,6 +732,24 @@ router.post('/organizations/:id/payment-provider', async (req, res, next) => {
   try {
     const { switchOrganizationPaymentProvider } = require('../services/billing/paymentProviderSwitchService');
     const result = await switchOrganizationPaymentProvider(req.params.id, req.body?.paymentProvider);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /admin/organizations/:id/payment-regularization
+ * Enciende o apaga el aviso de regularización en el panel del restaurante.
+ * body: { enabled: boolean }
+ */
+router.post('/organizations/:id/payment-regularization', async (req, res, next) => {
+  try {
+    if (typeof req.body?.enabled !== 'boolean') {
+      throw new ValidationError('enabled debe ser un booleano');
+    }
+    const { setEnabled } = require('../services/billing/paymentRegularizationService');
+    const result = await setEnabled(req.params.id, req.body.enabled);
     res.json(result);
   } catch (error) {
     next(error);
