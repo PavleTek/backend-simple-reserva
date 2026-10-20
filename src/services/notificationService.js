@@ -9,28 +9,7 @@ const { getEffectiveTimezone } = require('../utils/timezone');
 const {
   sendHelloWorldWA,
 } = require('./whatsappService');
-
-/**
- * Normalizes phone to E.164 format for Twilio.
- * Accepts: Chilean numbers (legacy) and international E.164 (e.g. +34912345678).
- */
-function normalizePhone(phone) {
-  if (!phone || typeof phone !== 'string') return null;
-  const trimmed = phone.trim();
-  if (!trimmed) return null;
-  // Already E.164 (starts with +, 10-15 digits)
-  if (trimmed.startsWith('+')) {
-    const digits = trimmed.replace(/\D/g, '');
-    if (digits.length >= 10 && digits.length <= 15) return trimmed;
-    return null;
-  }
-  // Legacy Chilean formats
-  const cleaned = trimmed.replace(/\D/g, '');
-  if (cleaned.startsWith('56') && cleaned.length >= 9) return `+${cleaned}`;
-  if (cleaned.length === 9 && cleaned.startsWith('9')) return `+56${cleaned}`;
-  if (cleaned.length === 8) return `+569${cleaned}`;
-  return null;
-}
+const { normalizePhone } = require('../lib/phone');
 
 /**
  * Public marketing / user booking site (reservation links, SMS, email).
@@ -740,6 +719,8 @@ async function sendReservationReminderEmail(options) {
     partySize,
     secureToken,
     timezone,
+    restaurantLogoUrl = null,
+    appearanceTheme = null,
   } = options;
   if (!customerEmail) {
     console.log('[Notification] sendReservationReminderEmail: skipped — no customerEmail');
@@ -765,6 +746,8 @@ async function sendReservationReminderEmail(options) {
     viewUrl,
     timezone: timezone || null,
     assetBaseUrl: baseUrl,
+    restaurantLogoUrl,
+    appearanceTheme,
   });
 
   try {
@@ -837,7 +820,17 @@ async function sendPaymentFailureNotification(options) {
  * @returns {Promise<boolean>}
  */
 async function sendReservationConfirmationEmail(options) {
-  const { customerEmail, restaurantName, customerName, dateTime, partySize, secureToken, timezone } = options;
+  const {
+    customerEmail,
+    restaurantName,
+    customerName,
+    dateTime,
+    partySize,
+    secureToken,
+    timezone,
+    restaurantLogoUrl = null,
+    appearanceTheme = null,
+  } = options;
   if (!customerEmail) {
     console.log('[Notification] sendReservationConfirmationEmail: skipped — no customerEmail');
     return false;
@@ -869,6 +862,8 @@ async function sendReservationConfirmationEmail(options) {
     viewUrl,
     timezone: timezone || null,
     assetBaseUrl: baseUrl,
+    restaurantLogoUrl,
+    appearanceTheme,
   });
 
   try {
@@ -982,6 +977,8 @@ async function sendPostVisitFeedbackEmail(options) {
     clickUrl,
     optOutUrl,
     subjectVariant = 'a',
+    restaurantLogoUrl = null,
+    appearanceTheme = null,
   } = options;
   if (!customerEmail) return false;
 
@@ -1005,6 +1002,8 @@ async function sendPostVisitFeedbackEmail(options) {
     optOutUrl,
     timezone,
     assetBaseUrl,
+    restaurantLogoUrl,
+    appearanceTheme,
   });
 
   try {

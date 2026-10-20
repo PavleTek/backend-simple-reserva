@@ -18,6 +18,23 @@ const { processFeedbackRequest } = require('../services/feedbackEngine/sendFeedb
 const { ensureFeedbackRequestForReservation } = require('../services/feedbackEngine/feedbackEnqueue');
 
 const BATCH_SIZE = 200;
+/** Visitas más viejas que esto ya salieron de la ventana de envío. No se reescanean. */
+const LOOKBACK_MS = 21 * 24 * 60 * 60 * 1000;
+
+/** No van a calificar más adelante. Se marcan para no ocupar el lote siguiente. */
+const PERMANENT_SKIP_REASONS = new Set([
+  'walk_in',
+  'no_email',
+  'party_size',
+  'cancelled',
+  'no_show',
+  'status',
+  'disabled',
+]);
+
+function isPermanentFeedbackSkip(reason) {
+  return PERMANENT_SKIP_REASONS.has(reason);
+}
 
 /** Campos usados por el job; `enabled` es obligatorio para el loop de pendientes. */
 const SURVEY_JOB_SELECT = {
@@ -63,6 +80,7 @@ async function findCandidateReservations() {
       status: { in: ['confirmed', 'arrived', 'completed'] },
       feedbackRequest: null,
       customerEmail: { not: null },
+      dateTime: { gte: new Date(now.getTime() - LOOKBACK_MS) },
     },
     take: BATCH_SIZE,
     orderBy: { dateTime: 'asc' },
@@ -82,8 +100,13 @@ async function findCandidateReservations() {
       continue;
     }
 
-    const { eligible } = checkReservationEligibility(r, survey, now);
-    if (!eligible) continue;
+    const { eligible, skipReason } = checkReservationEligibility(r, survey, now);
+    if (!eligible) {
+      if (isPermanentFeedbackSkip(skipReason)) {
+        candidates.push({ reservation: r, survey, expired: false, permanentSkip: skipReason });
+      }
+      continue;
+    }
 
     const visitEnd = computeVisitEnd(r.dateTime, r.durationMinutes);
     const scheduledFor = computeScheduledFor(visitEnd, survey.sendDelayMinutes);
@@ -115,7 +138,25 @@ async function runPostVisitFeedback() {
     let skipped = 0;
     let expired = 0;
 
-    for (const { reservation, survey, expired: isExpired, enqueueOnly, completedOnly } of candidates) {
+    for (const { reservation, survey, expired: isExpired, enqueueOnly, completedOnly, permanentSkip } of candidates) {
+      if (permanentSkip) {
+        try {
+          await prisma.feedbackRequest.create({
+            data: {
+              reservationId: reservation.id,
+              restaurantId: reservation.restaurantId,
+              customerEmailNormalized: (reservation.customerEmail || '').trim().toLowerCase(),
+              scheduledFor: reservation.dateTime,
+              status: 'skipped',
+              skipReason: permanentSkip,
+            },
+          });
+          skipped++;
+        } catch (err) {
+          if (err.code !== 'P2002') throw err;
+        }
+        continue;
+      }
       if (enqueueOnly) {
         await ensureFeedbackRequestForReservation(reservation, {
           trySendNow: false,
@@ -245,4 +286,10 @@ function startPostVisitFeedbackJob() {
   logger.info({ schedule, tz: process.env.TZ || 'America/Santiago' }, '[FeedbackJob] scheduled');
 }
 
-module.exports = { startPostVisitFeedbackJob, runPostVisitFeedback, SURVEY_JOB_SELECT };
+module.exports = {
+  startPostVisitFeedbackJob,
+  runPostVisitFeedback,
+  SURVEY_JOB_SELECT,
+  isPermanentFeedbackSkip,
+  LOOKBACK_MS,
+};

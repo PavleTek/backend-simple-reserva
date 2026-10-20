@@ -7,8 +7,8 @@
  *   - Sin preapprovalId: marcar expired.
  *   - Con preapprovalId: consultar MP. Si authorized/approved, activar. Si cancelled/expired, marcar expired.
  *
- * Pasada 2: Subscriptions activas vs. MP.
- *   - Si MP dice cancelled/expired/payment_required: entrar grace period.
+ * Pasada 2: Subscriptions activas cuyo periodo vence en 7 días o ya venció, vs. MP.
+ *   - El resto sigue cubierto por el webhook. Aquí se atrapa la mora y un alta/baja perdida cerca del corte.
  *
  * Pasada 3: WebhookEvents fallidos de las ultimas 48h.
  *   - Reintentar procesamiento de eventos de tipo subscription_preapproval o payment.
@@ -38,6 +38,15 @@ const { parseExternalReference } = require('../lib/billingProviders');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** La mora y el fin de periodo se deciden alrededor de currentPeriodEnd. Antes, el webhook alcanza. */
+const ACTIVE_SUB_MP_LOOKAHEAD_MS = 7 * 24 * 60 * 60 * 1000;
+
+function activeSubNeedsMpCheck(sub, now = new Date()) {
+  if (!sub?.mercadopagoPreapprovalId) return false;
+  if (!sub.currentPeriodEnd) return true;
+  return new Date(sub.currentPeriodEnd).getTime() <= now.getTime() + ACTIVE_SUB_MP_LOOKAHEAD_MS;
 }
 
 async function runFlowReconciliation(now) {
@@ -190,7 +199,8 @@ async function runReconciliation() {
   console.log(`[Reconciliation] Pasada 1: ${staleSessions.length} checkout sessions pendientes para revisar.`);
 
   for (const session of staleSessions) {
-    await sleep(100); // Rate limit suave contra MP API
+    const callsMp = Boolean(session.mercadopagoPreapprovalId || session.mercadopagoPreferenceId);
+    if (callsMp) await sleep(100);
 
     if (session.paymentProvider === 'flow') {
       continue;
@@ -300,10 +310,22 @@ async function runReconciliation() {
   // -----------------------------------------------------------------------
   let activeSubs;
   try {
+    const mpHorizon = new Date(now.getTime() + ACTIVE_SUB_MP_LOOKAHEAD_MS);
     activeSubs = await prisma.subscription.findMany({
       where: {
         status: 'active',
         mercadopagoPreapprovalId: { not: null },
+        OR: [
+          { currentPeriodEnd: null },
+          { currentPeriodEnd: { lte: mpHorizon } },
+        ],
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        planId: true,
+        mercadopagoPreapprovalId: true,
+        currentPeriodEnd: true,
       },
     });
   } catch (err) {
@@ -578,4 +600,9 @@ function startReconciliationJob() {
   logger.info({ schedule }, '[ReconciliationJob] scheduled');
 }
 
-module.exports = { startReconciliationJob, runReconciliation, runFlowReconciliation };
+module.exports = {
+  startReconciliationJob,
+  runReconciliation,
+  runFlowReconciliation,
+  activeSubNeedsMpCheck,
+};

@@ -149,6 +149,8 @@ function sanitizeProperties(e) {
   const allowed = [
     'slug',
     'referrer',
+    'embedMode',
+    'embedHost',
     'date',
     'method',
     'dayOfWeek',

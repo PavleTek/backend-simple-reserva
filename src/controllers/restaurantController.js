@@ -61,6 +61,7 @@ const updateRestaurant = async (req, res, next) => {
       noShowGracePeriodMinutes,
       requireEmail,
       requirePhoneNumber,
+      averageTicketCLP,
       holdsEnabled,
       holdTtlSeconds,
       logoUrl,
@@ -169,6 +170,16 @@ const updateRestaurant = async (req, res, next) => {
         }),
         ...(requireEmail !== undefined && { requireEmail: Boolean(requireEmail) }),
         ...(requirePhoneNumber !== undefined && { requirePhoneNumber: Boolean(requirePhoneNumber) }),
+        ...(averageTicketCLP !== undefined && (() => {
+          if (averageTicketCLP === null || averageTicketCLP === '') {
+            return { averageTicketCLP: null, averageTicketUpdatedAt: new Date() };
+          }
+          const n = Number(averageTicketCLP);
+          if (!Number.isFinite(n) || n <= 0) {
+            throw new ValidationError('El ticket promedio debe ser mayor a 0');
+          }
+          return { averageTicketCLP: Math.round(n), averageTicketUpdatedAt: new Date() };
+        })()),
         ...(holdsEnabled !== undefined && { holdsEnabled: Boolean(holdsEnabled) }),
         ...(holdTtlSeconds !== undefined && {
           holdTtlSeconds: Math.min(900, Math.max(60, parseInt(holdTtlSeconds, 10) || 300)),

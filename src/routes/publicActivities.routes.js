@@ -18,6 +18,7 @@ const {
 } = require('../services/activityBookingService');
 const { requireAcceptanceOpen } = require('../middleware/acceptance');
 const { hasActiveAccess } = require('../services/subscriptionService');
+const { parseEmbedHost } = require('../lib/embedHost');
 const { resolvePublicRestaurantSlug } = require('../utils/restaurantSlugAliases');
 
 const router = express.Router({ mergeParams: true });
@@ -109,7 +110,7 @@ router.post('/activity-bookings', requireAcceptanceOpen, async (req, res, next) 
     const hasModule = await canUseActivitiesModuleForRestaurant(restaurant.id);
     if (!hasModule) throw new ValidationError('Actividades no disponibles');
 
-    const { sessionId, partySize, customerName, customerEmail, customerPhone, notes, holdToken } = req.body;
+    const { sessionId, partySize, customerName, customerEmail, customerPhone, notes, holdToken, embedHost } = req.body;
     if (!sessionId || !customerName || !partySize) {
       throw new ValidationError('Sesión, nombre y tamaño del grupo son obligatorios');
     }
@@ -123,6 +124,7 @@ router.post('/activity-bookings', requireAcceptanceOpen, async (req, res, next) 
       notes,
       source: 'web',
       holdToken: holdToken || null,
+      embedHost: parseEmbedHost(embedHost),
     });
 
     res.status(201).json({ booking });

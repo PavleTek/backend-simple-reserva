@@ -7,7 +7,9 @@ const {
   buildReservationConfirmationHtml,
   escapeHtml,
   resolveLogoImageUrl,
+  resolveRestaurantLogoImageUrl,
 } = require('./reservationConfirmationEmail');
+const { resolveEmailTheme } = require('../constants/bookingThemes');
 
 describe('escapeHtml', () => {
   it('escapes HTML special characters', () => {
@@ -31,12 +33,53 @@ describe('resolveLogoImageUrl', () => {
     );
   });
 
+  it('returns white wordmark when variant is white', () => {
+    assert.strictEqual(
+      resolveLogoImageUrl('https://simplereserva.com', { variant: 'white' }),
+      'https://simplereserva.com/logo-full-white-480w.png'
+    );
+  });
+
   it('returns null for http', () => {
     assert.strictEqual(resolveLogoImageUrl('http://simplereserva.com'), null);
   });
 
   it('returns null for localhost', () => {
     assert.strictEqual(resolveLogoImageUrl('https://localhost:5173'), null);
+  });
+});
+
+describe('resolveRestaurantLogoImageUrl', () => {
+  it('accepts absolute HTTPS logo', () => {
+    assert.strictEqual(
+      resolveRestaurantLogoImageUrl('https://cdn.example.com/logos/abc.png'),
+      'https://cdn.example.com/logos/abc.png'
+    );
+  });
+
+  it('rejects http and localhost', () => {
+    assert.strictEqual(resolveRestaurantLogoImageUrl('http://cdn.example.com/x.png'), null);
+    assert.strictEqual(resolveRestaurantLogoImageUrl('https://localhost/logo.png'), null);
+  });
+
+  it('rejects invalid values', () => {
+    assert.strictEqual(resolveRestaurantLogoImageUrl(null), null);
+    assert.strictEqual(resolveRestaurantLogoImageUrl('not-a-url'), null);
+  });
+});
+
+describe('resolveEmailTheme', () => {
+  it('returns dark tokens for carbon', () => {
+    const theme = resolveEmailTheme('carbon');
+    assert.equal(theme.isDark, true);
+    assert.equal(theme.pageBg, '#111111');
+    assert.equal(theme.primary, '#8a8a8a');
+  });
+
+  it('falls back to crema-calida for unknown id', () => {
+    const theme = resolveEmailTheme('no-existe');
+    assert.equal(theme.id, 'crema-calida');
+    assert.equal(theme.isDark, false);
   });
 });
 
@@ -84,11 +127,66 @@ describe('buildReservationConfirmationHtml', () => {
     assert.ok(!html.includes('logo-full-480w.png'));
   });
 
-  it('includes logo when assetBaseUrl is HTTPS and non-local', () => {
+  it('includes SR wordmark when assetBaseUrl is HTTPS and non-local', () => {
     const html = buildReservationConfirmationHtml({
       ...base,
       assetBaseUrl: 'https://simplereserva.com',
     });
     assert.ok(html.includes('https://simplereserva.com/logo-full-480w.png'));
+  });
+
+  it('uses restaurant logo in header and SR mark in footer when branded', () => {
+    const logo = 'https://cdn.example.com/resto-logo.png';
+    const html = buildReservationConfirmationHtml({
+      ...base,
+      assetBaseUrl: 'https://simplereserva.com',
+      restaurantLogoUrl: logo,
+      appearanceTheme: 'terracota',
+    });
+    assert.ok(html.includes(logo));
+    assert.ok(html.includes('alt="Café Demo"'));
+    assert.ok(!html.includes('alt="SimpleReserva" width="200"'));
+    assert.ok(html.includes('logo-full-480w.png'));
+    assert.ok(html.includes('width="120"'));
+    assert.ok(html.includes('Enviado por SimpleReserva para Café Demo.'));
+    assert.ok(html.includes('#b85c38'));
+  });
+
+  it('applies dark theme colors and white SR footer mark when branded dark', () => {
+    const logo = 'https://cdn.example.com/resto-logo.png';
+    const html = buildReservationConfirmationHtml({
+      ...base,
+      assetBaseUrl: 'https://simplereserva.com',
+      restaurantLogoUrl: logo,
+      appearanceTheme: 'carbon',
+    });
+    assert.ok(html.includes('background-color:#111111'));
+    assert.ok(html.includes('#f0f0f0'));
+    assert.ok(html.includes('logo-full-white-480w.png'));
+    assert.ok(html.includes(logo));
+  });
+
+  it('ignores appearanceTheme without restaurant logo (SR default colors)', () => {
+    const html = buildReservationConfirmationHtml({
+      ...base,
+      assetBaseUrl: 'https://simplereserva.com',
+      appearanceTheme: 'carbon',
+    });
+    assert.ok(html.includes('background-color:#faf9f6'));
+    assert.ok(!html.includes('background-color:#111111'));
+    assert.ok(html.includes('logo-full-480w.png'));
+    assert.ok(!html.includes('logo-full-white-480w.png'));
+    assert.ok(!html.includes('width="120"'));
+  });
+
+  it('falls back to SR layout when restaurant logo URL is invalid', () => {
+    const html = buildReservationConfirmationHtml({
+      ...base,
+      assetBaseUrl: 'https://simplereserva.com',
+      restaurantLogoUrl: 'http://insecure.example.com/logo.png',
+      appearanceTheme: 'carbon',
+    });
+    assert.ok(html.includes('logo-full-480w.png'));
+    assert.ok(html.includes('background-color:#faf9f6'));
   });
 });

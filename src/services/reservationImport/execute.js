@@ -6,6 +6,7 @@ const { readBuffer, uploadBuffer, importFileKey } = require('./storage');
 const { recomputeAnalyticsForDates } = require('./analytics');
 const { getEffectiveTimezone } = require('../../utils/timezone');
 const { notifyRestaurantNewReservation } = require('../notificationService');
+const { markFirstReservationReceived } = require('../../lib/reservationCapture');
 
 /**
  * Past / cancelled / completed: sin emails ni alertas.
@@ -145,6 +146,20 @@ async function processImportBatch(importRecord) {
       where: { id: importRecord.id },
       data: { importedRows: imported, failedRows: failed },
     });
+  }
+
+  const first = await prisma.reservation.findFirst({
+    where: { restaurantId: importRecord.restaurantId },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, createdAt: true },
+  });
+  if (first) {
+    await markFirstReservationReceived(
+      prisma,
+      importRecord.restaurantId,
+      first.id,
+      first.createdAt,
+    );
   }
 
   await notifyTeamForImportedFutureReservations(importRecord);

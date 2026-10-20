@@ -85,6 +85,11 @@ model RestaurantOrganization {
   signupTermsVersion       String?
   signupIp                 String?
   signupUserAgent          String?
+  signupUtmSource          String?
+  signupUtmMedium          String?
+  signupUtmCampaign        String?
+  signupRefOrgId           String?
+  signupLandingPath        String?
 
   // Billing fields
   billingType         String    @default("boleta")  // "boleta" | "factura"
@@ -266,6 +271,10 @@ model Restaurant {
   reservationNotifyRecipients Json?
   reservationNotifyOnWeb      Boolean   @default(true)
   reservationNotifyOnManual   Boolean   @default(true)
+  averageTicketCLP            Int?
+  averageTicketUpdatedAt      DateTime?
+  firstReservationReceivedAt  DateTime?
+  firstReservationId          String?
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
 
@@ -664,6 +673,7 @@ model Reservation {
   customerName    String
   customerPhone   String?
   customerEmail   String?
+  isWalkIn        Boolean   @default(false)
   emailSent       Boolean   @default(false)
   reminderEmailSent Boolean @default(false)
   teamNotifySent        Boolean   @default(false)
@@ -675,7 +685,12 @@ model Reservation {
   businessDate    DateTime? @db.Date
   durationMinutes Int
   status          String    @default("confirmed") // "confirmed", "cancelled", "completed", "no_show"
+  arrivedAt       DateTime?
+  completedAt     DateTime?
+  cancelledAt     DateTime?
   source          String    @default("web")      // "web" (public booking), "manual" (admin panel), "phone", "imported"
+  /// Hostname del sitio del local cuando la reserva entra por el embed. Null en el link directo.
+  embedHost       String?
   notes           String?
   secureToken     String    @unique @default(cuid())
   confirmedByUserId String?
@@ -818,6 +833,8 @@ model ActivityBooking {
   status            ActivityBookingStatus @default(CONFIRMED)
   notes             String?
   source            String                @default("web")
+  /// Hostname del sitio del local cuando la reserva entra por el embed.
+  embedHost         String?
   secureToken       String                @unique @default(cuid())
   activityName      String
   sessionStartAt    DateTime

@@ -1,14 +1,13 @@
 'use strict';
 
 const { applySwaps } = require('./slotEngine/blockRules');
+const { isWalkInReservation } = require('../lib/walkIn');
 
 const LATE_GRACE_MINUTES = 10;
 const RESERVATION_SOON_MINUTES = 60;
 
 function reservationIsWalkIn(r) {
-  const n = (r.notes || '').trim().toLowerCase();
-  const name = (r.customerName || '').trim();
-  return n === 'walk-in' || name === 'Walk-in' || name === 'walk-in';
+  return isWalkInReservation(r);
 }
 
 function reservationPayload(r, rEnd) {

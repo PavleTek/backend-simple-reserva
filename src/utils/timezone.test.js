@@ -11,7 +11,8 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { getDayOfWeekInTimezone } = require('./timezone');
+const { DateTime } = require('luxon');
+const { getDayOfWeekInTimezone, restaurantLocalDate } = require('./timezone');
 
 describe('getDayOfWeekInTimezone', () => {
   describe('from date string', () => {
@@ -71,5 +72,31 @@ describe('getDayOfWeekInTimezone', () => {
       assert.strictEqual(fromString, 6);
       assert.strictEqual(fromDate, 6);
     });
+  });
+});
+
+describe('restaurantLocalDate', () => {
+  it('keeps 21:00 in Santiago on that calendar day, not the next UTC day', () => {
+    const evening = DateTime.fromObject(
+      { year: 2026, month: 6, day: 14, hour: 21, minute: 0 },
+      { zone: 'America/Santiago' },
+    );
+    assert.equal(restaurantLocalDate(evening.toJSDate(), 'America/Santiago'), '2026-06-14');
+    assert.notEqual(
+      DateTime.fromJSDate(evening.toJSDate(), { zone: 'utc' }).toFormat('yyyy-MM-dd'),
+      '2026-06-14',
+    );
+  });
+
+  it('keeps 00:30 in Santiago on that local calendar day', () => {
+    const justAfterMidnight = DateTime.fromObject(
+      { year: 2026, month: 6, day: 15, hour: 0, minute: 30 },
+      { zone: 'America/Santiago' },
+    );
+    assert.equal(restaurantLocalDate(justAfterMidnight.toJSDate(), 'America/Santiago'), '2026-06-15');
+    assert.equal(
+      restaurantLocalDate(justAfterMidnight.toJSDate(), 'America/Santiago'),
+      justAfterMidnight.toFormat('yyyy-MM-dd'),
+    );
   });
 });

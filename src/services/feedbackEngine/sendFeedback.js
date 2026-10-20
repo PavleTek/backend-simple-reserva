@@ -135,7 +135,7 @@ async function processFeedbackRequest({ reservation, survey, canSend, adminOverr
 
   const restaurant = await prisma.restaurant.findUnique({
     where: { id: reservation.restaurantId },
-    select: { name: true, timezone: true, logoUrl: true, slug: true },
+    select: { name: true, timezone: true, logoUrl: true, slug: true, appearanceTheme: true },
   });
 
   const clickUrl = `${getApiBaseUrl()}/api/public/feedback/${request.token}/click`;
@@ -151,6 +151,8 @@ async function processFeedbackRequest({ reservation, survey, canSend, adminOverr
     clickUrl,
     optOutUrl,
     subjectVariant,
+    restaurantLogoUrl: restaurant?.logoUrl || null,
+    appearanceTheme: restaurant?.appearanceTheme || null,
   });
 
   if (!ok) {
