@@ -24,7 +24,7 @@ async function runGracePeriodExpiry() {
 
     // Also deactivate cancelled subs whose gracePeriodEndsAt (= endDate) has passed.
     // These were cancelled by the user and gracePeriodEndsAt was set equal to endDate.
-    // Las cuentas con aviso de regularización abierto conservan el acceso.
+    // Un aviso con accessUntil futuro conserva el acceso. Sin fecha, o ya vencida, no.
     const cancelledExpired = await prisma.subscription.updateMany({
       where: excludeHeldOrganizations({
         status: 'cancelled',
@@ -34,9 +34,26 @@ async function runGracePeriodExpiry() {
       data: { status: 'expired', isActiveSubscription: false },
     });
 
-    const total = expired.count + cancelledExpired.count;
+    // Activa, débito automático, sin id de MP ni de Flow, periodo vencido.
+    // El reconciliador no las mira. El aviso las protege solo hasta accessUntil.
+    const unbilledExpired = await prisma.subscription.updateMany({
+      where: excludeHeldOrganizations({
+        status: 'active',
+        isActiveSubscription: true,
+        billingStrategy: 'automatic_recurring',
+        mercadopagoPreapprovalId: null,
+        flowSubscriptionId: null,
+        currentPeriodEnd: { lt: now },
+      }, heldIds),
+      data: { status: 'expired', isActiveSubscription: false },
+    });
+
+    const total = expired.count + cancelledExpired.count + unbilledExpired.count;
     if (total > 0) {
-      logger.info({ grace: expired.count, cancelled: cancelledExpired.count }, '[GracePeriodExpiryJob] subscriptions expired');
+      logger.info(
+        { grace: expired.count, cancelled: cancelledExpired.count, unbilled: unbilledExpired.count },
+        '[GracePeriodExpiryJob] subscriptions expired',
+      );
     }
     recordJobRun('gracePeriodExpiry');
   } catch (err) {

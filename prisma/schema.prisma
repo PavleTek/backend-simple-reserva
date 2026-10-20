@@ -150,6 +150,8 @@ model PaymentRegularizationNotice {
   enabled        Boolean  @default(true)
   createdAt      DateTime @default(now())
   resolvedAt     DateTime?
+  /// Mientras esta fecha es futura, el aviso frena el corte. Después, los jobs vencen la suscripción.
+  accessUntil    DateTime?
   reads          PaymentRegularizationRead[]
 
   @@index([enabled])

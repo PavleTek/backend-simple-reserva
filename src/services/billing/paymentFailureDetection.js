@@ -35,6 +35,25 @@ function shouldEnterGraceFromRejectedPayment({ activeSub, hasPendingCheckout }) 
 const OVERDUE_RECONCILIATION_BUFFER_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * Débito automático activo, periodo vencido, y sin id de Mercado Pago ni de Flow.
+ * El reconciliador no las ve: la pasada de MP exige preapproval y la de Flow exige
+ * flowSubscriptionId. Sin este caso el corte solo ocurría al atender un request,
+ * y el aviso de regularización lo podía frenar para siempre.
+ * @param {{ status?: string, billingStrategy?: string, mercadopagoPreapprovalId?: string|null, flowSubscriptionId?: string|null, currentPeriodEnd?: Date|string|null }} sub
+ * @param {Date} [now]
+ */
+function isUnbilledAutomaticOverdue(sub, now = new Date()) {
+  return !!(
+    sub?.status === 'active' &&
+    sub?.billingStrategy === 'automatic_recurring' &&
+    !sub?.mercadopagoPreapprovalId &&
+    !sub?.flowSubscriptionId &&
+    sub?.currentPeriodEnd &&
+    new Date(sub.currentPeriodEnd) < now
+  );
+}
+
+/**
  * Ancla la detección de mora al currentPeriodEnd propio en vez de a un status de MP
  * que nunca llega. Si el último cobro exitoso de MP es POSTERIOR a nuestro
  * currentPeriodEnd registrado, MP sí cobró y solo estamos desincronizados (webhook
@@ -61,5 +80,6 @@ function decideOverdueAutomaticSubAction({ mpStatus, currentPeriodEnd, lastCharg
 module.exports = {
   shouldEnterGraceFromRejectedPayment,
   decideOverdueAutomaticSubAction,
+  isUnbilledAutomaticOverdue,
   OVERDUE_RECONCILIATION_BUFFER_MS,
 };

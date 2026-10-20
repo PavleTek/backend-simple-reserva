@@ -9,6 +9,7 @@
 
 const prisma = require('../lib/prisma');
 const { isTrialExpired, isTrialActive } = require('../lib/trialPeriod');
+const { isUnbilledAutomaticOverdue } = require('./billing/paymentFailureDetection');
 
 async function getOrganizationWithTrial(organizationId) {
   return prisma.restaurantOrganization.findUnique({
@@ -46,15 +47,8 @@ function isDateExpired(sub, trialEndsAt) {
     return `trial ended (trialEndsAt=${new Date(trialEndsAt).toISOString()})`;
   }
 
-  if (
-    sub.status === 'active' &&
-    sub.billingStrategy === 'automatic_recurring' &&
-    !sub.mercadopagoPreapprovalId &&
-    !sub.flowSubscriptionId &&
-    sub.currentPeriodEnd &&
-    new Date(sub.currentPeriodEnd) < now
-  ) {
-    return `automatic zombie: active with null preapproval and past currentPeriodEnd (${sub.currentPeriodEnd.toISOString()})`;
+  if (isUnbilledAutomaticOverdue(sub, now)) {
+    return `automatic zombie: active with null preapproval and past currentPeriodEnd (${new Date(sub.currentPeriodEnd).toISOString()})`;
   }
 
   return null;
@@ -87,8 +81,8 @@ async function getActiveSubscription(organizationId) {
 
   const expireReason = isDateExpired(sub, trialEndsAt);
   if (expireReason) {
-    const { isNoticeOpenForOrganization } = require('./billing/paymentRegularizationService');
-    if (await isNoticeOpenForOrganization(organizationId)) {
+    const { isAccessHeldForOrganization } = require('./billing/paymentRegularizationService');
+    if (await isAccessHeldForOrganization(organizationId)) {
       return sub;
     }
     console.warn(

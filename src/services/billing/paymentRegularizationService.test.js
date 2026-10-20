@@ -4,6 +4,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   isNoticeOpen,
+  isAccessHeld,
+  resolveAccessUntil,
   accessRestorePatch,
   excludeHeldOrganizations,
 } = require('./paymentRegularizationService');
@@ -38,6 +40,23 @@ test('accessRestorePatch: no toca una suscripción que ya tiene acceso', () => {
     accessRestorePatch({ isActiveSubscription: true, status: 'active' }),
     null,
   );
+});
+
+test('isAccessHeld: solo mientras la fecha límite es futura', () => {
+  const now = new Date('2026-10-20T15:00:00.000Z');
+  const open = { enabled: true, resolvedAt: null };
+  assert.equal(isAccessHeld({ ...open, accessUntil: new Date('2026-10-25T02:59:59.000Z') }, now), true);
+  assert.equal(isAccessHeld({ ...open, accessUntil: new Date('2026-10-09T20:49:09.000Z') }, now), false);
+  assert.equal(isAccessHeld({ ...open, accessUntil: null }, now), false);
+  assert.equal(isAccessHeld({ enabled: false, resolvedAt: null, accessUntil: new Date('2026-10-25T02:59:59.000Z') }, now), false);
+});
+
+test('resolveAccessUntil: sin fecha da 7 días; una fecha pasada no sirve', () => {
+  const now = new Date('2026-10-20T15:00:00.000Z');
+  assert.equal(resolveAccessUntil(null, now).toISOString(), '2026-10-27T15:00:00.000Z');
+  assert.equal(resolveAccessUntil('', now).toISOString(), '2026-10-27T15:00:00.000Z');
+  assert.equal(resolveAccessUntil('2026-10-25T02:59:59.000Z', now).toISOString(), '2026-10-25T02:59:59.000Z');
+  assert.equal(resolveAccessUntil('2026-10-01T00:00:00.000Z', now), null);
 });
 
 test('excludeHeldOrganizations: el job de gracia no corta las cuentas con aviso', () => {

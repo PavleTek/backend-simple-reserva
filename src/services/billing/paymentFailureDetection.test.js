@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   shouldEnterGraceFromRejectedPayment,
   decideOverdueAutomaticSubAction,
+  isUnbilledAutomaticOverdue,
 } = require('./paymentFailureDetection');
 
 test('shouldEnterGraceFromRejectedPayment: renovación fallida de sub activa → entra a gracia', () => {
@@ -121,6 +122,45 @@ test('decideOverdueAutomaticSubAction: periodo aún vigente → none', () => {
       now,
     }),
     { action: 'none' },
+  );
+});
+
+test('isUnbilledAutomaticOverdue: activa, sin id de MP ni Flow y periodo vencido (Pilla la Vaca tras el cambio a Flow)', () => {
+  assert.equal(
+    isUnbilledAutomaticOverdue({
+      status: 'active',
+      billingStrategy: 'automatic_recurring',
+      mercadopagoPreapprovalId: null,
+      flowSubscriptionId: null,
+      currentPeriodEnd: new Date('2026-10-09T20:49:09.704Z'),
+    }, new Date('2026-10-20T14:00:00.000Z')),
+    true,
+  );
+});
+
+test('isUnbilledAutomaticOverdue: con suscripción Flow no aplica (lo reconcilia Flow)', () => {
+  assert.equal(
+    isUnbilledAutomaticOverdue({
+      status: 'active',
+      billingStrategy: 'automatic_recurring',
+      mercadopagoPreapprovalId: null,
+      flowSubscriptionId: 'sus_123',
+      currentPeriodEnd: new Date('2026-10-09T20:49:09.704Z'),
+    }, new Date('2026-10-20T14:00:00.000Z')),
+    false,
+  );
+});
+
+test('isUnbilledAutomaticOverdue: periodo aún vigente → no', () => {
+  assert.equal(
+    isUnbilledAutomaticOverdue({
+      status: 'active',
+      billingStrategy: 'automatic_recurring',
+      mercadopagoPreapprovalId: null,
+      flowSubscriptionId: null,
+      currentPeriodEnd: new Date('2026-10-25T00:00:00.000Z'),
+    }, new Date('2026-10-20T14:00:00.000Z')),
+    false,
   );
 });
 

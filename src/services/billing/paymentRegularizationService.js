@@ -4,8 +4,28 @@ const prisma = require('../../lib/prisma');
 const { NotFoundError, ValidationError } = require('../../utils/errors');
 const { PAYMENT_PROVIDER_FLOW } = require('../../lib/billingDomain');
 
+const DEFAULT_HOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
 function isNoticeOpen(notice) {
   return !!(notice && notice.enabled && !notice.resolvedAt);
+}
+
+/**
+ * El aviso solo frena el corte mientras accessUntil es futuro.
+ * Sin fecha, no hay prórroga: el job y el self-check vencen la suscripción.
+ */
+function isAccessHeld(notice, now = new Date()) {
+  if (!isNoticeOpen(notice) || !notice.accessUntil) return false;
+  return new Date(notice.accessUntil).getTime() > now.getTime();
+}
+
+function resolveAccessUntil(value, now = new Date()) {
+  if (value == null || value === '') {
+    return new Date(now.getTime() + DEFAULT_HOLD_MS);
+  }
+  const until = new Date(value);
+  if (Number.isNaN(until.getTime()) || until.getTime() <= now.getTime()) return null;
+  return until;
 }
 
 /**
@@ -33,12 +53,13 @@ function displayName(user) {
 
 function serializeNotice(notice) {
   if (!notice) {
-    return { active: false, resolvedAt: null, createdAt: null, reads: [] };
+    return { active: false, resolvedAt: null, createdAt: null, accessUntil: null, reads: [] };
   }
   return {
     active: isNoticeOpen(notice),
     resolvedAt: notice.resolvedAt ? notice.resolvedAt.toISOString() : null,
     createdAt: notice.createdAt ? notice.createdAt.toISOString() : null,
+    accessUntil: notice.accessUntil ? new Date(notice.accessUntil).toISOString() : null,
     reads: (notice.reads || []).map((read) => ({
       userId: read.userId,
       name: read.userName || displayName(read.user) || read.userEmail || 'Usuario',
@@ -70,14 +91,33 @@ async function isNoticeOpenForOrganization(organizationId) {
   return isNoticeOpen(notice);
 }
 
-async function openNoticeSummary(organizationId) {
-  const open = await isNoticeOpenForOrganization(organizationId);
-  return open ? { active: true } : null;
+async function isAccessHeldForOrganization(organizationId, now = new Date()) {
+  const notice = await prisma.paymentRegularizationNotice.findUnique({
+    where: { organizationId },
+    select: { enabled: true, resolvedAt: true, accessUntil: true },
+  });
+  return isAccessHeld(notice, now);
 }
 
-async function heldOrganizationIds() {
+async function openNoticeSummary(organizationId) {
+  const notice = await prisma.paymentRegularizationNotice.findUnique({
+    where: { organizationId },
+    select: { enabled: true, resolvedAt: true, accessUntil: true },
+  });
+  if (!isNoticeOpen(notice)) return null;
+  return {
+    active: true,
+    accessUntil: notice.accessUntil ? notice.accessUntil.toISOString() : null,
+  };
+}
+
+async function heldOrganizationIds(now = new Date()) {
   const rows = await prisma.paymentRegularizationNotice.findMany({
-    where: { enabled: true, resolvedAt: null },
+    where: {
+      enabled: true,
+      resolvedAt: null,
+      accessUntil: { gt: now },
+    },
     select: { organizationId: true },
   });
   return rows.map((row) => row.organizationId);
@@ -97,7 +137,7 @@ async function restoreAccess(organizationId) {
   return prisma.subscription.update({ where: { id: sub.id }, data: patch });
 }
 
-async function setEnabled(organizationId, enabled) {
+async function setEnabled(organizationId, enabled, accessUntilInput) {
   const org = await prisma.restaurantOrganization.findUnique({
     where: { id: organizationId },
     select: { id: true, paymentProvider: true },
@@ -121,10 +161,15 @@ async function setEnabled(organizationId, enabled) {
     return serializeNotice(await getNotice(organizationId));
   }
 
+  const accessUntil = resolveAccessUntil(accessUntilInput);
+  if (!accessUntil) {
+    throw new ValidationError('La fecha límite debe ser futura.');
+  }
+
   const notice = await prisma.paymentRegularizationNotice.upsert({
     where: { organizationId },
-    create: { organizationId, enabled: true, resolvedAt: null },
-    update: { enabled: true, resolvedAt: null },
+    create: { organizationId, enabled: true, resolvedAt: null, accessUntil },
+    update: { enabled: true, resolvedAt: null, accessUntil },
   });
   await prisma.paymentRegularizationRead.deleteMany({ where: { noticeId: notice.id } });
   await restoreAccess(organizationId);
@@ -248,11 +293,14 @@ async function startRegularization({ organizationId, userId, restaurantId }) {
 
 module.exports = {
   isNoticeOpen,
+  isAccessHeld,
+  resolveAccessUntil,
   accessRestorePatch,
   excludeHeldOrganizations,
   serializeNotice,
   getNotice,
   isNoticeOpenForOrganization,
+  isAccessHeldForOrganization,
   openNoticeSummary,
   heldOrganizationIds,
   setEnabled,

@@ -749,7 +749,7 @@ router.post('/organizations/:id/payment-regularization', async (req, res, next) 
       throw new ValidationError('enabled debe ser un booleano');
     }
     const { setEnabled } = require('../services/billing/paymentRegularizationService');
-    const result = await setEnabled(req.params.id, req.body.enabled);
+    const result = await setEnabled(req.params.id, req.body.enabled, req.body.accessUntil);
     res.json(result);
   } catch (error) {
     next(error);
