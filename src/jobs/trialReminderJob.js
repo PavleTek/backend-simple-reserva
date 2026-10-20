@@ -156,7 +156,7 @@ async function runTrialReminders() {
 function startTrialReminderJob() {
   const schedule = process.env.TRIAL_REMINDER_CRON || '0 9 * * *';
   cron.schedule(schedule, () => {
-    withCronLock('billingRenewalReminder', runTrialReminders).catch((err) => {
+    withCronLock('trialReminder', runTrialReminders).catch((err) => {
       logger.error({ err }, '[TrialReminderJob] lock/run error');
     });
   }, {

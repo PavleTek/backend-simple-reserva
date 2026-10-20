@@ -58,6 +58,21 @@ function nowInTimezone(timezone) {
 }
 
 /**
+ * Día calendario YYYY-MM-DD de un instante en la zona del restaurante.
+ * No usa la zona del proceso (en Railway es UTC).
+ */
+function restaurantLocalDate(instant, timezone) {
+  const dt = instant instanceof Date
+    ? DateTime.fromJSDate(instant, { zone: 'utc' })
+    : DateTime.fromISO(String(instant), { zone: 'utc' });
+  const local = dt.setZone(timezone);
+  if (!local.isValid) {
+    throw new Error(`Invalid instant for restaurantLocalDate: ${local.invalidReason}`);
+  }
+  return local.toFormat('yyyy-MM-dd');
+}
+
+/**
  * Returns the JS-style day of week (0=Sunday … 6=Saturday) for a given date,
  * interpreted in the supplied IANA timezone.
  *
@@ -94,5 +109,6 @@ module.exports = {
   parseInTimezone,
   formatInTimezone,
   nowInTimezone,
+  restaurantLocalDate,
   getDayOfWeekInTimezone,
 };

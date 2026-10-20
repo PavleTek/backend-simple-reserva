@@ -14,7 +14,7 @@ const {
   verifyRecoveryCode: verifyRecoveryCodeUtil
 } = require('../utils/twoFactor');
 const { sendEmail } = require('../services/emailService');
-const { SUPPORTED_COUNTRIES } = require('../utils/timezone');
+const { SUPPORTED_COUNTRIES, getEffectiveTimezone, restaurantLocalDate, parseInTimezone } = require('../utils/timezone');
 const { getPasswordPolicyError } = require('../utils/passwordPolicy');
 const { ValidationError } = require('../utils/errors');
 const { CURRENT_TERMS_VERSION } = require('../lib/termsVersion');
@@ -402,6 +402,12 @@ const register = async (req, res) => {
       }
 
       // 3. Create Organization
+      const trimAttr = (v) => {
+        if (v == null) return null;
+        const s = String(v).trim();
+        return s ? s.slice(0, 200) : null;
+      };
+
       const organization = await tx.restaurantOrganization.create({
         data: {
           name: `${restaurantName} Org`,
@@ -416,6 +422,11 @@ const register = async (req, res) => {
           signupTermsVersion: termsVersion || CURRENT_TERMS_VERSION,
           signupIp,
           signupUserAgent,
+          signupUtmSource: trimAttr(utmSource),
+          signupUtmMedium: trimAttr(utmMedium),
+          signupUtmCampaign: trimAttr(utmCampaign),
+          signupRefOrgId: validatedReferrer?.referrerOrganization?.id || null,
+          signupLandingPath: trimAttr(req.body?.landingPath),
         },
       });
 
@@ -1396,29 +1407,55 @@ const getRestaurantsTodaySummary = async (req, res) => {
     }
     
     const restaurants = await getRestaurantsForUser(req.user.id);
-    const locationIds = restaurants.map((r) => r.id);
-    
-    const today = new Date();
-    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const todayEnd = new Date(todayStart);
-    todayEnd.setDate(todayEnd.getDate() + 1);
+    const locationIds = [...new Set(restaurants.map((r) => r.id))];
 
-    const reservations = await prisma.reservation.findMany({
-      where: {
-        restaurantId: { in: locationIds },
-        dateTime: { gte: todayStart, lt: todayEnd },
-        status: 'confirmed',
+    if (locationIds.length === 0) {
+      return res.json({ date: null, locations: [] });
+    }
+
+    const metas = await prisma.restaurant.findMany({
+      where: { id: { in: locationIds }, isDeleted: false },
+      select: {
+        id: true,
+        timezone: true,
+        organization: { select: { owner: { select: { country: true } } } },
       },
-      select: { restaurantId: true, partySize: true },
     });
 
+    const now = new Date();
+    const groups = new Map();
+    for (const meta of metas) {
+      const timezone = getEffectiveTimezone(meta, meta.organization?.owner?.country || 'CL');
+      const dateStr = restaurantLocalDate(now, timezone);
+      const key = `${timezone}|${dateStr}`;
+      const group = groups.get(key);
+      if (group) group.ids.push(meta.id);
+      else groups.set(key, { timezone, dateStr, ids: [meta.id] });
+    }
+
     const byRestaurant = {};
-    for (const r of reservations) {
-      if (!byRestaurant[r.restaurantId]) {
-        byRestaurant[r.restaurantId] = { count: 0, covers: 0 };
+    for (const group of groups.values()) {
+      const start = parseInTimezone(group.dateStr, '00:00', group.timezone);
+      const end = parseInTimezone(group.dateStr, '23:59', group.timezone);
+      const businessDateVal = new Date(`${group.dateStr}T12:00:00.000Z`);
+      const rows = await prisma.reservation.findMany({
+        where: {
+          restaurantId: { in: group.ids },
+          status: 'confirmed',
+          OR: [
+            { businessDate: businessDateVal },
+            { businessDate: null, dateTime: { gte: start, lte: end } },
+          ],
+        },
+        select: { restaurantId: true, partySize: true },
+      });
+      for (const row of rows) {
+        if (!byRestaurant[row.restaurantId]) {
+          byRestaurant[row.restaurantId] = { count: 0, covers: 0 };
+        }
+        byRestaurant[row.restaurantId].count++;
+        byRestaurant[row.restaurantId].covers += row.partySize || 0;
       }
-      byRestaurant[r.restaurantId].count++;
-      byRestaurant[r.restaurantId].covers += r.partySize || 0;
     }
 
     const locations = restaurants.map((r) => ({
@@ -1430,7 +1467,8 @@ const getRestaurantsTodaySummary = async (req, res) => {
       todayCovers: byRestaurant[r.id]?.covers ?? 0,
     }));
 
-    res.json({ date: today.toISOString().split('T')[0], locations });
+    const dates = [...new Set([...groups.values()].map((g) => g.dateStr))];
+    res.json({ date: dates.length === 1 ? dates[0] : null, locations });
   } catch (error) {
     console.error('Get restaurants today summary error:', error);
     res.status(500).json({ error: 'Error interno del servidor' });

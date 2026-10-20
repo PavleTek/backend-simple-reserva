@@ -4,10 +4,12 @@ const VALID_BOOKING_THEME_IDS = [
   'terracota',
   'lavanda-clara',
   'marfil-lino',
+  'arena-dorada',
   'vino-oscuro',
   'verde-bosque',
   'azul-medianoche',
   'carbon',
+  'negro-dorado',
 ];
 
 const DEFAULT_BOOKING_THEME_ID = 'crema-calida';
@@ -94,6 +96,21 @@ const EMAIL_THEME_BY_ID = {
     primaryTextOn: '#ffffff',
     headerGradientFrom: '#e8eef1',
   },
+  'arena-dorada': {
+    id: 'arena-dorada',
+    isDark: false,
+    pageBg: '#f7f1e6',
+    cardBg: '#fffdf8',
+    nestedBg: '#f3eadc',
+    border: '#e6d8c4',
+    textPrimary: '#1c1812',
+    textSecondary: '#5c5346',
+    textMuted: '#8a7d6b',
+    primary: '#8c6820',
+    primaryHover: '#745718',
+    primaryTextOn: '#ffffff',
+    headerGradientFrom: '#f3eadc',
+  },
   'vino-oscuro': {
     id: 'vino-oscuro',
     isDark: true,
@@ -153,6 +170,21 @@ const EMAIL_THEME_BY_ID = {
     primaryHover: '#a0a0a0',
     primaryTextOn: '#ffffff',
     headerGradientFrom: '#1c1c1c',
+  },
+  'negro-dorado': {
+    id: 'negro-dorado',
+    isDark: true,
+    pageBg: '#0e0d0b',
+    cardBg: '#1a1814',
+    nestedBg: '#2c2822',
+    border: '#2c2822',
+    textPrimary: '#f6f1e6',
+    textSecondary: '#cbbfa8',
+    textMuted: '#8f8574',
+    primary: '#dcad5e',
+    primaryHover: '#e6c27a',
+    primaryTextOn: '#1a1408',
+    headerGradientFrom: '#1a1814',
   },
 };
 

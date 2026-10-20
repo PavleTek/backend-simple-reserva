@@ -35,6 +35,9 @@ const JOB_LOCK_KEYS = {
   billingIntegrity:     1_100_009,
   reservationImport:    1_100_010,
   insights:             1_100_011,
+  trialReminder:        1_100_012,
+  addonRemoval:         1_100_013,
+  ownershipTransferExpiry: 1_100_014,
 };
 
 function isSingleRunnerEnabled() {

@@ -9,28 +9,7 @@ const { getEffectiveTimezone } = require('../utils/timezone');
 const {
   sendHelloWorldWA,
 } = require('./whatsappService');
-
-/**
- * Normalizes phone to E.164 format for Twilio.
- * Accepts: Chilean numbers (legacy) and international E.164 (e.g. +34912345678).
- */
-function normalizePhone(phone) {
-  if (!phone || typeof phone !== 'string') return null;
-  const trimmed = phone.trim();
-  if (!trimmed) return null;
-  // Already E.164 (starts with +, 10-15 digits)
-  if (trimmed.startsWith('+')) {
-    const digits = trimmed.replace(/\D/g, '');
-    if (digits.length >= 10 && digits.length <= 15) return trimmed;
-    return null;
-  }
-  // Legacy Chilean formats
-  const cleaned = trimmed.replace(/\D/g, '');
-  if (cleaned.startsWith('56') && cleaned.length >= 9) return `+${cleaned}`;
-  if (cleaned.length === 9 && cleaned.startsWith('9')) return `+56${cleaned}`;
-  if (cleaned.length === 8) return `+569${cleaned}`;
-  return null;
-}
+const { normalizePhone } = require('../lib/phone');
 
 /**
  * Public marketing / user booking site (reservation links, SMS, email).
