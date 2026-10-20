@@ -4,10 +4,12 @@ const VALID_BOOKING_THEME_IDS = [
   'terracota',
   'lavanda-clara',
   'marfil-lino',
+  'arena-dorada',
   'vino-oscuro',
   'verde-bosque',
   'azul-medianoche',
   'carbon',
+  'negro-dorado',
 ];
 
 const DEFAULT_BOOKING_THEME_ID = 'crema-calida';
