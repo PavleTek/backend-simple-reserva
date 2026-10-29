@@ -11,7 +11,10 @@ const r2LogosService = require('../services/r2LogosService');
 const router = express.Router({ mergeParams: true });
 
 const MAX_MENU_PDF_BYTES = 50 * 1024 * 1024;
-const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+// Keep in sync with LOGO_UPLOAD_MAX_BYTES in restaurant-front cropImage.ts.
+// The client shrinks the logo before upload; this cap is the raw-file ceiling.
+const MAX_LOGO_BYTES = 15 * 1024 * 1024;
+const MAX_LOGO_MB = 15;
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -54,6 +57,20 @@ const uploadLogoMulter = multer({
   fileFilter: logoFileFilter,
   limits: { fileSize: MAX_LOGO_BYTES },
 });
+
+function uploadLogoSingle(req, res, next) {
+  uploadLogoMulter.single('logo')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return next(
+          new ValidationError(`El logo supera el tamaño máximo permitido (${MAX_LOGO_MB} MB).`),
+        );
+      }
+      return next(err);
+    }
+    next();
+  });
+}
 
 /**
  * Shared handler: upload logo buffer to R2, delete old logo, persist absolute URL to DB.
@@ -131,7 +148,7 @@ router.post(
   authenticateToken,
   authorizeRestaurant,
   authenticateRestaurantRoles(ROLES_CONFIG),
-  uploadLogoMulter.single('logo'),
+  uploadLogoSingle,
   async (req, res, next) => {
     try {
       if (!req.file) {
@@ -151,3 +168,4 @@ router.post(
 module.exports = router;
 module.exports.handleLogoUpload = handleLogoUpload;
 module.exports.uploadLogoMulter = uploadLogoMulter;
+module.exports.uploadLogoSingle = uploadLogoSingle;

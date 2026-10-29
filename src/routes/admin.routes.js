@@ -10,7 +10,7 @@ const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const whatsappService = require('../services/whatsappService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const r2LogosService = require('../services/r2LogosService');
-const { handleLogoUpload, uploadLogoMulter } = require('./upload.routes');
+const { handleLogoUpload, uploadLogoSingle } = require('./upload.routes');
 const { validateEnableBookingPageIndexable, getBookingSeoAdminMeta } = require('../services/bookingSeoService');
 const { hasActiveAccess } = require('../services/subscriptionService');
 
@@ -142,7 +142,7 @@ router.patch('/restaurants/:id', async (req, res, next) => {
 
 router.post(
   '/restaurants/:id/logo',
-  uploadLogoMulter.single('logo'),
+  uploadLogoSingle,
   async (req, res, next) => {
     try {
       if (!req.file) {
