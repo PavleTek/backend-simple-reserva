@@ -55,6 +55,13 @@ const {
   addDaysToDateStr,
 } = require('../services/slotEngine/businessDate');
 const { ACTIVE_TABLE_STATUSES, LATE_GRACE_MINUTES, canTransitionStatus } = require('../lib/reservationStatuses');
+const { normalizePhone } = require('../lib/phone');
+const { isWalkInReservation } = require('../lib/walkIn');
+const {
+  lifecycleFieldsForStatus,
+  resolveWalkInContact,
+  markFirstReservationReceived,
+} = require('../lib/reservationCapture');
 const { buildServiceView } = require('../services/serviceView');
 const { computeTableFloorStatus, applyBlockedStatus } = require('../services/tableFloorStatus');
 const { buildReservationDayWhere } = require('../utils/reservationDateFilter');
@@ -86,14 +93,26 @@ function dayLookbackMs(defaultSlotDurationMinutes, durationRules = []) {
   return Math.max(maxDuration, 12 * 60) * 60000;
 }
 
-/** Walk-in desde el panel — alineado con `isWalkInReservation` en restaurant-front */
+/** Walk-in desde el panel — flag primero, heurística de respaldo */
 function reservationIsWalkIn(r) {
-  const n = (r.notes || '').trim().toLowerCase();
-  const name = (r.customerName || '').trim();
-  return n === 'walk-in' || name === 'Walk-in' || name === 'walk-in';
+  return isWalkInReservation(r);
 }
 
 const router = express.Router({ mergeParams: true });
+
+const POLLING_CONFIG_TTL_MS = 60_000;
+let pollingConfigCache = { seconds: 30, expiresAt: 0 };
+
+async function getDashboardPollingIntervalSeconds() {
+  const now = Date.now();
+  if (pollingConfigCache.expiresAt > now) return pollingConfigCache.seconds;
+  const config = await prisma.configuration.findFirst({
+    select: { dashboardPollingIntervalSeconds: true },
+  });
+  const seconds = config?.dashboardPollingIntervalSeconds ?? 30;
+  pollingConfigCache = { seconds, expiresAt: now + POLLING_CONFIG_TTL_MS };
+  return seconds;
+}
 
 router.get('/data-version', async (req, res, next) => {
   try {
@@ -112,13 +131,11 @@ router.get('/data-version', async (req, res, next) => {
       throw new NotFoundError('Restaurante no encontrado');
     }
 
-    const config = await prisma.configuration.findFirst({
-      select: { dashboardPollingIntervalSeconds: true },
-    });
+    const pollingIntervalSeconds = await getDashboardPollingIntervalSeconds();
     
     res.json({
       version: restaurant.dataVersion,
-      pollingIntervalSeconds: config?.dashboardPollingIntervalSeconds ?? 30,
+      pollingIntervalSeconds,
     });
   } catch (error) {
     next(error);
@@ -305,7 +322,19 @@ router.get('/tables/status', async (req, res, next) => {
         where: buildReservationDayWhere(restaurantId, dateStr, timezone, {
           status: { in: ACTIVE_TABLE_STATUSES },
         }),
-        include: { table: { select: { id: true, label: true } } },
+        select: {
+          id: true,
+          customerName: true,
+          customerPhone: true,
+          partySize: true,
+          dateTime: true,
+          durationMinutes: true,
+          status: true,
+          tableId: true,
+          isWalkIn: true,
+          notes: true,
+          table: { select: { id: true, label: true } },
+        },
         orderBy: { dateTime: 'asc' },
       }),
       prisma.tableBlockRule.findMany({
@@ -548,6 +577,53 @@ router.get('/available-tables', async (req, res, next) => {
 
 // --- Reservations sub-routes ---
 
+router.get('/embed-stats', async (req, res, next) => {
+  try {
+    const restaurantId = req.activeRestaurant.restaurantId;
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const [reservations, activities] = await Promise.all([
+      prisma.reservation.findMany({
+        where: {
+          restaurantId,
+          embedHost: { not: null },
+          createdAt: { gte: since },
+          status: { not: 'cancelled' },
+        },
+        select: { embedHost: true, createdAt: true },
+      }),
+      prisma.activityBooking.findMany({
+        where: {
+          restaurantId,
+          embedHost: { not: null },
+          reservationId: null,
+          createdAt: { gte: since },
+          status: { not: 'CANCELLED' },
+        },
+        select: { embedHost: true, createdAt: true },
+      }),
+    ]);
+
+    const byHost = new Map();
+    for (const row of [...reservations, ...activities]) {
+      const host = row.embedHost;
+      if (!host) continue;
+      const prev = byHost.get(host);
+      if (!prev || row.createdAt > prev) byHost.set(host, row.createdAt);
+    }
+
+    const sitios = [...byHost.entries()]
+      .map(([host, ultima]) => ({ host, ultimaReserva: ultima.toISOString() }))
+      .sort((a, b) => (a.ultimaReserva < b.ultimaReserva ? 1 : -1));
+
+    res.json({
+      ultimos30Dias: reservations.length + activities.length,
+      sitios,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/reservations', async (req, res, next) => {
   try {
     const { page, limit, skip } = parsePagination(req.query);
@@ -622,7 +698,7 @@ router.get('/reservations', async (req, res, next) => {
 
     const orderAsc = sort !== 'desc';
 
-    const [reservations, total, coversAgg] = await Promise.all([
+    const [reservations, total, coverAgg] = await Promise.all([
       prisma.reservation.findMany({
         where,
         include: { table: { select: { id: true, label: true } } },
@@ -631,15 +707,12 @@ router.get('/reservations', async (req, res, next) => {
         take: limit,
       }),
       prisma.reservation.count({ where }),
-      prisma.reservation.aggregate({
-        where,
-        _sum: { partySize: true },
-      }),
+      prisma.reservation.aggregate({ where, _sum: { partySize: true } }),
     ]);
 
     res.json({
       ...paginatedResponse(reservations, total, page, limit),
-      covers: coversAgg._sum.partySize ?? 0,
+      covers: Number(coverAgg._sum.partySize ?? 0),
     });
   } catch (error) {
     next(error);
@@ -691,7 +764,6 @@ router.post('/reservations', async (req, res, next) => {
 
     if (isWalkIn) {
       if (!name) name = 'Walk-in';
-      if (!phone) phone = '—';
     } else if (!name || !phone) {
       throw new ValidationError('Se requiere customerName y customerPhone');
     }
@@ -711,6 +783,17 @@ router.post('/reservations', async (req, res, next) => {
 
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
+    const walkInContact = isWalkIn
+      ? resolveWalkInContact({ name, phone, defaultCountry: ownerCountry })
+      : null;
+    const normalizedPhone = isWalkIn
+      ? walkInContact.customerPhone
+      : normalizePhone(phone, { defaultCountry: ownerCountry });
+    if (isWalkIn) {
+      name = walkInContact.customerName;
+    } else if (!normalizedPhone) {
+      throw new ValidationError('Teléfono no válido');
+    }
 
     const { allowed, reason } = await canCreateReservation(restaurantId);
     if (!allowed) throw new ValidationError(reason);
@@ -951,7 +1034,7 @@ router.post('/reservations', async (req, res, next) => {
             restaurantId,
             tableId: selectedTable?.id ?? null,
             customerName: name,
-            customerPhone: phone,
+            customerPhone: normalizedPhone,
             customerEmail: customerEmail?.trim() || null,
             partySize: size,
             dateTime,
@@ -960,6 +1043,8 @@ router.post('/reservations', async (req, res, next) => {
             notes: isWalkIn ? (typeof notes === 'string' && notes.trim() ? notes.trim() : 'Walk-in') : notes?.trim() || null,
             source: 'manual',
             status: isWalkIn ? 'arrived' : 'confirmed',
+            isWalkIn,
+            ...(isWalkIn ? { arrivedAt: new Date() } : {}),
             ...(req.user?.id && { confirmedByUserId: req.user.id, updatedByUserId: req.user.id }),
           },
           include: {
@@ -981,6 +1066,8 @@ router.post('/reservations', async (req, res, next) => {
         return createdReservation;
       }, { isolationLevel: 'Serializable' })
     );
+
+    markFirstReservationReceived(prisma, restaurantId, reservation.id, reservation.createdAt).catch(console.error);
 
     if (!isWalkIn) {
       canSendConfirmations(restaurantId).then((ok) => {
@@ -1004,6 +1091,8 @@ router.post('/reservations', async (req, res, next) => {
             partySize: size,
             secureToken: reservation.secureToken,
             timezone,
+            restaurantLogoUrl: restaurant.logoUrl || null,
+            appearanceTheme: restaurant.appearanceTheme || null,
           })
             .then((sent) => {
               if (sent) {
@@ -1332,7 +1421,7 @@ router.patch('/reservations/:id', async (req, res, next) => {
     }
 
     const actorId = req.user?.id ?? null;
-    const statusData = { status };
+    const statusData = { status, ...lifecycleFieldsForStatus(status) };
     if (actorId) {
       statusData.updatedByUserId = actorId;
       if (status === 'confirmed') {

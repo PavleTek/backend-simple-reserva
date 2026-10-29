@@ -3,13 +3,7 @@
 const prisma = require('../../lib/prisma');
 const { normalizeCustomerEmail, hashEmail } = require('./emailNormalize');
 const { computeVisitEnd } = require('./scheduling');
-
-/** Walk-in desde panel */
-function isWalkInReservation(reservation) {
-  const n = (reservation.notes || '').trim().toLowerCase();
-  const name = (reservation.customerName || '').trim();
-  return n === 'walk-in' || name === 'Walk-in' || name === 'walk-in';
-}
+const { isWalkInReservation } = require('../../lib/walkIn');
 
 /**
  * @param {object} reservation

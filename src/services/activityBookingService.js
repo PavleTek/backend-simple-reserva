@@ -67,6 +67,7 @@ async function createActivityBooking({
   source = 'web',
   confirmedByUserId = null,
   holdToken = null,
+  embedHost = null,
 }) {
   return runSerializable(async (tx) => {
     const session = await tx.activitySession.findUnique({
@@ -183,6 +184,7 @@ async function createActivityBooking({
           source: 'activity',
           notes: notes || null,
           confirmedByUserId,
+          embedHost,
         },
       });
       reservationId = reservation.id;
@@ -200,6 +202,7 @@ async function createActivityBooking({
         status: initialStatus,
         notes: notes || null,
         source,
+        embedHost,
         activityName: activity.name,
         sessionStartAt: session.startAt,
         pricePerPerson,

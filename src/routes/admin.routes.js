@@ -10,7 +10,7 @@ const { sortPlansByDisplayOrder } = require('../lib/planDisplayOrder');
 const whatsappService = require('../services/whatsappService');
 const { computePeriodEnd } = require('../lib/billingPeriod');
 const r2LogosService = require('../services/r2LogosService');
-const { handleLogoUpload, uploadLogoMulter } = require('./upload.routes');
+const { handleLogoUpload, uploadLogoSingle } = require('./upload.routes');
 const { validateEnableBookingPageIndexable, getBookingSeoAdminMeta } = require('../services/bookingSeoService');
 const { hasActiveAccess } = require('../services/subscriptionService');
 
@@ -142,7 +142,7 @@ router.patch('/restaurants/:id', async (req, res, next) => {
 
 router.post(
   '/restaurants/:id/logo',
-  uploadLogoMulter.single('logo'),
+  uploadLogoSingle,
   async (req, res, next) => {
     try {
       if (!req.file) {
@@ -2781,7 +2781,7 @@ router.post('/reservations/:id/send-email', async (req, res, next) => {
 
     const reservation = await prisma.reservation.findUnique({
       where: { id: req.params.id },
-      include: { restaurant: { select: { id: true, name: true } } },
+      include: { restaurant: { select: { id: true, name: true, logoUrl: true, appearanceTheme: true } } },
     });
     if (!reservation) throw new NotFoundError('Reserva no encontrada');
     if (!reservation.customerEmail) {
@@ -2801,6 +2801,8 @@ router.post('/reservations/:id/send-email', async (req, res, next) => {
       partySize: reservation.partySize,
       secureToken: reservation.secureToken,
       timezone: null,
+      restaurantLogoUrl: reservation.restaurant.logoUrl || null,
+      appearanceTheme: reservation.restaurant.appearanceTheme || null,
     });
 
     if (sent) {
@@ -2835,6 +2837,8 @@ router.post('/reservations/send-missing-emails', async (req, res, next) => {
           select: {
             id: true,
             name: true,
+            logoUrl: true,
+            appearanceTheme: true,
             organization: { include: { owner: { select: { country: true } } } },
           },
         },
@@ -2861,6 +2865,8 @@ router.post('/reservations/send-missing-emails', async (req, res, next) => {
             partySize: r.partySize,
             secureToken: r.secureToken,
             timezone: null,
+            restaurantLogoUrl: r.restaurant.logoUrl || null,
+            appearanceTheme: r.restaurant.appearanceTheme || null,
           });
 
           if (success) {

@@ -3,12 +3,7 @@
 const { DateTime } = require('luxon');
 const { STATUS_MAP } = require('./constants');
 
-function normalizePhone(raw) {
-  if (!raw) return null;
-  const digits = String(raw).replace(/[^\d+]/g, '');
-  if (!digits) return null;
-  return digits.startsWith('+') ? digits : digits;
-}
+const { normalizePhone } = require('../../lib/phone');
 
 function normalizeEmail(raw) {
   if (!raw) return null;

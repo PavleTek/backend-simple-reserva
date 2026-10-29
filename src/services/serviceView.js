@@ -9,10 +9,10 @@ const {
 } = require('../utils/timezone');
 const { isCrossMidnightEnabled } = require('../lib/featureFlags');
 
+const { isWalkInReservation } = require('../lib/walkIn');
+
 function reservationIsWalkIn(r) {
-  const n = (r.notes || '').trim().toLowerCase();
-  const name = (r.customerName || '').trim();
-  return n === 'walk-in' || name === 'Walk-in' || name === 'walk-in';
+  return isWalkInReservation(r);
 }
 
 function roundToSlotMinutes(date, minutes = 15) {
@@ -91,8 +91,12 @@ function computePressureLevel({ tablesTotal, tablesFree, nextHourCovers, pacingM
 async function buildServiceView(restaurantId, dateParam) {
   const restaurant = await prisma.restaurant.findUnique({
     where: { id: restaurantId },
-    include: {
-      organization: { include: { owner: { select: { country: true } } } },
+    select: {
+      id: true,
+      name: true,
+      timezone: true,
+      bufferMinutesBetweenReservations: true,
+      organization: { select: { owner: { select: { country: true } } } },
     },
   });
   if (!restaurant) return null;
@@ -122,7 +126,21 @@ async function buildServiceView(restaurantId, dateParam) {
         ...dateWhere,
         status: { in: ['confirmed', 'arrived', 'completed', 'no_show', 'cancelled'] },
       },
-      include: { table: { select: { id: true, label: true } } },
+      select: {
+        id: true,
+        customerName: true,
+        customerPhone: true,
+        customerEmail: true,
+        partySize: true,
+        dateTime: true,
+        durationMinutes: true,
+        status: true,
+        source: true,
+        notes: true,
+        isWalkIn: true,
+        tableId: true,
+        table: { select: { id: true, label: true } },
+      },
       orderBy: { dateTime: 'asc' },
     }),
     prisma.zone.findMany({

@@ -31,4 +31,20 @@ describe('buildReservationReminderHtml', () => {
     assert.match(html, /Ver o cancelar reserva/);
     assert.match(html, /token123/);
   });
+
+  it('uses restaurant logo and theme when branded', () => {
+    const html = buildReservationReminderHtml({
+      restaurantName: 'DoceTrece',
+      customerName: 'María',
+      dateTime: new Date('2026-05-30T01:00:00.000Z'),
+      partySize: 2,
+      viewUrl: 'https://simplereserva.com/reservation/token123',
+      assetBaseUrl: 'https://simplereserva.com',
+      restaurantLogoUrl: 'https://cdn.example.com/logo.png',
+      appearanceTheme: 'verde-bosque',
+    });
+    assert.match(html, /cdn\.example\.com\/logo\.png/);
+    assert.match(html, /#3d8b6e/);
+    assert.match(html, /logo-full-white-480w\.png/);
+  });
 });

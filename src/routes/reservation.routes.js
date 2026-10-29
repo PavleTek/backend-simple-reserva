@@ -14,6 +14,9 @@ const { validateBookingPolicies } = require('../services/slotEngine/policies');
 const { loadSwapsByReservationId } = require('../services/reservationTableSwaps');
 const { loadBlockingSessionsForDay } = require('../services/activitySessionService');
 const { ACTIVE_TABLE_STATUSES } = require('../lib/reservationStatuses');
+const { normalizePhone } = require('../lib/phone');
+const { parseEmbedHost } = require('../lib/embedHost');
+const { markFirstReservationReceived } = require('../lib/reservationCapture');
 const { NotFoundError, ValidationError } = require('../utils/errors');
 const {
   sendReservationConfirmation,
@@ -409,7 +412,9 @@ router.post('/', async (req, res, next) => {
       notes,
       preferredZoneId,
       holdToken,
+      embedHost: embedHostRaw,
     } = req.body;
+    const embedHost = parseEmbedHost(embedHostRaw);
 
     if (!restaurantSlug || !date || !time || !partySize || !customerName) {
       throw new ValidationError('Se requiere restaurantSlug, date, time, partySize y customerName');
@@ -427,14 +432,16 @@ router.post('/', async (req, res, next) => {
     const mustRequireEmail = restaurant.requireEmail ?? true;
     const mustRequirePhone = restaurant.requirePhoneNumber ?? false;
     const emailStr = typeof customerEmail === 'string' && customerEmail.trim() ? customerEmail.trim() : '';
-    const phoneStr = typeof customerPhone === 'string' && customerPhone.trim() ? customerPhone.trim() : '';
+    const phoneRaw = typeof customerPhone === 'string' && customerPhone.trim() ? customerPhone.trim() : '';
 
     if (mustRequireEmail && !emailStr) throw new ValidationError('El correo electrónico es obligatorio');
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (emailStr && !emailRegex.test(emailStr)) throw new ValidationError('El correo electrónico no tiene un formato válido');
-    if (mustRequirePhone && !phoneStr) throw new ValidationError('El teléfono es obligatorio');
 
     const ownerCountry = restaurant.organization?.owner?.country || 'CL';
+    const phoneStr = phoneRaw ? normalizePhone(phoneRaw, { defaultCountry: ownerCountry }) : null;
+    if (phoneRaw && !phoneStr) throw new ValidationError('El teléfono no tiene un formato válido');
+    if (mustRequirePhone && !phoneStr) throw new ValidationError('El teléfono es obligatorio');
     const timezone = getEffectiveTimezone(restaurant, ownerCountry);
 
     const { allowed, reason: subReason } = await canCreateReservation(restaurant.id);
@@ -556,7 +563,7 @@ router.post('/', async (req, res, next) => {
               restaurantId: restaurant.id,
               tableId: hold.tableId,
               customerName,
-              customerPhone: phoneStr || null,
+              customerPhone: phoneStr,
               customerEmail: emailStr ? emailStr.toLowerCase() : null,
               partySize: size,
               dateTime,
@@ -564,6 +571,7 @@ router.post('/', async (req, res, next) => {
               durationMinutes: hold.durationMinutes,
               notes: notes || null,
               source: 'web',
+              embedHost,
             },
             include: {
               restaurant: { select: { name: true } },
@@ -731,7 +739,7 @@ router.post('/', async (req, res, next) => {
             restaurantId: restaurant.id,
             tableId: selectedTable.id,
             customerName,
-            customerPhone: phoneStr || null,
+            customerPhone: phoneStr,
             customerEmail: emailStr ? emailStr.toLowerCase() : null,
             partySize: size,
             dateTime,
@@ -739,6 +747,7 @@ router.post('/', async (req, res, next) => {
             durationMinutes: slotDuration,
             notes: notes || null,
             source: 'web',
+            embedHost,
           },
           include: {
             restaurant: { select: { name: true } },
@@ -747,6 +756,8 @@ router.post('/', async (req, res, next) => {
         });
       }, { isolationLevel: 'Serializable' })
     );
+
+    markFirstReservationReceived(prisma, restaurant.id, reservation.id, reservation.createdAt).catch(console.error);
 
     canSendConfirmations(restaurant.id).then((ok) => {
       if (ok) {
@@ -769,6 +780,8 @@ router.post('/', async (req, res, next) => {
             partySize: size,
             secureToken: reservation.secureToken,
             timezone,
+            restaurantLogoUrl: restaurant.logoUrl || null,
+            appearanceTheme: restaurant.appearanceTheme || null,
           }).then((sent) => {
             if (sent) {
               prisma.reservation.update({ where: { id: reservation.id }, data: { emailSent: true } })
@@ -860,9 +873,10 @@ router.post('/:slug/waitlist', async (req, res, next) => {
     const size = parseInt(partySize, 10);
     if (isNaN(size) || size < 1) throw new ValidationError('partySize debe ser un número positivo');
     const name = typeof customerName === 'string' ? customerName.trim() : '';
-    const phone = typeof customerPhone === 'string' ? customerPhone.trim() : '';
+    const phoneRaw = typeof customerPhone === 'string' ? customerPhone.trim() : '';
     if (!name || name.length < 2) throw new ValidationError('Indica tu nombre');
-    if (!phone || phone.length < 8) throw new ValidationError('Indica un teléfono de contacto');
+    const phone = normalizePhone(phoneRaw, { defaultCountry: 'CL' });
+    if (!phone) throw new ValidationError('Indica un teléfono de contacto');
 
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug, isActive: true, isDeleted: false },

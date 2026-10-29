@@ -57,7 +57,7 @@ async function runReminders() {
           partySize: true,
           secureToken: true,
           reminderEmailSent: true,
-          restaurant: { select: { name: true } },
+          restaurant: { select: { name: true, logoUrl: true, appearanceTheme: true } },
         },
       });
 
@@ -73,6 +73,8 @@ async function runReminders() {
             partySize: r.partySize,
             secureToken: r.secureToken,
             timezone,
+            restaurantLogoUrl: r.restaurant.logoUrl || null,
+            appearanceTheme: r.restaurant.appearanceTheme || null,
           });
           if (emailOk) {
             sentEmail++;
