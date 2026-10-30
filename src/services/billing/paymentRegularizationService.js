@@ -200,6 +200,31 @@ async function recordRead(organizationId, user) {
   return { recorded: true };
 }
 
+async function hasOpenNotice(organizationIds) {
+  if (!organizationIds?.length) return false;
+  const count = await prisma.paymentRegularizationNotice.count({
+    where: {
+      organizationId: { in: organizationIds },
+      enabled: true,
+      resolvedAt: null,
+    },
+  });
+  return count > 0;
+}
+
+async function resolveOpenNotice(organizationId) {
+  const notice = await prisma.paymentRegularizationNotice.findUnique({
+    where: { organizationId },
+    select: { id: true, enabled: true, resolvedAt: true },
+  });
+  if (!isNoticeOpen(notice)) return false;
+  await prisma.paymentRegularizationNotice.update({
+    where: { id: notice.id },
+    data: { enabled: false, resolvedAt: new Date() },
+  });
+  return true;
+}
+
 async function resolveIfFlowSubscriptionActive(organizationId) {
   const notice = await prisma.paymentRegularizationNotice.findUnique({
     where: { organizationId },
@@ -255,18 +280,39 @@ async function startRegularization({ organizationId, userId, restaurantId }) {
     throw new ValidationError('Esta cuenta no está en Flow.');
   }
 
-  const already = await prisma.subscription.findFirst({
+  const liveFlow = await prisma.subscription.findFirst({
     where: {
       organizationId,
       isActiveSubscription: true,
       flowSubscriptionId: { not: null },
-      status: 'active',
+      status: { in: ['active', 'grace'] },
     },
-    select: { id: true },
+    select: { id: true, planId: true, flowSubscriptionId: true },
   });
-  if (already) {
-    await resolveIfFlowSubscriptionActive(organizationId);
-    return { activated: true, providerId: PAYMENT_PROVIDER_FLOW };
+  if (liveFlow) {
+    const flowService = require('../flowService');
+    const { org, customer } = await flowService.ensureFlowCustomer(organizationId);
+    const session = await prisma.checkoutSession.create({
+      data: {
+        organizationId,
+        userId,
+        planId: liveFlow.planId,
+        status: 'pending',
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        paymentProvider: PAYMENT_PROVIDER_FLOW,
+        billingStrategy: 'automatic_recurring',
+        providerImplementation: 'flow_subscription',
+      },
+    });
+    const { checkoutUrl, token } = await flowService.createCardRegistration(
+      org.flowCustomerId || customer.customerId,
+      restaurantId,
+    );
+    await prisma.checkoutSession.update({
+      where: { id: session.id },
+      data: { checkoutUrl, flowRegisterToken: token },
+    });
+    return { checkoutUrl, providerId: PAYMENT_PROVIDER_FLOW };
   }
 
   const held = await restoreAccess(organizationId);
@@ -285,9 +331,6 @@ async function startRegularization({ organizationId, userId, restaurantId }) {
     pendingChangeFromSubscriptionId: (held || sub)?.id || null,
   });
 
-  if (result?.activated) {
-    await resolveIfFlowSubscriptionActive(organizationId);
-  }
   return result;
 }
 
@@ -305,6 +348,8 @@ module.exports = {
   heldOrganizationIds,
   setEnabled,
   recordRead,
+  hasOpenNotice,
+  resolveOpenNotice,
   resolveIfFlowSubscriptionActive,
   startRegularization,
 };

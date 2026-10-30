@@ -234,12 +234,17 @@ const login = async (req, res) => {
         where: { organizationId: { in: orgIds }, isActiveSubscription: true },
       });
       if (activeSubCount === 0) {
-        console.log('[AUTH] Login blocked: manager org has no active subscription', { userId: user.id });
-        return res.status(403).json({
-          error: 'inactive_organization',
-          message: 'La organización a la que perteneces no tiene una suscripción activa. Contacta al administrador de la cuenta.',
-          contactEmail: process.env.CONTACT_EMAIL || 'contacto@simplereserva.com',
-        });
+        const isManager = restaurants.some((r) => r.role === 'restaurant_manager');
+        const { hasOpenNotice } = require('../services/billing/paymentRegularizationService');
+        const noticeOpen = isManager && await hasOpenNotice(orgIds);
+        if (!noticeOpen) {
+          console.log('[AUTH] Login blocked: manager org has no active subscription', { userId: user.id });
+          return res.status(403).json({
+            error: 'inactive_organization',
+            message: 'La organización a la que perteneces no tiene una suscripción activa. Contacta al administrador de la cuenta.',
+            contactEmail: process.env.CONTACT_EMAIL || 'contacto@simplereserva.com',
+          });
+        }
       }
     }
 
@@ -637,11 +642,16 @@ const getProfile = async (req, res) => {
         where: { organizationId: { in: orgIds }, isActiveSubscription: true },
       });
       if (activeSubCount === 0) {
-        return res.status(403).json({
-          error: 'inactive_organization',
-          message: 'La organización a la que perteneces no tiene una suscripción activa. Contacta al administrador de la cuenta.',
-          contactEmail: process.env.CONTACT_EMAIL || 'contacto@simplereserva.com',
-        });
+        const isManager = restaurants.some((r) => r.role === 'restaurant_manager');
+        const { hasOpenNotice } = require('../services/billing/paymentRegularizationService');
+        const noticeOpen = isManager && await hasOpenNotice(orgIds);
+        if (!noticeOpen) {
+          return res.status(403).json({
+            error: 'inactive_organization',
+            message: 'La organización a la que perteneces no tiene una suscripción activa. Contacta al administrador de la cuenta.',
+            contactEmail: process.env.CONTACT_EMAIL || 'contacto@simplereserva.com',
+          });
+        }
       }
     }
 

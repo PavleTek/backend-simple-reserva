@@ -280,6 +280,24 @@ async function getFlowSubscription(subscriptionId) {
   return flowGet('/subscription/get', { subscriptionId });
 }
 
+async function retryUnpaidInvoices(flowSubscriptionId) {
+  if (!flowSubscriptionId) return [];
+  const remote = await getFlowSubscription(flowSubscriptionId);
+  const invoices = Array.isArray(remote?.invoices) ? remote.invoices : [];
+  const unpaid = invoices.filter((inv) => Number(inv?.status) === 0 && inv?.id != null);
+  const results = [];
+  for (const inv of unpaid) {
+    try {
+      const retried = await flowPost('/invoice/retryToCollect', { invoiceId: inv.id });
+      results.push({ invoiceId: inv.id, ok: true, status: retried?.status ?? null });
+    } catch (err) {
+      console.warn('[Flow] retryToCollect failed:', inv.id, err?.message);
+      results.push({ invoiceId: inv.id, ok: false });
+    }
+  }
+  return results;
+}
+
 async function getRegisterStatus(token) {
   return flowGet('/customer/getRegisterStatus', { token });
 }
@@ -515,6 +533,37 @@ async function confirmFromRegisterToken(organizationId, token) {
 
   await persistCardFromRegisterStatus(organizationId, statusPayload);
 
+  const liveFlow = await prisma.subscription.findFirst({
+    where: {
+      organizationId,
+      flowSubscriptionId: { not: null },
+      isActiveSubscription: true,
+      status: { in: ['active', 'grace'] },
+    },
+    select: { flowSubscriptionId: true },
+  });
+  if (liveFlow) {
+    const { isNoticeOpenForOrganization } = require('./billing/paymentRegularizationService');
+    if (await isNoticeOpenForOrganization(organizationId)) {
+      const pendingSession = await prisma.checkoutSession.findFirst({
+        where: { organizationId, flowRegisterToken: token, paymentProvider: PAYMENT_PROVIDER_FLOW },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (pendingSession && pendingSession.status !== 'completed') {
+        await prisma.checkoutSession.update({
+          where: { id: pendingSession.id },
+          data: { status: 'completed', completedAt: new Date() },
+        });
+        await retryUnpaidInvoices(liveFlow.flowSubscriptionId);
+      }
+      return {
+        activated: false,
+        cardUpdated: true,
+        providerId: PAYMENT_PROVIDER_FLOW,
+      };
+    }
+  }
+
   const session = await prisma.checkoutSession.findFirst({
     where: { organizationId, flowRegisterToken: token, paymentProvider: PAYMENT_PROVIDER_FLOW },
     orderBy: { createdAt: 'desc' },
@@ -694,6 +743,13 @@ async function processFlowPaymentNotification(token) {
       flowInvoiceId: extractInvoiceId(payment),
     });
 
+    try {
+      const { resolveOpenNotice } = require('./billing/paymentRegularizationService');
+      await resolveOpenNotice(organizationId);
+    } catch (noticeErr) {
+      console.warn('[Flow] resolveOpenNotice failed:', noticeErr?.message);
+    }
+
     const reactivated = await prisma.subscription.updateMany({
       where: { organizationId, status: 'grace' },
       data: { status: 'active', gracePeriodEndsAt: null },
@@ -804,6 +860,7 @@ module.exports = {
   getFlowSubscription,
   getRegisterStatus,
   getPaymentStatus,
+  retryUnpaidInvoices,
   startCardEnrollmentCheckout,
   subscribeWithEnrolledCard,
   processFlowPaymentNotification,

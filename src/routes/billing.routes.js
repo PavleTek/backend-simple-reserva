@@ -1072,9 +1072,14 @@ router.post('/billing/confirm', authenticateRestaurantRoles(['restaurant_owner']
     if (flowToken) {
       const flowService = require('../services/flowService');
       const result = await flowService.confirmFromRegisterToken(organizationId, flowToken);
+      if (result.cardUpdated) {
+        return res.json({
+          ok: true,
+          cardUpdated: true,
+          message: 'Tarjeta actualizada. Flow volverá a intentar el cobro.',
+        });
+      }
       if (result.activated) {
-        const { resolveIfFlowSubscriptionActive } = require('../services/billing/paymentRegularizationService');
-        await resolveIfFlowSubscriptionActive(organizationId);
         return res.json({ ok: true, message: 'Suscripción activada' });
       }
       if (result.scheduled) {
